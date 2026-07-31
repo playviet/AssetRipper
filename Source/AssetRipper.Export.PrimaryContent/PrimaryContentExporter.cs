@@ -44,7 +44,7 @@ using AssetRipper.SourceGenerated.Classes.ClassID_95;
 
 namespace AssetRipper.Export.PrimaryContent;
 
-public sealed class PrimaryContentExporter
+public sealed partial class PrimaryContentExporter
 {
 	private readonly ObjectHandlerStack<IContentExtractor> exporters = new();
 	private readonly GameData gameData;

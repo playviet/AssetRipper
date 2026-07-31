@@ -21,6 +21,12 @@ public class SingleExportCollection<T> : ExportCollectionBase where T : IUnityOb
 		return ExportInner(filePath, projectDirectory, fileSystem);
 	}
 
+	public override string GetExportKey(string projectDirectory, FileSystem fileSystem)
+	{
+		string subPath = fileSystem.Path.Join(projectDirectory, FileSystem.FixInvalidPathCharacters(Asset.GetBestDirectory()));
+		return fileSystem.Path.Join(subPath, GetBaseFileName(Asset));
+	}
+
 	public override bool Contains(IUnityObjectBase asset)
 	{
 		return Asset.AssetInfo == asset.AssetInfo;
