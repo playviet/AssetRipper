@@ -7,7 +7,7 @@ made Il2Cpp method body recovery work. Script content level 3 is a different fea
 
 So the two packages here are built locally instead, and `nuget.config` adds this folder as a package source.
 
-## What 1.0.14 is
+## What 1.0.18 is
 
 * `SamboyCoding/Cpp2IL` `development` (`b20ca0d`, "Lib: Fix v106"), which is still its head
 * the three commits the `assetripper` branch adds on top, cherry picked: `Move dependencies into main projects`,
@@ -33,9 +33,25 @@ So the two packages here are built locally instead, and `nuget.config` adds this
   5. `NewArm64KeyFunctionAddresses.GetWriteBarrier`, which did not exist either. Ported from the x86 search: look in
      corlib methods that store a reference into a field for a call preceded by that store and by the slot's address
      being placed in x0.
+  6. `NewArmV8InstructionSet` folded an ADRP based load into a load from a fixed address but did not do the same for a
+     store, so the store that records that a method's metadata is initialised was never recognised and the guard
+     around it was never removed.
+  7. `LibCpp2IlContext.CheckForPost27GlobalAt` read the word at the address the code loads from and decoded it as a
+     metadata usage. That works for an executable, which addresses its usage globals directly, but not for a shared
+     object: its usage globals are extern with default visibility, so they are preemptible and reached through the
+     global offset table. On `libil2cpp.so` every one of the 58000 usages was therefore missed, which is to say no
+     string, type or method reference was recovered at all. It now follows the table entry.
+  8. `MetadataResolver` collapses the extra dereference that table introduces, so the rest of the analysis sees the
+     same shape it would on an executable, and `LocalVariables` follows single assignment copies when working out
+     what type an allocation produced, since the class rarely reaches the allocation call in the same value it was
+     loaded into.
+  9. `IlGenerator` reconstructs a constructor call il2cpp inlined away. Where the allocation is followed by a call to
+     the base constructor, or by nothing, the type being allocated still says what was built, so its own constructor
+     is used with default arguments rather than emitting an untyped allocation.
 
-Measured on an arm64 Android game, the placeholders recovery writes where it could not translate a call fell from
-15532 to 6332, and recovered object creation went from 11 expressions to 549.
+Measured on an arm64 Android game: the placeholders recovery writes where it could not translate a call fell from
+15532 to 6332, recovered object creation went from 11 expressions to 549, and the share of methods recovered as
+compiling code with nothing commented out went from 12.5 to 14.8 percent.
 
 ## Rebuilding
 
