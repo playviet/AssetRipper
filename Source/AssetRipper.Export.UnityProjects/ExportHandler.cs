@@ -79,6 +79,7 @@ public class ExportHandler
 		{
 			yield return new SafeAssemblyPublicizingProcessor();
 		}
+		yield return new InjectedAttributeUsageProcessor();
 		yield return new RemoveAssemblyKeyFileAttributeProcessor();
 		yield return new InternalsVisibileToPublicKeyRemover();
 
