@@ -3,6 +3,7 @@ using AssetRipper.Export.Configuration;
 using AssetRipper.Export.UnityProjects.AnimatorControllers;
 using AssetRipper.Export.UnityProjects.Audio;
 using AssetRipper.Export.UnityProjects.AudioMixers;
+using AssetRipper.Export.UnityProjects.Deduplication;
 using AssetRipper.Export.UnityProjects.DeletedAssets;
 using AssetRipper.Export.UnityProjects.EngineAssets;
 using AssetRipper.Export.UnityProjects.Miscellaneous;
@@ -49,6 +50,7 @@ using AssetRipper.SourceGenerated.Classes.ClassID_329;
 using AssetRipper.SourceGenerated.Classes.ClassID_43;
 using AssetRipper.SourceGenerated.Classes.ClassID_48;
 using AssetRipper.SourceGenerated.Classes.ClassID_49;
+using AssetRipper.SourceGenerated.Classes.ClassID_72;
 using AssetRipper.SourceGenerated.Classes.ClassID_6;
 using AssetRipper.SourceGenerated.Classes.ClassID_687078895;
 using AssetRipper.SourceGenerated.Classes.ClassID_83;
@@ -180,6 +182,20 @@ partial class ProjectExporter
 		ScriptableObjectGroupExporter scriptableObjectGroupExporter = new();
 		OverrideExporter<IMonoBehaviour>(scriptableObjectGroupExporter);
 		OverrideExporter<ScriptableObjectGroup>(scriptableObjectGroupExporter);
+
+		//Deduplication. This has to come after the exporters it falls through to.
+		//MonoScripts are excluded because ScriptExporter already deduplicates them.
+		if (settings.ProcessingSettings.EnableAssetDeduplication)
+		{
+			DeduplicationExporter deduplicationExporter = new();
+			this.deduplicationExporter = deduplicationExporter;
+			OverrideExporter<IShader>(deduplicationExporter);
+			OverrideExporter<IComputeShader>(deduplicationExporter);
+			OverrideExporter<IAudioClip>(deduplicationExporter);
+			OverrideExporter<ITextAsset>(deduplicationExporter);
+			OverrideExporter<IMesh>(deduplicationExporter);
+			OverrideExporter<ITexture2D>(deduplicationExporter);
+		}
 	}
 
 	//These need to be absolutely last

@@ -95,7 +95,7 @@ public sealed partial class SettingsPage : DefaultPage
 								}
 								using (new Div(writer).WithClass("col").End())
 								{
-									WriteCheckBoxForEnableAssetDeduplication(writer, Localization.EnableAssetDeduplication, !GameFileLoader.Premium);
+									WriteCheckBoxForEnableAssetDeduplication(writer, Localization.EnableAssetDeduplication);
 								}
 							}
 
