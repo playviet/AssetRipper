@@ -181,6 +181,7 @@ public class ExportHandler
 			: Settings.UserPackageData.Packages.Count > 0
 				? new UserPackageManifestPostExporter(Settings.UserPackageData)
 				: new PackageManifestPostExporter();
+		yield return new GitIgnorePostExporter();
 		yield return new StreamingAssetsPostExporter();
 		yield return new DllPostExporter();
 		yield return new PathIdMapExporter();
