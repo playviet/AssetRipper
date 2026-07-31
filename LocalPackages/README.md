@@ -7,7 +7,7 @@ made Il2Cpp method body recovery work. Script content level 3 is a different fea
 
 So the two packages here are built locally instead, and `nuget.config` adds this folder as a package source.
 
-## What 1.0.18 is
+## What 1.0.22 is
 
 * `SamboyCoding/Cpp2IL` `development` (`b20ca0d`, "Lib: Fix v106"), which is still its head
 * the three commits the `assetripper` branch adds on top, cherry picked: `Move dependencies into main projects`,
@@ -48,6 +48,10 @@ So the two packages here are built locally instead, and `nuget.config` adds this
   9. `IlGenerator` reconstructs a constructor call il2cpp inlined away. Where the allocation is followed by a call to
      the base constructor, or by nothing, the type being allocated still says what was built, so its own constructor
      is used with default arguments rather than emitting an untyped allocation.
+
+  10. `IlGenerator` loaded a type used as a value by constructing an instance of it. A type used as a value is a
+      runtime class handle, which is a native integer, so that said something the code never did — and it did not
+      compile either, because the constructor it picked was often one the project cannot reach.
 
 Measured on an arm64 Android game: the placeholders recovery writes where it could not translate a call fell from
 15532 to 6332, recovered object creation went from 11 expressions to 549, and the share of methods recovered as

@@ -119,7 +119,7 @@ internal class InvalidSourceRepairTests
 	}
 
 	[Test]
-	public void TheMessagesRecoveryLeavesBehindAreCommentedOut()
+	public void TheMessagesRecoveryLeavesBehindAreSilenced()
 	{
 		string result = Repair("""
 			namespace Game
@@ -137,7 +137,8 @@ internal class InvalidSourceRepairTests
 
 		using (Assert.EnterMultipleScope())
 		{
-			Assert.That(result, Does.Contain("\t\t\t//System.Console.WriteLine(\"Method not found @2183D8C\");"));
+			Assert.That(result, Does.Contain("_ = \"Method not found @2183D8C\";"));
+			Assert.That(result, Does.Not.Contain("Console.WriteLine(\"Method not found"));
 			Assert.That(result, Does.Contain("\n\t\t\tSystem.Console.WriteLine(\"a message of the game's own\");"));
 		}
 	}

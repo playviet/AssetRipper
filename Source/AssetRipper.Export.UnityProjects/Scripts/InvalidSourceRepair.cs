@@ -125,15 +125,20 @@ internal static class InvalidSourceRepair
 		"Indirect call: ",
 		"Non static method called without",
 		"Jump target not found",
+		"Invalid instruction: ",
+		"Unknown operand: ",
+		"Constructor not found for: ",
 	];
 
 	/// <summary>
-	/// Comments out the calls recovery leaves behind to say what it could not translate.
+	/// Neutralises the calls recovery leaves behind to say what it could not translate.
 	/// </summary>
 	/// <remarks>
 	/// They are written as calls to <see cref="Console.WriteLine(string)"/>, which compiles but also runs: a recovered
-	/// method that the editor happens to call will write one of these on every pass, and a recovered loop will fill the
-	/// log with them. The message is worth keeping, so it stays as a comment rather than being removed.
+	/// method the editor happens to call writes one on every pass, and a recovered loop fills the log with them, which
+	/// on a large game means gigabytes. The message is worth keeping, so the call becomes a discard of the same string:
+	/// it still reads, it runs nothing, and unlike commenting the statement out it is valid wherever a statement is,
+	/// including as the unbraced body of an if.
 	/// </remarks>
 	private static void SilenceTraces(string outputFolder, FileSystem fileSystem, CSharpParseOptions parseOptions)
 	{
@@ -141,26 +146,41 @@ internal static class InvalidSourceRepair
 
 		foreach (SourceFile file in Parse(outputFolder, fileSystem, parseOptions))
 		{
-			List<Edit> edits = [];
+			List<(TextSpan Span, string Text)> edits = [];
+
 			foreach (SyntaxNode node in file.Root.DescendantNodes())
 			{
-				if (node is ExpressionStatementSyntax { Parent: BlockSyntax, Expression: InvocationExpressionSyntax invocation }
-					&& IsTrace(invocation))
+				//The call itself is replaced rather than the statement around it, because it is not always a
+				//statement of its own: one can sit in the increment clause of a for, where it runs every iteration.
+				if (node is InvocationExpressionSyntax invocation
+					&& IsTrace(invocation)
+					&& invocation.ArgumentList.Arguments is [{ Expression: { } message }])
 				{
-					edits.Add(new Edit(node.Span, null));
+					edits.Add((invocation.Span, $"_ = {message}"));
 				}
 			}
 
-			if (edits.Count > 0)
+			if (edits.Count == 0)
 			{
-				fileSystem.File.WriteAllText(file.Path, ApplyEdits(file.Text, edits));
-				silenced += edits.Count;
+				continue;
 			}
+
+			StringBuilder builder = new(file.Text.Length);
+			int position = 0;
+			foreach ((TextSpan span, string text) in edits)
+			{
+				builder.Append(file.Text, position, span.Start - position).Append(text);
+				position = span.End;
+			}
+			builder.Append(file.Text, position, file.Text.Length - position);
+
+			fileSystem.File.WriteAllText(file.Path, builder.ToString());
+			silenced += edits.Count;
 		}
 
 		if (silenced > 0)
 		{
-			Logger.Info(LogCategory.Export, $"Commented out {silenced} messages that recovery would otherwise have written at runtime");
+			Logger.Info(LogCategory.Export, $"Silenced {silenced} messages that recovery would otherwise have written at runtime");
 		}
 	}
 
