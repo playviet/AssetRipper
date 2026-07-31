@@ -83,9 +83,22 @@ public sealed class ShaderLabWriter(UnityVersion version)
 		{
 			WriteProperties(shader.PropInfo);
 
+			bool anySubShaderWritten = false;
 			foreach (ISerializedSubShader subShader in shader.SubShaders)
 			{
-				WriteSubShader(shader, subShader, decompileSubProgram);
+				// ShaderLab requires a sub shader to declare at least one pass. Unity's build time stripping can
+				// leave one with none, and writing that out verbatim makes the whole file fail to parse, taking
+				// the passes of the other sub shaders down with it.
+				if (subShader.Passes.Count > 0)
+				{
+					WriteSubShader(shader, subShader, decompileSubProgram);
+					anySubShaderWritten = true;
+				}
+			}
+
+			if (!anySubShaderWritten)
+			{
+				WritePlaceholderSubShader(shader);
 			}
 
 			WriteTrailer(shader);
@@ -180,6 +193,29 @@ public sealed class ShaderLabWriter(UnityVersion version)
 			{
 				WritePass(shader, pass, decompileSubProgram);
 			}
+		}
+		sb.Unindent();
+		sb.AppendLine("}");
+	}
+
+	/// <summary>
+	/// Writes a sub shader that draws nothing, for a shader left with no passes at all.
+	/// </summary>
+	/// <remarks>
+	/// Such a shader still has to import: materials reference it by GUID, and a file that fails to parse would cost
+	/// them their binding as well as their properties. The tags of the original first sub shader are kept so the
+	/// render pipeline still recognises it as its own.
+	/// </remarks>
+	private void WritePlaceholderSubShader(ISerializedShader shader)
+	{
+		sb.AppendLine("SubShader {");
+		sb.Indent();
+		{
+			if (shader.SubShaders.Count > 0)
+			{
+				WriteTags(shader.SubShaders[0].Tags);
+			}
+			sb.AppendLine("Pass { }");
 		}
 		sb.Unindent();
 		sb.AppendLine("}");
