@@ -42,15 +42,19 @@ What a reconstructed body contains has to survive two checks, because what does 
 
 It also comments out the messages recovery writes where it could not translate something. They are calls to `Console.WriteLine`, which compile but also run: a recovered loop the editor happens to call will otherwise fill the log with them.
 
-On an arm64 Android game, 19456 methods were analyzed:
+Measured on an arm64 Android game, against the original Unity project it was built from:
 
-| | Methods |
+| | |
 |---|---|
-| kept a body | 16224 (83%) |
-| body no reader accepts, discarded | 2757 (14%) |
-| could not be repaired statement by statement, emptied | 475 (2%) |
+| types in the original with a counterpart recovered | 590 of 617 (96%) |
+| methods in those types with a counterpart recovered | 2973 of 3040 (98%) |
+| recovered methods that are whole compiling code | 34% |
+| recovered methods with some statements commented out | 50% |
+| recovered methods with nothing in them | 16% |
 
-8663 statements were commented out across 330 of 533 files, and the project imports into the editor with no compile errors. Improvements are ongoing.
+2727 bodies were discarded as unreadable, 431 methods could not be repaired statement by statement and were emptied,
+and 13201 statements were commented out. The project imports into the editor with no compile errors. Improvements are
+ongoing.
 
 What comes out is a readable trace of what the native code does, not the original source. Expect calls into helpers the analysis could not name and values it could not type. Level 2 remains the setting for a faithful project; Level 3 is for reading the logic.
 
