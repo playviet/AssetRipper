@@ -32,6 +32,12 @@ public class FullConfiguration : CoreConfiguration
 		set => SingletonData.SetStoredValue(nameof(UserPackageData), value);
 	}
 
+	/// <summary>
+	/// Set for the duration of an export when package relinking is enabled and an editor was found to read from.
+	/// Not a stored setting; it depends on the loaded game.
+	/// </summary>
+	public UserPackages.UnityPackageRelinker? UnityPackageRelinker { get; set; }
+
 	public bool SaveSettingsToDisk => ExportSettings.SaveSettingsToDisk;
 
 	public string? LanguageCode

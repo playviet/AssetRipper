@@ -7,7 +7,7 @@ namespace AssetRipper.Export.UnityProjects.UserPackages;
 /// <summary>
 /// Writes the manifest, adding the packages that the user declared so that the exported project pulls them in.
 /// </summary>
-public sealed class UserPackageManifestPostExporter(UserPackageData data) : PackageManifestPostExporter
+public class UserPackageManifestPostExporter(UserPackageData data) : PackageManifestPostExporter
 {
 	protected override PackageManifest CreateManifest(UnityVersion version)
 	{

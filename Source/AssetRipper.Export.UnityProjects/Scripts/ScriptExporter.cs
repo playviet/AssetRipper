@@ -1,5 +1,6 @@
 ﻿using AssetRipper.Assets;
 using AssetRipper.Export.Configuration;
+using AssetRipper.Export.UserPackages;
 using AssetRipper.Import.Structure.Assembly;
 using AssetRipper.Import.Structure.Assembly.Managers;
 using AssetRipper.SourceGenerated;
@@ -20,12 +21,14 @@ public class ScriptExporter : IAssetExporter
 		};
 		ExportMode = configuration.ExportSettings.ScriptExportMode;
 		ReferenceAssemblyDictionary = ReferenceAssemblies.GetReferenceAssemblies(AssemblyManager, configuration.Version);
+		Relinker = configuration.UnityPackageRelinker;
 	}
 
 	public IAssemblyManager AssemblyManager { get; }
 	public ScriptExportMode ExportMode { get; }
 	internal ScriptDecompiler Decompiler { get; }
 	internal Dictionary<string, UnityGuid> ReferenceAssemblyDictionary { get; }
+	internal UnityPackageRelinker? Relinker { get; }
 	private bool HasDecompiled { get; set; } = false;
 	private static long MonoScriptDecompiledFileID { get; } = ExportIdHandler.GetMainExportID((int)ClassIDType.MonoScript);
 
@@ -65,6 +68,12 @@ public class ScriptExporter : IAssetExporter
 
 	public MetaPtr CreateExportPointer(IMonoScript script)
 	{
+		// A relinked script lives in a package now, and every package script has the same file ID.
+		if (Relinker is not null && Relinker.TryGetScriptGuid(script, out string? packageGuid))
+		{
+			return new MetaPtr(UnityPackageIndex.ScriptFileID, UnityGuid.Parse(packageGuid), AssetType.Meta);
+		}
+
 		return GetExportType(script) switch
 		{
 			AssemblyExportType.Decompile => new(MonoScriptDecompiledFileID, ScriptHashing.CalculateScriptGuid(script), AssetType.Meta),
@@ -75,7 +84,11 @@ public class ScriptExporter : IAssetExporter
 
 	public AssemblyExportType GetExportType(string assemblyName)
 	{
-		if (ReferenceAssemblyDictionary.ContainsKey(assemblyName))
+		if (Relinker is not null && Relinker.IsRelinked(assemblyName))
+		{
+			return AssemblyExportType.Relink;
+		}
+		else if (ReferenceAssemblyDictionary.ContainsKey(assemblyName))
 		{
 			return AssemblyExportType.Skip;
 		}

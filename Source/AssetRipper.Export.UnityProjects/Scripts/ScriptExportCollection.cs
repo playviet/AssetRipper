@@ -74,6 +74,11 @@ public sealed class ScriptExportCollection : ScriptExportCollectionBase
 
 				assemblyDefinitionDetailsDictionary.TryAdd(assemblyName, new AssemblyDefinitionDetails(assembly, outputDirectory));
 			}
+			else if (exportType is AssemblyExportType.Relink)
+			{
+				//Writing it would declare every type twice, once here and once in the package the project references.
+				Logger.Info(LogCategory.Export, $"Relinked {assemblyName} to its package");
+			}
 			else if (exportType is AssemblyExportType.Save)
 			{
 				Logger.Info(LogCategory.Export, $"Saving {assemblyName}");

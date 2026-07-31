@@ -4,7 +4,7 @@ using System.Formats.Tar;
 using System.IO.Compression;
 using System.Text.Json;
 
-namespace AssetRipper.Export.UnityProjects.UserPackages;
+namespace AssetRipper.Export.UserPackages;
 
 /// <summary>
 /// Reads package information out of an installed Unity editor.
@@ -25,6 +25,11 @@ public sealed class UnityPackageIndex
 	/// The file ID Unity gives a MonoBehaviour script asset. Constant for every source script.
 	/// </summary>
 	public const long ScriptFileID = 11500000;
+
+	/// <summary>
+	/// Marks a class name that more than one file in the package declares, so it cannot be resolved from a name alone.
+	/// </summary>
+	private const string Ambiguous = "";
 
 	private readonly string packageDirectory;
 	private readonly Dictionary<string, string> packageVersions;
@@ -87,7 +92,15 @@ public sealed class UnityPackageIndex
 			guids = ReadScriptGuids(packageId);
 			guidsByPackage.Add(packageId, guids);
 		}
-		return guids.TryGetValue(className, out guid);
+
+		// An ambiguous name is reported as not found. Binding a component to whichever file happened to be read first
+		// would be wrong in a way nothing downstream could detect.
+		if (guids.TryGetValue(className, out guid) && guid.Length == 32)
+		{
+			return true;
+		}
+		guid = null;
+		return false;
 	}
 
 	private Dictionary<string, string> ReadScriptGuids(string packageId)
@@ -107,6 +120,7 @@ public sealed class UnityPackageIndex
 				if (TryReadGuid(stream, out string? guid) && !guids.TryAdd(GetClassName(metaPath), guid))
 				{
 					duplicates++;
+					guids[GetClassName(metaPath)] = Ambiguous;
 				}
 			}
 			Report(packageId, guids.Count, duplicates);
@@ -142,6 +156,7 @@ public sealed class UnityPackageIndex
 				if (TryReadGuid(entry.DataStream, out string? guid) && !guids.TryAdd(GetClassName(entry.Name), guid))
 				{
 					duplicates++;
+					guids[GetClassName(entry.Name)] = Ambiguous;
 				}
 			}
 		}
@@ -161,9 +176,10 @@ public sealed class UnityPackageIndex
 	{
 		if (duplicates > 0)
 		{
-			// Two scripts of the same name in different folders cannot be told apart from a class name alone, so the
-			// first is kept and the ambiguity is reported rather than resolved wrongly.
-			Logger.Warning(LogCategory.Export, $"Package '{packageId}' has {duplicates} scripts whose file names are not unique. References to those may bind to the wrong one.");
+			// Two scripts of the same name in different folders cannot be told apart from a class name alone, so
+			// neither is offered. Binding to whichever was read first would be wrong in a way nothing downstream could
+			// detect.
+			Logger.Info(LogCategory.Export, $"Package '{packageId}' declares {duplicates} class names in more than one file. Those cannot be relinked and keep their existing binding.");
 		}
 		Logger.Info(LogCategory.Export, $"Read {found} script GUIDs from package '{packageId}'");
 	}

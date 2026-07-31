@@ -2,6 +2,7 @@
 using AssetRipper.Assets.Bundles;
 using AssetRipper.Export.Configuration;
 using AssetRipper.Export.UnityProjects.UserPackages;
+using AssetRipper.Export.UserPackages;
 using AssetRipper.Export.UnityProjects.PathIdMapping;
 using AssetRipper.Export.UnityProjects.Project;
 using AssetRipper.Export.UnityProjects.Scripts;
@@ -119,6 +120,15 @@ public class ExportHandler
 		Settings.ExportRootPath = outputPath;
 		Settings.SetProjectSettings(gameData.ProjectVersion);
 
+		if (Settings.ExportSettings.RelinkUnityPackages)
+		{
+			//Built here rather than in the exporter because deciding what can be relinked needs the loaded game.
+			Settings.UnityPackageRelinker = UnityPackageRelinker.TryCreate(
+				gameData.ProjectVersion,
+				UnityPackageRelinker.GetReferencedScripts(gameData),
+				gameData.AssemblyManager.GetAssemblies().Select(a => a.Name!.ToString()));
+		}
+
 		ProjectExporter projectExporter = new(Settings, gameData.AssemblyManager);
 		BeforeExport(projectExporter);
 		projectExporter.DoFinalOverrides(Settings);
@@ -156,9 +166,11 @@ public class ExportHandler
 	protected virtual IEnumerable<IPostExporter> GetPostExporters()
 	{
 		yield return new ProjectVersionPostExporter();
-		yield return Settings.UserPackageData.Packages.Count > 0
-			? new UserPackageManifestPostExporter(Settings.UserPackageData)
-			: new PackageManifestPostExporter();
+		yield return Settings.UnityPackageRelinker is { } relinker
+			? new RelinkedPackageManifestPostExporter(relinker, Settings.UserPackageData)
+			: Settings.UserPackageData.Packages.Count > 0
+				? new UserPackageManifestPostExporter(Settings.UserPackageData)
+				: new PackageManifestPostExporter();
 		yield return new StreamingAssetsPostExporter();
 		yield return new DllPostExporter();
 		yield return new PathIdMapExporter();

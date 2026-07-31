@@ -72,6 +72,7 @@ partial class SettingsPage
 		{ nameof(ProcessingSettings.RemoveNullableAttributes), (value) => { Configuration.ProcessingSettings.RemoveNullableAttributes = value; } },
 		{ nameof(ProcessingSettings.PublicizeAssemblies), (value) => { Configuration.ProcessingSettings.PublicizeAssemblies = value; } },
 		{ nameof(ExportSettings.ScriptTypesFullyQualified), (value) => { Configuration.ExportSettings.ScriptTypesFullyQualified = value; } },
+		{ nameof(ExportSettings.RelinkUnityPackages), (value) => { Configuration.ExportSettings.RelinkUnityPackages = value; } },
 		{ nameof(ExportSettings.ExportUnreadableAssets), (value) => { Configuration.ExportSettings.ExportUnreadableAssets = value; } },
 		{ nameof(ExportSettings.PreferOriginalTextureExtension), (value) => { Configuration.ExportSettings.PreferOriginalTextureExtension = value; } },
 		{ nameof(ExportSettings.SaveSettingsToDisk), (value) => { Configuration.ExportSettings.SaveSettingsToDisk = value; } },
@@ -170,6 +171,11 @@ partial class SettingsPage
 	private static void WriteDropDownForTextExportMode(TextWriter writer)
 	{
 		WriteDropDown(writer, TextExportModeDropDownSetting.Instance, Configuration.ExportSettings.TextExportMode, nameof(ExportSettings.TextExportMode));
+	}
+
+	private static void WriteCheckBoxForRelinkUnityPackages(TextWriter writer, string label, bool disabled = false)
+	{
+		WriteCheckBox(writer, label, Configuration.ExportSettings.RelinkUnityPackages, nameof(ExportSettings.RelinkUnityPackages), disabled);
 	}
 
 	private static void WriteCheckBoxForExportUnreadableAssets(TextWriter writer, string label, bool disabled = false)

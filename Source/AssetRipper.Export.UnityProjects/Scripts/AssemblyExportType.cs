@@ -14,4 +14,9 @@ public enum AssemblyExportType
 	/// The assembly is a framework assembly and should be skipped.
 	/// </summary>
 	Skip,
+	/// <summary>
+	/// The assembly belongs to a package the project references instead, so it is neither written nor decompiled and
+	/// its scripts point into that package.
+	/// </summary>
+	Relink,
 }

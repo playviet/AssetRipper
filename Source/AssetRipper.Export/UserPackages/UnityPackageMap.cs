@@ -1,4 +1,4 @@
-namespace AssetRipper.Export.UnityProjects.UserPackages;
+namespace AssetRipper.Export.UserPackages;
 
 /// <summary>
 /// Maps the assemblies a build contains to the Unity packages they came from.
@@ -62,6 +62,10 @@ public static class UnityPackageMap
 		{ "Unity.Services.Core.Scheduler", "com.unity.services.core" },
 		{ "Unity.Services.Core.Telemetry", "com.unity.services.core" },
 		{ "Unity.Services.Core.Threading", "com.unity.services.core" },
+
+		// Unity redistributes Newtonsoft.Json as a package, and several other packages compile against it. A build's
+		// stripped copy left in the project shadows the real one and breaks those packages' own source.
+		{ "Newtonsoft.Json", "com.unity.nuget.newtonsoft-json" },
 
 		{ "Unity.Timeline", "com.unity.timeline" },
 		{ "Unity.VisualScripting.Core", "com.unity.visualscripting" },

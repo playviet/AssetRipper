@@ -54,6 +54,16 @@ public sealed record class ExportSettings
 	/// </summary>
 	public TextExportMode TextExportMode { get; set; } = TextExportMode.Parse;
 
+	/// <summary>
+	/// Replace a build's package assemblies with a reference to the package they came from.
+	/// </summary>
+	/// <remarks>
+	/// Requires the matching editor version to be installed, because the package version and the script GUIDs are read
+	/// from it rather than guessed. Off by default: it changes what the project references, and an assembly is only
+	/// replaced when every script the game points at inside it can be found in the package.
+	/// </remarks>
+	public bool RelinkUnityPackages { get; set; } = false;
+
 	public bool ExportUnreadableAssets { get; set; } = false;
 
 	/// <summary>
@@ -74,6 +84,7 @@ public sealed record class ExportSettings
 		Logger.Info(LogCategory.General, $"{nameof(ScriptLanguageVersion)}: {ScriptLanguageVersion}");
 		Logger.Info(LogCategory.General, $"{nameof(ShaderExportMode)}: {ShaderExportMode}");
 		Logger.Info(LogCategory.General, $"{nameof(ShaderNamingMode)}: {ShaderNamingMode}");
+		Logger.Info(LogCategory.General, $"{nameof(RelinkUnityPackages)}: {RelinkUnityPackages}");
 		Logger.Info(LogCategory.General, $"{nameof(SpriteExportMode)}: {SpriteExportMode}");
 		Logger.Info(LogCategory.General, $"{nameof(TextExportMode)}: {TextExportMode}");
 		Logger.Info(LogCategory.General, $"{nameof(ExportUnreadableAssets)}: {ExportUnreadableAssets}");

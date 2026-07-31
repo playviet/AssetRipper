@@ -177,6 +177,10 @@ public sealed partial class SettingsPage : DefaultPage
 								{
 									WriteCheckBoxForExportUnreadableAssets(writer, Localization.ExportUnreadableAssets);
 								}
+								using (new Div(writer).WithClass("col").End())
+								{
+									WriteCheckBoxForRelinkUnityPackages(writer, Localization.RelinkUnityPackages);
+								}
 							}
 
 							using (new Div(writer).WithClass("row").End())
