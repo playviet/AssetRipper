@@ -86,6 +86,11 @@ public class ExportHandler
 		{
 			yield return new GeneratedCodeRemovalProcessor();
 		}
+		if (Settings.ImportSettings.ScriptContentLevel == ScriptContentLevel.Level3)
+		{
+			//Only Level3 reconstructs method bodies, and only a reconstructed one is ever unreadable.
+			yield return new UnreadableMethodBodyProcessor();
+		}
 		yield return new InjectedAttributeUsageProcessor();
 		yield return new RemoveAssemblyKeyFileAttributeProcessor();
 		yield return new InternalsVisibileToPublicKeyRemover();
