@@ -22,9 +22,7 @@ public sealed class ScriptContentLevelDropDownSetting : DropDownSetting<ScriptCo
 		ScriptContentLevel.Level0 => Localization.ScriptContentLevel0Description,
 		ScriptContentLevel.Level1 => Localization.ScriptContentLevel1Description,
 		ScriptContentLevel.Level2 => Localization.ScriptContentLevel2Description,
-		ScriptContentLevel.Level3 => GameFileLoader.Premium
-			? Localization.ScriptContentLevel3Description
-			: Localization.NotAvailableInTheFreeEdition,
+		ScriptContentLevel.Level3 => Localization.ScriptContentLevel3Description,
 		_ => base.GetDescription(value),
 	};
 }

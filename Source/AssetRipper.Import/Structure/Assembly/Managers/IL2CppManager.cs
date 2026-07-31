@@ -40,9 +40,23 @@ public sealed class IL2CppManager : BaseManager
 
 	public static AsmResolverDllOutputFormatDefault DefaultOutputFormat { get; } = new();
 
-	public static List<Cpp2IlProcessingLayer>? RecoveryProcessingLayers { get; set; }
+	/// <summary>
+	/// Used for <see cref="ScriptContentLevel.Level3"/>.
+	/// <see cref="CallAnalysisProcessingLayer"/> resolves call targets, which the IL recovery in
+	/// <see cref="RecoveryOutputFormat"/> relies on when reconstructing method bodies.
+	/// </summary>
+	public static List<Cpp2IlProcessingLayer>? RecoveryProcessingLayers { get; set; } =
+	[
+		new AttributeAnalysisProcessingLayer(),
+		new CallAnalysisProcessingLayer(),
+		new MethodOverrideNameFixer(),
+	];
 
-	public static AsmResolverDllOutputFormat? RecoveryOutputFormat { get; set; }
+	/// <summary>
+	/// Used for <see cref="ScriptContentLevel.Level3"/>.
+	/// Analyzes each method and emits recovered CIL, falling back to a throwing stub when analysis fails.
+	/// </summary>
+	public static AsmResolverDllOutputFormat? RecoveryOutputFormat { get; set; } = new AsmResolverDllOutputFormatIlRecovery();
 
 	public static event Action? ClearStaticState;
 
