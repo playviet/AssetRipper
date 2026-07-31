@@ -8,7 +8,10 @@ public abstract class YamlExporterBase : IAssetExporter
 {
 	public abstract bool TryCreateCollection(IUnityObjectBase asset, [NotNullWhen(true)] out IExportCollection? exportCollection);
 
-	public bool Export(IExportContainer container, IUnityObjectBase asset, string path, FileSystem fileSystem)
+	/// <summary>
+	/// Virtual so that a subclass can write an asset in its own format without having to replace the whole exporter.
+	/// </summary>
+	public virtual bool Export(IExportContainer container, IUnityObjectBase asset, string path, FileSystem fileSystem)
 	{
 		using Stream fileStream = fileSystem.File.Create(path);
 		using InvariantStreamWriter streamWriter = new InvariantStreamWriter(fileStream, UTF8);

@@ -5,6 +5,7 @@ using AssetRipper.Export.UnityProjects.UserPackages;
 using AssetRipper.Export.UnityProjects.PathIdMapping;
 using AssetRipper.Export.UnityProjects.Project;
 using AssetRipper.Export.UnityProjects.Scripts;
+using AssetRipper.Export.UnityProjects.Shaders;
 using AssetRipper.Import.Configuration;
 using AssetRipper.Import.Logging;
 using AssetRipper.Import.Structure;
@@ -100,6 +101,8 @@ public class ExportHandler
 		}
 		yield return new SpriteProcessor();
 		yield return new ScriptableObjectProcessor();
+
+		yield return new ShaderNamingProcessor(Settings.ExportSettings.ShaderNamingMode);
 
 		//Last, so that it overrides the paths chosen by everything above.
 		yield return new AssetPathOverrideProcessor(Settings.AssetPathOverrideData);

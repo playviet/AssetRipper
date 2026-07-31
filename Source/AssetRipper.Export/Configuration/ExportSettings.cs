@@ -40,6 +40,11 @@ public sealed record class ExportSettings
 	public ShaderExportMode ShaderExportMode { get; set; } = ShaderExportMode.Dummy;
 
 	/// <summary>
+	/// What are exported shaders called?
+	/// </summary>
+	public ShaderNamingMode ShaderNamingMode { get; set; } = ShaderNamingMode.Original;
+
+	/// <summary>
 	/// Should sprites be exported as a texture? Recommended: Native
 	/// </summary>
 	public SpriteExportMode SpriteExportMode { get; set; } = SpriteExportMode.Yaml;
@@ -68,6 +73,7 @@ public sealed record class ExportSettings
 		Logger.Info(LogCategory.General, $"{nameof(ScriptExportMode)}: {ScriptExportMode}");
 		Logger.Info(LogCategory.General, $"{nameof(ScriptLanguageVersion)}: {ScriptLanguageVersion}");
 		Logger.Info(LogCategory.General, $"{nameof(ShaderExportMode)}: {ShaderExportMode}");
+		Logger.Info(LogCategory.General, $"{nameof(ShaderNamingMode)}: {ShaderNamingMode}");
 		Logger.Info(LogCategory.General, $"{nameof(SpriteExportMode)}: {SpriteExportMode}");
 		Logger.Info(LogCategory.General, $"{nameof(TextExportMode)}: {TextExportMode}");
 		Logger.Info(LogCategory.General, $"{nameof(ExportUnreadableAssets)}: {ExportUnreadableAssets}");
