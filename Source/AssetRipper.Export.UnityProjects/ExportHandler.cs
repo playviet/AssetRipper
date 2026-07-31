@@ -1,5 +1,7 @@
-﻿using AssetRipper.Assets.Bundles;
+﻿using AssetRipper.Assets;
+using AssetRipper.Assets.Bundles;
 using AssetRipper.Export.Configuration;
+using AssetRipper.Export.UnityProjects.UserPackages;
 using AssetRipper.Export.UnityProjects.PathIdMapping;
 using AssetRipper.Export.UnityProjects.Project;
 using AssetRipper.Export.UnityProjects.Scripts;
@@ -98,6 +100,9 @@ public class ExportHandler
 		}
 		yield return new SpriteProcessor();
 		yield return new ScriptableObjectProcessor();
+
+		//Last, so that it overrides the paths chosen by everything above.
+		yield return new AssetPathOverrideProcessor(Settings.AssetPathOverrideData);
 	}
 
 	public void Export(GameData gameData, string outputPath, FileSystem fileSystem)
@@ -135,13 +140,21 @@ public class ExportHandler
 
 	protected virtual void BeforeExport(ProjectExporter projectExporter)
 	{
-		// Needed for the premium edition
+		UserPackageExporter userPackageExporter = new(Settings.UserPackageData);
+		if (userPackageExporter.HasPackages)
+		{
+			//Registered here so that it takes precedence over every exporter that writes the asset out.
+			projectExporter.OverrideExporter<IUnityObjectBase>(userPackageExporter);
+			projectExporter.UserPackageExporter = userPackageExporter;
+		}
 	}
 
 	protected virtual IEnumerable<IPostExporter> GetPostExporters()
 	{
 		yield return new ProjectVersionPostExporter();
-		yield return new PackageManifestPostExporter();
+		yield return Settings.UserPackageData.Packages.Count > 0
+			? new UserPackageManifestPostExporter(Settings.UserPackageData)
+			: new PackageManifestPostExporter();
 		yield return new StreamingAssetsPostExporter();
 		yield return new DllPostExporter();
 		yield return new PathIdMapExporter();

@@ -20,6 +20,18 @@ public class FullConfiguration : CoreConfiguration
 		set => SingletonData.SetStoredValue(nameof(ExportSettings), value);
 	}
 
+	public AssetPathOverrideData AssetPathOverrideData
+	{
+		get => SingletonData.GetStoredValue<AssetPathOverrideData>(nameof(AssetPathOverrideData));
+		set => SingletonData.SetStoredValue(nameof(AssetPathOverrideData), value);
+	}
+
+	public UserPackageData UserPackageData
+	{
+		get => SingletonData.GetStoredValue<UserPackageData>(nameof(UserPackageData));
+		set => SingletonData.SetStoredValue(nameof(UserPackageData), value);
+	}
+
 	public bool SaveSettingsToDisk => ExportSettings.SaveSettingsToDisk;
 
 	public string? LanguageCode
@@ -33,6 +45,8 @@ public class FullConfiguration : CoreConfiguration
 		SingletonData.Add(nameof(ProcessingSettings), new JsonDataInstance<ProcessingSettings>(SerializedSettingsContext.Default.ProcessingSettings));
 		SingletonData.Add(nameof(ExportSettings), new JsonDataInstance<ExportSettings>(SerializedSettingsContext.Default.ExportSettings));
 		SingletonData.Add(nameof(EngineResourceData), new JsonDataInstance<EngineResourceData?>(EngineResourceDataContext.Default.NullableEngineResourceData));
+		SingletonData.Add(nameof(AssetPathOverrideData), new JsonDataInstance<AssetPathOverrideData>(UserDataContext.Default.AssetPathOverrideData));
+		SingletonData.Add(nameof(UserPackageData), new JsonDataInstance<UserPackageData>(UserDataContext.Default.UserPackageData));
 	}
 
 	public override void LogConfigurationValues()
