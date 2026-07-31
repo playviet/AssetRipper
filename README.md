@@ -233,6 +233,21 @@ Both files are optional and are loaded from the GUI's configuration files page.
 }
 ```
 
+**Embedded files** pull a payload out of a serialized field and write it as a real file. Games often keep their own
+data — maps, level definitions, dialogue, custom mesh formats — in a byte array or string field on a ScriptableObject
+rather than as an asset Unity understands, and exported normally that ends up inline in a YAML file that nothing can
+open. A MonoBehaviour must match every condition a rule specifies, and a rule whose field is not present is ignored so
+the asset still exports as usual.
+
+```json
+{
+  "rules": [
+    { "scriptNamespace": "Timberborn.BlueprintSystem", "nameSuffix": "blueprint", "field": "_content", "extension": "blueprint", "text": true },
+    { "scriptNamespace": "Timberborn.AssetSystem", "directoryPrefix": "Assets/Resources/maps", "field": "_bytes", "extension": "timber" }
+  ]
+}
+```
+
 **User defined packages** stop assets that also ship inside a third party package from being written out as duplicate
 copies. Declared assets are redirected to their identity inside the package, and the package is added to
 `Packages/manifest.json`.

@@ -20,6 +20,8 @@ public sealed partial class ProjectExporter
 
 	internal UserPackages.UserPackageExporter? UserPackageExporter { get; set; }
 
+	internal EmbeddedFiles.EmbeddedFileExporter? EmbeddedFileExporter { get; set; }
+
 	/// <summary>Adds an exporter to the stack of exporters for this asset type.</summary>
 	/// <typeparam name="T">The c sharp type of this asset type. Any inherited types also get this exporter.</typeparam>
 	/// <param name="exporter">The new exporter. If it doesn't work, the next one in the stack is used.</param>
@@ -105,6 +107,7 @@ public sealed partial class ProjectExporter
 			}
 			EventExportProgressUpdated?.Invoke(i, collections.Count);
 		}
+		EmbeddedFileExporter?.LogSummary();
 		EventExportFinished?.Invoke();
 	}
 

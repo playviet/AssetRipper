@@ -32,6 +32,12 @@ public class FullConfiguration : CoreConfiguration
 		set => SingletonData.SetStoredValue(nameof(UserPackageData), value);
 	}
 
+	public EmbeddedFileData EmbeddedFileData
+	{
+		get => SingletonData.GetStoredValue<EmbeddedFileData>(nameof(EmbeddedFileData));
+		set => SingletonData.SetStoredValue(nameof(EmbeddedFileData), value);
+	}
+
 	/// <summary>
 	/// Set for the duration of an export when package relinking is enabled and an editor was found to read from.
 	/// Not a stored setting; it depends on the loaded game.
@@ -53,6 +59,7 @@ public class FullConfiguration : CoreConfiguration
 		SingletonData.Add(nameof(EngineResourceData), new JsonDataInstance<EngineResourceData?>(EngineResourceDataContext.Default.NullableEngineResourceData));
 		SingletonData.Add(nameof(AssetPathOverrideData), new JsonDataInstance<AssetPathOverrideData>(UserDataContext.Default.AssetPathOverrideData));
 		SingletonData.Add(nameof(UserPackageData), new JsonDataInstance<UserPackageData>(UserDataContext.Default.UserPackageData));
+		SingletonData.Add(nameof(EmbeddedFileData), new JsonDataInstance<EmbeddedFileData>(UserDataContext.Default.EmbeddedFileData));
 	}
 
 	public override void LogConfigurationValues()

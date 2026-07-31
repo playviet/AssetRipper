@@ -3,6 +3,7 @@ using AssetRipper.Assets.Bundles;
 using AssetRipper.Export.Configuration;
 using AssetRipper.Export.UnityProjects.UserPackages;
 using AssetRipper.Export.UserPackages;
+using AssetRipper.Export.UnityProjects.EmbeddedFiles;
 using AssetRipper.Export.UnityProjects.PathIdMapping;
 using AssetRipper.Export.UnityProjects.Project;
 using AssetRipper.Export.UnityProjects.Scripts;
@@ -20,6 +21,7 @@ using AssetRipper.Processing.Prefabs;
 using AssetRipper.Processing.Scenes;
 using AssetRipper.Processing.ScriptableObject;
 using AssetRipper.Processing.Textures;
+using AssetRipper.SourceGenerated.Classes.ClassID_114;
 
 namespace AssetRipper.Export.UnityProjects;
 
@@ -154,6 +156,14 @@ public class ExportHandler
 
 	protected virtual void BeforeExport(ProjectExporter projectExporter)
 	{
+		EmbeddedFileExporter embeddedFileExporter = new(Settings.EmbeddedFileData);
+		if (embeddedFileExporter.HasRules)
+		{
+			//Ahead of the normal MonoBehaviour exporters, so a matched asset becomes its payload rather than yaml.
+			projectExporter.OverrideExporter<IMonoBehaviour>(embeddedFileExporter);
+			projectExporter.EmbeddedFileExporter = embeddedFileExporter;
+		}
+
 		UserPackageExporter userPackageExporter = new(Settings.UserPackageData);
 		if (userPackageExporter.HasPackages)
 		{
