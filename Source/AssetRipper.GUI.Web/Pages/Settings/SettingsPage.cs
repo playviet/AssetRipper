@@ -44,7 +44,7 @@ public sealed partial class SettingsPage : DefaultPage
 								}
 								using (new Div(writer).WithClass("col").End())
 								{
-									WriteCheckBoxForEnableStaticMeshSeparation(writer, Localization.EnableStaticMeshSeparation, !GameFileLoader.Premium);
+									WriteCheckBoxForEnableStaticMeshSeparation(writer, Localization.EnableStaticMeshSeparation);
 								}
 							}
 
