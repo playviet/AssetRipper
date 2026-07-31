@@ -7,7 +7,7 @@ made Il2Cpp method body recovery work. Script content level 3 is a different fea
 
 So the two packages here are built locally instead, and `nuget.config` adds this folder as a package source.
 
-## What 1.0.22 is
+## What 1.0.26 is
 
 * `SamboyCoding/Cpp2IL` `development` (`b20ca0d`, "Lib: Fix v106"), which is still its head
 * the three commits the `assetripper` branch adds on top, cherry picked: `Move dependencies into main projects`,
@@ -53,9 +53,17 @@ So the two packages here are built locally instead, and `nuget.config` adds this
       runtime class handle, which is a native integer, so that said something the code never did — and it did not
       compile either, because the constructor it picked was often one the project cannot reach.
 
+  11. `NewArmV8InstructionSet` named every floating point argument and return `v0`, but the disassembler names the
+      register by the width in use, so a float is `s0` and a double `d0`. Nothing connected a float argument to where
+      it was read, and every one came out as `default(float)`.
+  12. `IlGenerator` returned whatever was in x0 for a method returning a struct. Aapcs64 returns a struct in the
+      vector registers, in a pair of general purpose registers, or through memory the caller points x8 at - never in
+      x0 alone, where the receiver usually still sits. Returning it says something plainly untrue and does not
+      compile, so a method whose return could not be recovered now returns a default instead.
+
 Measured on an arm64 Android game: the placeholders recovery writes where it could not translate a call fell from
-15532 to 6332, recovered object creation went from 11 expressions to 549, and the share of methods recovered as
-compiling code with nothing commented out went from 12.5 to 14.8 percent.
+15532 to 6497, recovered object creation went from 11 expressions to 686, string literals from none to 18943, and the
+share of methods recovered as compiling code with nothing commented out went from 12.5 to 34.3 percent.
 
 ## Rebuilding
 
