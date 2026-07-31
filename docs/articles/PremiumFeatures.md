@@ -35,9 +35,14 @@ For performance, mscorlib and any assemblies whose names start with System or Un
 
 Arm64 is analyzed with `NewArmV8InstructionSet`. The older `Arm64InstructionSet` produces no ISIL at all, so nothing downstream of it can reconstruct anything, and an arm64 game would come out with empty methods however high the content level was set.
 
-An arm64 Android game measured 86 percent of methods reconstructed into a body that a decompiler accepts. The remaining 14 percent are discarded by `UnreadableMethodBodyProcessor`, because handing one of them to the decompiler costs the whole file its contents rather than just that method. Improvements are ongoing.
+A reconstructed body is only kept if it survives two checks, because one that does not costs far more than the method it came from:
 
-What comes out is a readable trace of what the native code does, not the original source. Expect calls into helpers the analysis could not name, values it could not type, and a few files that do not compile. Level 2 remains the setting for a project that has to build.
+* `UnreadableMethodBodyProcessor` drops the bodies no reader accepts, such as a branch that points outside the method. The decompiler throws on one of those, and it decompiles a whole file at a time, so the type that contained the method would be written out as an empty file.
+* `InvalidSourceRepair` compiles the decompiled source against the assemblies it was recovered alongside, and drops the bodies the errors point at. The editor compiles an assembly as a whole, so a single body that does not compile would cost the project every script in it.
+
+On an arm64 Android game, 19456 methods were analyzed, 2757 produced a body no reader accepts, and a further 2950 produced source that does not compile. The remaining 71 percent came out as a project that builds with no errors. Improvements are ongoing.
+
+What comes out is a readable trace of what the native code does, not the original source. Expect calls into helpers the analysis could not name and values it could not type. Level 2 remains the setting for a faithful project; Level 3 is for reading the logic.
 
 ## Asset Deduplication
 

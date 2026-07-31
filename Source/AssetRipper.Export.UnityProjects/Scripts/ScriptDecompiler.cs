@@ -12,20 +12,56 @@ namespace AssetRipper.Export.UnityProjects.Scripts;
 
 internal class ScriptDecompiler
 {
-	private readonly ILSpyAssemblyResolver assemblyResolver;
+	/// <summary>
+	/// How many times an assembly may be decompiled again after discarding the bodies that did not compile.
+	/// </summary>
+	/// <remarks>
+	/// One is normally enough, since a discarded body is replaced by one that cannot fail to decompile. A second is
+	/// there for the case where removing a body changes what the decompiler makes of the rest of its type.
+	/// </remarks>
+	private const int MaxRepairAttempts = 2;
+
+	private readonly IAssemblyManager assemblyManager;
+	private ILSpyAssemblyResolver assemblyResolver;
 	public LanguageVersion LanguageVersion { get; set; } = LanguageVersion.CSharp7_3;
 	public ScriptContentLevel ScriptContentLevel { get; set; } = ScriptContentLevel.Level2;
 	public ScriptingBackend ScriptingBackend { get; set; } = ScriptingBackend.Unknown;
 	public bool FullyQualifiedTypeNames { get; set; } = false;
 
-	public ScriptDecompiler(IAssemblyManager assemblyManager) : this(new ILSpyAssemblyResolver(assemblyManager), assemblyManager.ScriptingBackend) { }
-	private ScriptDecompiler(ILSpyAssemblyResolver assemblyResolver, ScriptingBackend scriptingBackend)
+	public ScriptDecompiler(IAssemblyManager assemblyManager)
 	{
-		this.assemblyResolver = assemblyResolver;
-		ScriptingBackend = scriptingBackend;
+		this.assemblyManager = assemblyManager;
+		assemblyResolver = new ILSpyAssemblyResolver(assemblyManager);
+		ScriptingBackend = assemblyManager.ScriptingBackend;
 	}
 
 	public void DecompileWholeProject(AssemblyDefinition assembly, string outputFolder, FileSystem fileSystem)
+	{
+		for (int attempt = 0; ; attempt++)
+		{
+			CustomWholeProjectDecompiler decompiler = new(CreateSettings(), assemblyResolver, fileSystem);
+
+			DecompileWholeProject(decompiler, assembly, outputFolder);
+
+			//Only recovered bodies produce source that does not compile, and only Level3 recovers any.
+			if (ScriptContentLevel != ScriptContentLevel.Level3 || attempt >= MaxRepairAttempts)
+			{
+				return;
+			}
+
+			if (!InvalidSourceRepair.Apply(assembly, assemblyManager, outputFolder, fileSystem))
+			{
+				return;
+			}
+
+			//The resolver hands the decompiler a serialized copy of the assembly, so both it and the cached stream it
+			//was made from have to go before the edited assembly can be decompiled again.
+			assemblyManager.ClearStreamCache();
+			assemblyResolver = new ILSpyAssemblyResolver(assemblyManager);
+		}
+	}
+
+	private DecompilerSettings CreateSettings()
 	{
 		DecompilerSettings settings = new();
 
@@ -42,9 +78,7 @@ internal class ScriptDecompiler
 			settings.UsingDeclarations = false;
 		}
 
-		CustomWholeProjectDecompiler decompiler = new(settings, assemblyResolver, fileSystem);
-
-		DecompileWholeProject(decompiler, assembly, outputFolder);
+		return settings;
 	}
 
 	private void DecompileWholeProject(WholeProjectDecompiler decompiler, AssemblyDefinition assembly, string outputFolder)
