@@ -1,186 +1,163 @@
-using AsmResolver.DotNet;
-using AsmResolver.DotNet.Code.Cil;
-using AsmResolver.DotNet.Signatures;
-using AsmResolver.PE.DotNet.Cil;
-using AsmResolver.PE.DotNet.Metadata.Tables;
 using AssetRipper.Export.UnityProjects.Scripts;
 using AssetRipper.IO.Files;
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
 
 namespace AssetRipper.Tests;
 
 internal class InvalidSourceRepairTests
 {
 	private const string OutputFolder = "/Scripts";
+	private const string FileName = "Widget.cs";
 
 	/// <summary>
-	/// An assembly with one type whose two methods both have a body, standing in for a decompiled assembly.
+	/// The running runtime, which is enough to compile the snippets here.
 	/// </summary>
-	private static AssemblyDefinition CreateAssembly(out MethodDefinition kept, out MethodDefinition broken, string brokenName = "Broken")
+	private static List<MetadataReference> CreateReferences()
 	{
-		AssemblyDefinition assembly = new("Assembly-CSharp", new Version(1, 0, 0, 0));
-		ModuleDefinition module = new("Assembly-CSharp.dll", KnownCorLibs.SystemRuntime_v9_0_0_0);
-		assembly.Modules.Add(module);
-
-		TypeDefinition type = new("Game", "Widget", TypeAttributes.Public);
-		module.TopLevelTypes.Add(type);
-
-		kept = CreateMethod(module, "Kept");
-		broken = CreateMethod(module, brokenName);
-		type.Methods.Add(kept);
-		type.Methods.Add(broken);
-
-		return assembly;
+		string directory = Path.GetDirectoryName(typeof(object).Assembly.Location)!;
+		List<MetadataReference> references = [];
+		foreach (string path in Directory.EnumerateFiles(directory, "*.dll"))
+		{
+			try
+			{
+				references.Add(MetadataReference.CreateFromFile(path));
+			}
+			catch (Exception)
+			{
+				//Not every file next to the runtime is a managed assembly.
+			}
+		}
+		return references;
 	}
 
-	private static MethodDefinition CreateMethod(ModuleDefinition module, string name)
-	{
-		MethodDefinition method = new(name, MethodAttributes.Public, MethodSignature.CreateInstance(module.CorLibTypeFactory.Void));
-		method.CilMethodBody = new CilMethodBody();
-		method.CilMethodBody.Instructions.Add(CilOpCodes.Nop);
-		method.CilMethodBody.Instructions.Add(CilOpCodes.Ret);
-		return method;
-	}
-
-	private static VirtualFileSystem CreateFileSystem(string source)
+	private static string Repair(string source, bool compile = false)
 	{
 		VirtualFileSystem fileSystem = new();
 		fileSystem.Directory.Create(OutputFolder);
-		fileSystem.File.WriteAllText(fileSystem.Path.Join(OutputFolder, "Widget.cs"), source);
-		return fileSystem;
-	}
+		string path = fileSystem.Path.Join(OutputFolder, FileName);
+		fileSystem.File.WriteAllText(path, source);
 
-	private static bool IsStubbed(MethodDefinition method)
-	{
-		return method.CilMethodBody!.Instructions.Select(i => i.OpCode).SequenceEqual([CilOpCodes.Ret]);
+		InvalidSourceRepair.Apply(compile ? CreateReferences() : [], LanguageVersion.CSharp9, OutputFolder, fileSystem);
+
+		return fileSystem.File.ReadAllText(path);
 	}
 
 	[Test]
-	public void SourceThatDoesNotParseCostsItsMethodItsBody()
+	public void AStatementThatDoesNotParseIsCommentedOut()
 	{
-		AssemblyDefinition assembly = CreateAssembly(out MethodDefinition kept, out MethodDefinition broken);
-		// A by-ref argument used as a value, which the decompiler writes as a complement of a ref expression.
-		VirtualFileSystem fileSystem = CreateFileSystem("""
+		//A by-ref argument used as a value, which the decompiler writes as a complement of a ref expression.
+		string result = Repair("""
 			namespace Game
 			{
 				public class Widget
 				{
-					public void Kept()
-					{
-					}
-
 					public void Broken(ref int value)
 					{
+						int kept = 1;
 						int result = ~(ref value);
+						int alsoKept = 2;
 					}
 				}
 			}
 			""");
 
-		bool repaired = InvalidSourceRepair.Apply(assembly, [], OutputFolder, fileSystem);
-
 		using (Assert.EnterMultipleScope())
 		{
-			Assert.That(repaired, Is.True);
-			Assert.That(IsStubbed(broken), Is.True);
-			Assert.That(IsStubbed(kept), Is.False);
+			Assert.That(result, Does.Contain("\t\t\t//int result = ~(ref value);"));
+			Assert.That(result, Does.Contain("\n\t\t\tint kept = 1;"));
+			Assert.That(result, Does.Contain("\n\t\t\tint alsoKept = 2;"));
 		}
 	}
 
 	[Test]
-	public void AnUnboundGenericNameCostsItsMethodItsBody()
+	public void AnUnboundGenericNameIsCommentedOut()
 	{
-		AssemblyDefinition assembly = CreateAssembly(out MethodDefinition kept, out MethodDefinition broken);
-		// This parses, but a generic name without its arguments is only valid inside a typeof.
-		VirtualFileSystem fileSystem = CreateFileSystem("""
+		//This parses, but a generic name without its arguments is only valid inside a typeof.
+		string result = Repair("""
 			namespace Game
 			{
 				public class Widget
 				{
-					public void Kept()
-					{
-						System.Type type = typeof(System.Collections.Generic.List<>);
-					}
-
 					public void Broken()
 					{
+						System.Type kept = typeof(System.Collections.Generic.List<>);
 						object value = (System.Collections.Generic.List<>)(object)this;
 					}
 				}
 			}
 			""");
 
-		bool repaired = InvalidSourceRepair.Apply(assembly, [], OutputFolder, fileSystem);
-
 		using (Assert.EnterMultipleScope())
 		{
-			Assert.That(repaired, Is.True);
-			Assert.That(IsStubbed(broken), Is.True);
-			Assert.That(IsStubbed(kept), Is.False);
+			Assert.That(result, Does.Contain("\t\t\t//object value = (System.Collections.Generic.List<>)(object)this;"));
+			Assert.That(result, Does.Contain("\n\t\t\tSystem.Type kept = typeof(System.Collections.Generic.List<>);"));
 		}
 	}
 
 	[Test]
-	public void AGeneratedMethodIsMatchedThroughTheNameItWasWrittenUnder()
+	public void AMethodThatNoLongerReturnsIsGivenSomethingToReturn()
 	{
-		// The compiler names the members it generates with characters a C# identifier cannot contain, and the
-		// decompiler escapes each one as an underscore and its code point.
-		AssemblyDefinition assembly = CreateAssembly(out MethodDefinition kept, out MethodDefinition broken, "<>m__Finally1");
-		VirtualFileSystem fileSystem = CreateFileSystem("""
+		string result = Repair("""
 			namespace Game
 			{
 				public class Widget
 				{
-					public void Kept()
+					public int Broken(ref int value)
 					{
+						return ~(ref value);
 					}
+				}
+			}
+			""", compile: true);
 
-					private void _003C_003Em__Finally1(ref int value)
+		using (Assert.EnterMultipleScope())
+		{
+			Assert.That(result, Does.Contain("\t\t\t//return ~(ref value);"));
+			Assert.That(result, Does.Contain("return default;"));
+		}
+	}
+
+	[Test]
+	public void TheMessagesRecoveryLeavesBehindAreCommentedOut()
+	{
+		string result = Repair("""
+			namespace Game
+			{
+				public class Widget
+				{
+					public void Trace()
 					{
-						int result = ~(ref value);
+						System.Console.WriteLine("Method not found @2183D8C");
+						System.Console.WriteLine("a message of the game's own");
 					}
 				}
 			}
 			""");
 
-		bool repaired = InvalidSourceRepair.Apply(assembly, [], OutputFolder, fileSystem);
-
 		using (Assert.EnterMultipleScope())
 		{
-			Assert.That(repaired, Is.True);
-			Assert.That(IsStubbed(broken), Is.True);
-			Assert.That(IsStubbed(kept), Is.False);
+			Assert.That(result, Does.Contain("\t\t\t//System.Console.WriteLine(\"Method not found @2183D8C\");"));
+			Assert.That(result, Does.Contain("\n\t\t\tSystem.Console.WriteLine(\"a message of the game's own\");"));
 		}
 	}
 
 	[Test]
 	public void ValidSourceIsLeftAlone()
 	{
-		AssemblyDefinition assembly = CreateAssembly(out MethodDefinition kept, out MethodDefinition broken);
-		VirtualFileSystem fileSystem = CreateFileSystem("""
+		const string Source = """
 			namespace Game
 			{
 				public class Widget
 				{
-					public void Kept()
+					public int Kept()
 					{
-					}
-
-					public void Broken()
-					{
-						System.Type type = typeof(System.Collections.Generic.List<>);
+						return 1;
 					}
 				}
 			}
-			""");
+			""";
 
-		bool repaired = InvalidSourceRepair.Apply(assembly, [], OutputFolder, fileSystem);
-
-		using (Assert.EnterMultipleScope())
-		{
-			Assert.That(repaired, Is.False);
-			Assert.That(IsStubbed(broken), Is.False);
-			Assert.That(IsStubbed(kept), Is.False);
-		}
+		Assert.That(Repair(Source), Is.EqualTo(Source));
 	}
 }

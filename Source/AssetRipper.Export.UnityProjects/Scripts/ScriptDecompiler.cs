@@ -12,17 +12,8 @@ namespace AssetRipper.Export.UnityProjects.Scripts;
 
 internal class ScriptDecompiler
 {
-	/// <summary>
-	/// How many times an assembly may be decompiled again after discarding the bodies that did not compile.
-	/// </summary>
-	/// <remarks>
-	/// One is normally enough, since a discarded body is replaced by one that cannot fail to decompile. A second is
-	/// there for the case where removing a body changes what the decompiler makes of the rest of its type.
-	/// </remarks>
-	private const int MaxRepairAttempts = 2;
-
 	private readonly IAssemblyManager assemblyManager;
-	private ILSpyAssemblyResolver assemblyResolver;
+	private readonly ILSpyAssemblyResolver assemblyResolver;
 	public LanguageVersion LanguageVersion { get; set; } = LanguageVersion.CSharp7_3;
 	public ScriptContentLevel ScriptContentLevel { get; set; } = ScriptContentLevel.Level2;
 	public ScriptingBackend ScriptingBackend { get; set; } = ScriptingBackend.Unknown;
@@ -37,28 +28,35 @@ internal class ScriptDecompiler
 
 	public void DecompileWholeProject(AssemblyDefinition assembly, string outputFolder, FileSystem fileSystem)
 	{
-		for (int attempt = 0; ; attempt++)
+		CustomWholeProjectDecompiler decompiler = new(CreateSettings(), assemblyResolver, fileSystem);
+
+		DecompileWholeProject(decompiler, assembly, outputFolder);
+
+		//Only recovered bodies produce source that does not compile, and only Level3 recovers any.
+		if (ScriptContentLevel == ScriptContentLevel.Level3)
 		{
-			CustomWholeProjectDecompiler decompiler = new(CreateSettings(), assemblyResolver, fileSystem);
-
-			DecompileWholeProject(decompiler, assembly, outputFolder);
-
-			//Only recovered bodies produce source that does not compile, and only Level3 recovers any.
-			if (ScriptContentLevel != ScriptContentLevel.Level3 || attempt >= MaxRepairAttempts)
-			{
-				return;
-			}
-
-			if (!InvalidSourceRepair.Apply(assembly, assemblyManager, outputFolder, fileSystem))
-			{
-				return;
-			}
-
-			//The resolver hands the decompiler a serialized copy of the assembly, so both it and the cached stream it
-			//was made from have to go before the edited assembly can be decompiled again.
-			assemblyManager.ClearStreamCache();
-			assemblyResolver = new ILSpyAssemblyResolver(assemblyManager);
+			InvalidSourceRepair.Apply(assembly, assemblyManager, GetRoslynLanguageVersion(), outputFolder, fileSystem);
 		}
+	}
+
+	/// <summary>
+	/// The version the decompiled source is written for, in the compiler's own terms.
+	/// </summary>
+	/// <remarks>
+	/// The two enums name the same versions, but the decompiler spells the whole numbered ones with a trailing zero:
+	/// its CSharp9_0 is the compiler's CSharp9. A version too new for the compiler to know falls back to its latest.
+	/// </remarks>
+	private Microsoft.CodeAnalysis.CSharp.LanguageVersion GetRoslynLanguageVersion()
+	{
+		string name = LanguageVersion.ToString();
+		if (name.EndsWith("_0", StringComparison.Ordinal))
+		{
+			name = name[..^2];
+		}
+
+		return Enum.TryParse(name, out Microsoft.CodeAnalysis.CSharp.LanguageVersion version)
+			? version
+			: Microsoft.CodeAnalysis.CSharp.LanguageVersion.Latest;
 	}
 
 	private DecompilerSettings CreateSettings()

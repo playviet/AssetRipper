@@ -51,9 +51,9 @@ The settings page controls import, processing and export. The ones worth knowing
 
 * **Script content level** — how much of the game's code to recover. Level 2 gives full method bodies for Mono games
   and empty ones for IL2CPP. Level 3 additionally attempts to recover IL2CPP method bodies; it is experimental. On an
-  arm64 Android build it keeps a body for around 70% of methods — the rest are dropped because they do not decompile
-  or do not compile — and the project still builds. The result is closer to a readable trace of the native code than
-  to the original source, so Level 2 remains the faithful option and Level 3 is for reading the logic.
+  arm64 Android build it keeps a body for around 83% of methods, with the statements it could not make sense of left
+  in as comments, and the project still builds. The result is closer to a readable trace of the native code than to
+  the original source, so Level 2 remains the faithful option and Level 3 is for reading the logic.
 * **Shader export mode** — `Dummy` writes stubs that compile, `Yaml` writes the raw asset, `Decompile` recovers the
   real programs. See [Shaders](#shaders) below for what that yields per platform.
 * **Shader naming** — `Suffixed` appends ` (Ripped)` to shader names. A build contains the shaders of whatever render
