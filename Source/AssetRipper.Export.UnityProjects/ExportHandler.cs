@@ -92,6 +92,10 @@ public class ExportHandler
 		}
 		yield return new LightingDataProcessor();//Needs to be after static mesh separation
 		yield return new PrefabProcessor();
+		if (Settings.ProcessingSettings.EnablePrefabOutlining)
+		{
+			yield return new PrefabOutliningProcessor();//Needs the scene hierarchies from PrefabProcessor
+		}
 		yield return new SpriteProcessor();
 		yield return new ScriptableObjectProcessor();
 	}
