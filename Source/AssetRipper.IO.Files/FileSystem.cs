@@ -44,11 +44,31 @@ public partial class FileSystem
 		}
 	}
 
-	public void DeleteTemporaryDirectory()
+	/// <summary>
+	/// Removes the temporary directory and everything extracted into it.
+	/// </summary>
+	/// <remarks>
+	/// Reading a game extracts archives into this directory and keeps them for as long as that game is loaded, so this
+	/// can only be called once nothing is using it. Failure is reported rather than thrown: leaving files behind is a
+	/// waste of disk, but it is not a reason to fail whatever the caller was doing.
+	/// </remarks>
+	/// <returns>True when the directory is gone.</returns>
+	public bool DeleteTemporaryDirectory()
 	{
-		if (Directory.Exists(TemporaryDirectory))
+		if (!Directory.Exists(TemporaryDirectory))
+		{
+			return true;
+		}
+
+		try
 		{
 			Directory.Delete(TemporaryDirectory);
+			return true;
+		}
+		catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+		{
+			// Something still holds a file open. The caller cannot do anything about it either.
+			return false;
 		}
 	}
 

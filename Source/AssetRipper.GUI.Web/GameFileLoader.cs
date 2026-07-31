@@ -45,6 +45,14 @@ public static class GameFileLoader
 		{
 			GameData = null;
 			GC.Collect();
+
+			// The archives read for that game were extracted to disk and are only unused now that it is gone. Loading
+			// several games in one session would otherwise keep every extraction until the process exits.
+			if (!LocalFileSystem.Instance.DeleteOwnedTemporaryDirectory())
+			{
+				Logger.Warning(LogCategory.General, "Could not remove the temporary files of the previous game. They will be removed on exit.");
+			}
+
 			Logger.Info(LogCategory.General, "Data was reset.");
 		}
 	}

@@ -23,6 +23,15 @@ public partial class LocalFileSystem : FileSystem
 
 	private string SystemTemporaryDirectory => Path.Join(System.IO.Path.GetTempPath(), "AssetRipper", GetRandomString()[0..4]);
 
+	/// <summary>
+	/// Whether <see cref="TemporaryDirectory"/> is one this class chose, rather than one a caller pointed it at.
+	/// </summary>
+	/// <remarks>
+	/// Only a directory of our own making is safe to delete recursively on exit. A caller is free to point this at any
+	/// path, and clearing that out from under them would destroy whatever else lives there.
+	/// </remarks>
+	private bool ownsTemporaryDirectory;
+
 	public override string TemporaryDirectory
 	{
 		get
@@ -41,6 +50,12 @@ public partial class LocalFileSystem : FileSystem
 				{
 					field = SystemTemporaryDirectory;
 				}
+				ownsTemporaryDirectory = true;
+
+				// Reading a game extracts archives here and keeps them for as long as that game is loaded, so nothing
+				// can delete them earlier. Without this, every run leaves its extracted copy behind; ten runs over one
+				// Android build filled several gigabytes.
+				AppDomain.CurrentDomain.ProcessExit += DeleteOnExit;
 			}
 			return field;
 		}
@@ -49,7 +64,19 @@ public partial class LocalFileSystem : FileSystem
 			if (!string.IsNullOrWhiteSpace(value))
 			{
 				field = Path.GetFullPath(value);
+				ownsTemporaryDirectory = false;
 			}
 		}
+	}
+
+	private void DeleteOnExit(object? sender, EventArgs e) => DeleteOwnedTemporaryDirectory();
+
+	/// <summary>
+	/// Deletes the temporary directory, but only when this class chose where it is.
+	/// </summary>
+	/// <returns>True when there is nothing of ours left behind.</returns>
+	public bool DeleteOwnedTemporaryDirectory()
+	{
+		return !ownsTemporaryDirectory || DeleteTemporaryDirectory();
 	}
 }
