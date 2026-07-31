@@ -13,14 +13,36 @@ namespace AssetRipper.Import.Structure.Assembly.Managers;
 
 public sealed class IL2CppManager : BaseManager
 {
-	static IL2CppManager()
+	private static bool instructionSetsRegistered;
+
+	/// <summary>
+	/// Registers the instruction sets Cpp2IL decodes a binary with. It can only be done once per process, because
+	/// <see cref="InstructionSetRegistry"/> refuses a second registration for an id.
+	/// </summary>
+	/// <remarks>
+	/// This is not a static constructor because the Arm64 choice depends on <paramref name="level"/>, which is only
+	/// known once a manager is being constructed.
+	/// <para>
+	/// <see cref="Arm64InstructionSet"/> produces no ISIL at all, so nothing downstream of it can recover a method
+	/// body: an Arm64 game gets empty methods no matter which content level was asked for.
+	/// <see cref="NewArmV8InstructionSet"/> does produce ISIL, at the cost of being the less exercised of the two, so
+	/// it is used only for <see cref="ScriptContentLevel.Level3"/>, where recovery is the point and the output is
+	/// already understood to be best effort.
+	/// </para>
+	/// </remarks>
+	private static void RegisterInstructionSets(ScriptContentLevel level)
 	{
+		if (instructionSetsRegistered)
+		{
+			return;
+		}
+		instructionSetsRegistered = true;
+
 		InstructionSetRegistry.RegisterInstructionSet<X86InstructionSet>(DefaultInstructionSets.X86_32);
 		InstructionSetRegistry.RegisterInstructionSet<X86InstructionSet>(DefaultInstructionSets.X86_64);
 		InstructionSetRegistry.RegisterInstructionSet<WasmInstructionSet>(DefaultInstructionSets.WASM);
 		InstructionSetRegistry.RegisterInstructionSet<ArmV7InstructionSet>(DefaultInstructionSets.ARM_V7);
-		bool useNewArm64 = false;
-		if (useNewArm64)
+		if (level == ScriptContentLevel.Level3)
 		{
 			InstructionSetRegistry.RegisterInstructionSet<NewArmV8InstructionSet>(DefaultInstructionSets.ARM_V8);
 		}
@@ -42,13 +64,16 @@ public sealed class IL2CppManager : BaseManager
 
 	/// <summary>
 	/// Used for <see cref="ScriptContentLevel.Level3"/>.
-	/// <see cref="CallAnalysisProcessingLayer"/> resolves call targets, which the IL recovery in
-	/// <see cref="RecoveryOutputFormat"/> relies on when reconstructing method bodies.
 	/// </summary>
+	/// <remarks>
+	/// <see cref="CallAnalysisProcessingLayer"/> is deliberately absent. It only annotates methods with who calls
+	/// them, which is of no use once the bodies themselves are recovered, and on an obfuscated assembly it can
+	/// produce an attribute referring to the module pseudo type, which fails to convert and takes the whole assembly
+	/// manager down with it. Call targets are resolved during method analysis, not by that layer.
+	/// </remarks>
 	public static List<Cpp2IlProcessingLayer>? RecoveryProcessingLayers { get; set; } =
 	[
 		new AttributeAnalysisProcessingLayer(),
-		new CallAnalysisProcessingLayer(),
 		new MethodOverrideNameFixer(),
 	];
 
@@ -73,6 +98,7 @@ public sealed class IL2CppManager : BaseManager
 	public IL2CppManager(Action<string> requestAssemblyCallback, ScriptContentLevel level) : base(requestAssemblyCallback)
 	{
 		contentLevel = level;
+		RegisterInstructionSets(level);
 	}
 
 	public override ScriptingBackend ScriptingBackend => ScriptingBackend.IL2Cpp;
