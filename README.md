@@ -1,43 +1,234 @@
 # AssetRipper
 
-[![](https://img.shields.io/github/downloads/AssetRipper/AssetRipper/total.svg)](https://github.com/AssetRipper/AssetRipper/releases)
-[![](https://img.shields.io/github/downloads/AssetRipper/AssetRipper/latest/total.svg)](https://github.com/AssetRipper/AssetRipper/releases/latest)
-[![](https://img.shields.io/github/v/release/AssetRipper/AssetRipper)](https://github.com/AssetRipper/AssetRipper/releases/latest)
-[![](https://weblate.samboy.dev/widgets/assetripper/-/gui/svg-badge.svg)](http://weblate.samboy.dev/engage/assetripper/)
+A tool for extracting and analyzing Unity game files. It reads a build — a game directory, an APK, an asset bundle, a
+serialized file — and writes back either a Unity project you can open in the editor, or the plain assets themselves.
 
-AssetRipper is a powerful tool for analyzing Unity game files. For example, it enables game developers to:
+Two front ends ship in this repository:
 
-* Find dependency assets that were accidentally included in their game
-* Convert their assets into the native Unity engine format
-* Identify code that could not be inlined or trimmed from their build
-* Find broken asset references that would cause issues in their game
+* a **GUI** that runs as a local web application, for browsing a build and exporting interactively, and
+* a **CLI** for scripted and repeatable exports, with profiles that select only the kind of content you want.
 
-AssetRipper supports Unity versions from `3.5.0` to `6000.5.X`. However, support quality may vary slightly for different Unity versions.
+Unity `3.5.0` through `6000.5.X` are supported, though quality varies by version.
 
-[Downloads](https://assetripper.github.io/AssetRipper/articles/Downloads.html)
+## Requirements
 
-## Premium Edition
+* **.NET SDK 10.0.302 or newer.** Older 10.0 SDKs will fail to build this repository. The source generators target
+  Roslyn 5.6, and an SDK that ships Roslyn 5.3 (such as 10.0.203) silently refuses to load them, which surfaces as
+  confusing "type or namespace not found" errors for generated members rather than as a version complaint.
 
-There is a premium edition of AssetRipper. This edition includes additional [features and improvements](https://assetripper.github.io/AssetRipper/articles/PremiumFeatures.html).
+Check what you have with `dotnet --list-sdks`.
 
-## Tips
+## Building
 
-Your support helps maintain and improve AssetRipper. If you find this tool useful, please consider tipping:
+```sh
+dotnet build AssetRipper.slnx -c Release
+```
 
-* [Ko-fi](https://ko-fi.com/assetripper)
-* [Buy Me a Coffee](https://buymeacoffee.com/assetripper)
-* [GitHub Sponsors](https://github.com/sponsors/ds5678)
-* [PayPal](https://paypal.me/ds5678)
+Binaries land under `Source/0Bins/<project>/<configuration>/`.
 
-Users can access AssetRipper Premium with an active $10 subscription on any of those 4 platforms.
+---
 
-## Discord [![](https://img.shields.io/discord/867514400701153281?color=blue&label=AssetRipper)](https://discord.gg/XqXa53W2Yh)
+## GUI
 
-The development of this project has a dedicated [Discord server](https://discord.gg/XqXa53W2Yh).
+```sh
+dotnet run --project Source/AssetRipper.GUI.Free -c Release
+```
 
-## Legal Disclaimers
+The application starts a local web server and opens your browser. Load a game folder or file from the landing page,
+browse the assets, adjust settings, and export.
 
-* AssetRipper is licensed under the [GNU General Public License v3.0](LICENSE.md).
-* AssetRipper is not sponsored by or affiliated with Unity Technologies or its affiliates.
-* "Unity" is a registered trademark of Unity Technologies or its affiliates in the U.S. and elsewhere.
-* The [Credits](https://assetripper.github.io/AssetRipper/articles/Credits.html) page contains a list of attributions.
+| Option | Meaning |
+| --- | --- |
+| `--port <n>` | Host on this port instead of a random free one. |
+| `--headless` | Do not open a browser window. |
+| `--log` / `--no-log` | Write a log file. On by default. |
+| `--log-path <path>` | Where to write that log. |
+| `--local-web-file <path>` | Serve this file instead of fetching its online counterpart. |
+
+### Settings
+
+The settings page controls import, processing and export. The ones worth knowing about:
+
+* **Script content level** — how much of the game's code to recover. Level 2 gives full method bodies for Mono games
+  and empty ones for IL2CPP. Level 3 additionally attempts to recover IL2CPP method bodies; it is experimental and
+  succeeds on a minority of methods, most often on x86 builds.
+* **Shader export mode** — `Dummy` writes stubs that compile, `Yaml` writes the raw asset, `Decompile` recovers the
+  real programs. See [Shaders](#shaders) below for what that yields per platform.
+* **Static mesh separation** — undoes the mesh merging Unity applies to static renderers when a scene is built.
+* **Asset deduplication** — collapses assets that Unity copied into several bundles down to one.
+* **Prefab outlining** — finds repeated GameObject hierarchies in scenes and turns them back into prefab instances.
+
+Files loaded on the configuration files page (asset path overrides, user defined packages) are plain JSON and are
+described under [Configuration files](#configuration-files).
+
+---
+
+## CLI
+
+```sh
+dotnet run --project Source/AssetRipper.Tools.ExportRunner -c Release -- <command> [...]
+```
+
+Or run the built binary directly:
+
+```sh
+Source/0Bins/AssetRipper.Tools.ExportRunner/Release/AssetRipper.Tools.ExportRunner <command> [...]
+```
+
+The examples below use `ExportRunner` as shorthand for whichever of those you prefer.
+
+### inspect
+
+Prints what a build contains — asset counts by class and by output directory — without writing anything.
+
+```sh
+ExportRunner inspect "Fluffy Field.apk"
+```
+
+Use it to decide which profile is worth running before committing to a full export.
+
+### analyze
+
+Same inventory, optionally written to a JSON report.
+
+```sh
+ExportRunner analyze "Fluffy Field.apk" --report inventory.json
+```
+
+### export
+
+Extracts assets.
+
+```sh
+ExportRunner export "Fluffy Field.apk" --output ./out --profile audio
+```
+
+| Option | Meaning |
+| --- | --- |
+| `--output <path>`, `-o` | Where to write. Required. |
+| `--profile <name>` | Export only the content this profile selects. See below. |
+| `--mode <primary\|dump>` | Backend. `primary` writes plain assets, `dump` writes a Unity project. Defaults to the profile's mode. |
+| `--keep-output` | Do not clean the output directory first. |
+| `--recursive-unpack on\|off` | Unpack nested bundles found inside the build. On by default. |
+| `--shard-strategy off\|direct-children\|auto` | Split a large input into shards and export them separately. |
+
+`--shard-direct-children` is kept as shorthand for `--shard-strategy direct-children`.
+
+#### Profiles
+
+A profile scores each export collection by its name and path and keeps the ones that look like the content you asked
+for. This is heuristic: it is a way to get the interesting 5% of a large game quickly, not a guarantee.
+
+| Profile | Selects |
+| --- | --- |
+| `player-art` | Character and player facing artwork |
+| `characters` | Portraits, standing art, Live2D, Spine |
+| `ui` | Icons, atlases, HUD, menus |
+| `audio` | BGM, SFX, voice |
+| `narrative` | Dialogue, script and text data |
+| `cg` | Event CG, illustrations, gallery art |
+| `backgrounds` | Scene and location backdrops |
+| `sprites` | Sprites, atlases, sheets, textures |
+| `full-project` | Everything, as a Unity project |
+| `full-raw` | Everything, as plain assets |
+
+Every export writes machine readable artifacts next to the assets:
+
+| File | Contents |
+| --- | --- |
+| `export-manifest.json` | Every asset written, with its source |
+| `skipped-assets.json` | What the profile excluded, and why |
+| `failed-assets.json` | What failed to export, and why |
+| `export-plan.json` | The plan the run followed |
+| `recursive-unpack.json` | Nested bundles that were unpacked |
+| `summary.txt` | Human readable summary |
+
+The `--profile` run reports its selection up front, for example
+`Selected 32 of 648 primary collections for export`, so you can tell a narrow profile from a broken one.
+
+### report
+
+Re-prints a summary from a previous run's artifacts.
+
+```sh
+ExportRunner report ./out
+```
+
+### Legacy form
+
+Kept for compatibility with older scripts:
+
+```sh
+ExportRunner primary <input-path> <output-path> [more-input-paths...]
+ExportRunner dump    <input-path> <output-path> [more-input-paths...]
+```
+
+### Environment variables
+
+| Variable | Meaning |
+| --- | --- |
+| `ASSETRIPPER_EXPORT_WORKERS` | Parallel export workers. Defaults to 4, capped at the processor count. |
+
+---
+
+## Shaders
+
+What `Decompile` can recover depends on which graphics API the build shipped, because Unity stores something different
+for each.
+
+| Build target | Stored as | Result |
+| --- | --- | --- |
+| OpenGL / OpenGL ES | GLSL source | The GLSL itself, emitted in a `GLSLPROGRAM` block. Nothing is lost. |
+| Direct3D | DXBC bytecode | Decompiled back to HLSL in a `CGPROGRAM` block. |
+| Vulkan | SMOL-V compressed SPIR-V | Disassembled to SPIR-V assembly, with real variable names where the module kept them. Emitted commented out, because disassembly is not source and cannot be recompiled. |
+| Other | — | ShaderLab structure only. The log says which platform the shader was built for. |
+
+The ShaderLab around the programs — properties, subshaders, passes, tags, render state — is reconstructed in every
+case, including render state overrides written as `[_PropertyName]`.
+
+## Configuration files
+
+Both files are optional and are loaded from the GUI's configuration files page.
+
+**Asset path overrides** move exported assets. Rules are tried in order; the first match wins.
+
+```json
+{
+  "overrides": [
+    { "className": "Texture2D", "originalPathPrefix": "Assets/UI", "directory": "Assets/Art/UI" },
+    { "name": "MainTheme", "directory": "Assets/Audio/Music", "fileName": "theme" }
+  ]
+}
+```
+
+**User defined packages** stop assets that also ship inside a third party package from being written out as duplicate
+copies. Declared assets are redirected to their identity inside the package, and the package is added to
+`Packages/manifest.json`.
+
+```json
+{
+  "packages": [
+    {
+      "name": "com.unity.textmeshpro",
+      "version": "3.0.6",
+      "assets": [
+        { "name": "LiberationSans SDF", "className": "Material", "guid": "e73a58f6e2c4f6b4d9c02f0dc1b3d2e5" }
+      ]
+    }
+  ]
+}
+```
+
+## Credits and license
+
+AssetRipper is licensed under the [GNU General Public License v3.0](LICENSE.md), and is the work of
+[ds5678](https://github.com/sponsors/ds5678) and its [contributors](https://assetripper.github.io/AssetRipper/articles/Credits.html).
+
+The command line front end originates from [AssetRipper-CLI](https://github.com/MeikoMei16/AssetRipper-CLI) by
+MeikoMei16, also under GPL-3.0.
+
+Shader decompilation builds on [USCSandbox](https://github.com/nesrak1/USCSandbox) by nesrak1, and the SMOL-V decoder is
+ported from [smol-v](https://github.com/aras-p/smol-v) by Aras Pranckevičius.
+
+AssetRipper is not sponsored by or affiliated with Unity Technologies or its affiliates. "Unity" is a registered
+trademark of Unity Technologies or its affiliates in the U.S. and elsewhere.
