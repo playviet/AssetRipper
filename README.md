@@ -54,9 +54,14 @@ The settings page controls import, processing and export. The ones worth knowing
   succeeds on a minority of methods, most often on x86 builds.
 * **Shader export mode** — `Dummy` writes stubs that compile, `Yaml` writes the raw asset, `Decompile` recovers the
   real programs. See [Shaders](#shaders) below for what that yields per platform.
+* **Shader naming** — `Suffixed` appends ` (Ripped)` to shader names. A build contains the shaders of whatever render
+  pipeline it used, and the exported project usually references that same pipeline as a package, so Unity ends up with
+  two shaders of the same name and silently picks one. Off by default, since it trades away the names the game used.
 * **Static mesh separation** — undoes the mesh merging Unity applies to static renderers when a scene is built.
 * **Asset deduplication** — collapses assets that Unity copied into several bundles down to one.
 * **Prefab outlining** — finds repeated GameObject hierarchies in scenes and turns them back into prefab instances.
+* **Relink Unity packages** — references the real packages instead of the stripped copies the build shipped. See
+  [Package relinking](#package-relinking) below.
 
 Files loaded on the configuration files page (asset path overrides, user defined packages) are plain JSON and are
 described under [Configuration files](#configuration-files).
@@ -167,7 +172,8 @@ ExportRunner dump    <input-path> <output-path> [more-input-paths...]
 
 | Variable | Meaning |
 | --- | --- |
-| `ASSETRIPPER_EXPORT_WORKERS` | Parallel export workers. Defaults to 4, capped at the processor count. |
+| `ASSETRIPPER_EXPORT_WORKERS` | Parallel export workers. Defaults to 4, capped at the processor count. CLI only. |
+| `ASSETRIPPER_UNITY_EDITOR` | Where to find the Unity editor, when it is not where the Hub puts it. Used by [package relinking](#package-relinking); applies to the GUI as well. |
 
 ---
 
@@ -185,6 +191,32 @@ for each.
 
 The ShaderLab around the programs — properties, subshaders, passes, tags, render state — is reconstructed in every
 case, including render state overrides written as `[_PropertyName]`.
+
+## Package relinking
+
+A build ships the compiled assemblies of every package it used. Exported as plugins, those leave the project holding a
+stripped copy of a package it could simply reference. That is not harmless: Unity's own API updater crashes on the
+stripped URP assembly, and a stripped copy of a shared dependency such as Newtonsoft.Json shadows the real one and
+breaks the source of every package compiled against it.
+
+With **Relink Unity packages** on, such an assembly is dropped and the package it came from is added to
+`Packages/manifest.json`, with every component that pointed at a script inside it repointed at the same script in the
+package.
+
+**This needs the matching editor version installed.** The package version and the script GUIDs are read from it rather
+than guessed, because a version that does not exist stops the project opening and a wrong GUID unbinds components
+silently. Without that editor, relinking is skipped and a warning says so. Set `ASSETRIPPER_UNITY_EDITOR` if your
+install is not where Unity Hub puts it.
+
+An assembly is only relinked when every script the game references inside it is found in the package; one miss leaves
+the whole assembly alone. Class names that more than one file in a package declares are treated as not found rather
+than guessed at.
+
+Measured on an Android build exported for Unity 6000.0.78f1: 36 assemblies relinked, 35 fewer plugin DLLs, the API
+updater crashes gone, no compiler errors, and the same 2443 of 2446 script bindings resolving as before — 1860 of them
+now into packages.
+
+Off by default, because it changes what the project references.
 
 ## Configuration files
 
