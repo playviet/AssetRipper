@@ -140,25 +140,49 @@ internal sealed class AndroidGameStructure : PlatformGameStructure
 		}
 	}
 
-	private string? GetIl2CppGameAssemblyPath(string libDirectory)
+	/// <summary>
+	/// The subdirectories of lib an apk carries its native libraries in, best analysed first.
+	/// </summary>
+	/// <remarks>
+	/// An apk built for several architectures has a copy of every native library per architecture, and they are not
+	/// equally useful: Cpp2IL recovers method bodies from arm64 and x86-64, and from neither of the 32 bit ones. So
+	/// take the best available rather than whatever the file system happens to enumerate first.
+	/// </remarks>
+	private static readonly string[] AbiPreference = ["arm64-v8a", "x86_64", "armeabi-v7a", "x86"];
+
+	private string? GetNativeLibraryPath(string libDirectory, string libraryName)
 	{
 		if (string.IsNullOrEmpty(libDirectory) || !FileSystem.Directory.Exists(libDirectory))
 		{
 			return null;
 		}
 
-		return FileSystem.Directory.EnumerateFiles(libDirectory, Il2CppGameAssemblyName, SearchOption.AllDirectories).FirstOrDefault();
-	}
-
-	private string? GetAndroidUnityAssemblyPath(string libDirectory)
-	{
-		if (string.IsNullOrEmpty(libDirectory) || !FileSystem.Directory.Exists(libDirectory))
+		string? best = null;
+		int bestRank = int.MaxValue;
+		foreach (string path in FileSystem.Directory.EnumerateFiles(libDirectory, libraryName, SearchOption.AllDirectories))
 		{
-			return null;
+			int rank = GetAbiRank(path);
+			if (rank < bestRank)
+			{
+				best = path;
+				bestRank = rank;
+			}
 		}
 
-		return FileSystem.Directory.EnumerateFiles(libDirectory, AndroidUnityAssemblyName, SearchOption.AllDirectories).FirstOrDefault();
+		return best;
+
+		int GetAbiRank(string path)
+		{
+			string? abi = FileSystem.Path.GetFileName(FileSystem.Path.GetDirectoryName(path));
+			int index = abi is null ? -1 : Array.IndexOf(AbiPreference, abi);
+			//An architecture nobody listed is still better than nothing, just not better than one that was.
+			return index < 0 ? AbiPreference.Length : index;
+		}
 	}
+
+	private string? GetIl2CppGameAssemblyPath(string libDirectory) => GetNativeLibraryPath(libDirectory, Il2CppGameAssemblyName);
+
+	private string? GetAndroidUnityAssemblyPath(string libDirectory) => GetNativeLibraryPath(libDirectory, AndroidUnityAssemblyName);
 
 	private bool IsMono(string managedDirectory)
 	{
