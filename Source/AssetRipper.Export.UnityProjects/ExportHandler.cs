@@ -82,6 +82,10 @@ public class ExportHandler
 		{
 			yield return new SafeAssemblyPublicizingProcessor();
 		}
+		if (Settings.ProcessingSettings.RemoveGeneratedCode)
+		{
+			yield return new GeneratedCodeRemovalProcessor();
+		}
 		yield return new InjectedAttributeUsageProcessor();
 		yield return new RemoveAssemblyKeyFileAttributeProcessor();
 		yield return new InternalsVisibileToPublicKeyRemover();

@@ -71,6 +71,7 @@ partial class SettingsPage
 		{ nameof(ProcessingSettings.EnableAssetDeduplication), (value) => { Configuration.ProcessingSettings.EnableAssetDeduplication = value; } },
 		{ nameof(ProcessingSettings.RemoveNullableAttributes), (value) => { Configuration.ProcessingSettings.RemoveNullableAttributes = value; } },
 		{ nameof(ProcessingSettings.PublicizeAssemblies), (value) => { Configuration.ProcessingSettings.PublicizeAssemblies = value; } },
+		{ nameof(ProcessingSettings.RemoveGeneratedCode), (value) => { Configuration.ProcessingSettings.RemoveGeneratedCode = value; } },
 		{ nameof(ExportSettings.ScriptTypesFullyQualified), (value) => { Configuration.ExportSettings.ScriptTypesFullyQualified = value; } },
 		{ nameof(ExportSettings.RelinkUnityPackages), (value) => { Configuration.ExportSettings.RelinkUnityPackages = value; } },
 		{ nameof(ExportSettings.ExportUnreadableAssets), (value) => { Configuration.ExportSettings.ExportUnreadableAssets = value; } },
@@ -116,6 +117,11 @@ partial class SettingsPage
 	private static void WriteCheckBoxForPublicizeAssemblies(TextWriter writer, string label, bool disabled = false)
 	{
 		WriteCheckBox(writer, label, Configuration.ProcessingSettings.PublicizeAssemblies, nameof(ProcessingSettings.PublicizeAssemblies), disabled);
+	}
+
+	private static void WriteCheckBoxForRemoveGeneratedCode(TextWriter writer, string label, bool disabled = false)
+	{
+		WriteCheckBox(writer, label, Configuration.ProcessingSettings.RemoveGeneratedCode, nameof(ProcessingSettings.RemoveGeneratedCode), disabled);
 	}
 
 	private static void WriteDropDownForBundledAssetsExportMode(TextWriter writer)

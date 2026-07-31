@@ -64,6 +64,14 @@ public sealed partial class SettingsPage : DefaultPage
 							{
 								using (new Div(writer).WithClass("col").End())
 								{
+									WriteCheckBoxForRemoveGeneratedCode(writer, Localization.RemoveGeneratedCode);
+								}
+							}
+
+							using (new Div(writer).WithClass("row").End())
+							{
+								using (new Div(writer).WithClass("col").End())
+								{
 									WriteTextAreaForDefaultVersion(writer);
 								}
 							}

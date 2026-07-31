@@ -183,6 +183,7 @@
     "publicize_assemblies": "Publicize Assemblies",
     "relink_unity_packages": "Relink Unity Packages",
     "remove": "Remove",
+    "remove_generated_code": "Remove Generated Code",
     "remove_nullable_attributes": "Remove Nullable Attributes",
     "replace": "Replace",
     "resources": "Resources",
