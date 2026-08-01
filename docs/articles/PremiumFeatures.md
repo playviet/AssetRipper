@@ -48,21 +48,18 @@ Measured on an arm64 Android game, against the original Unity project it was bui
 |---|---|
 | types in the original with a counterpart recovered | 590 of 617 (96%) |
 | methods in those types with a counterpart recovered | 2973 of 3040 (98%) |
-| recovered methods that are whole compiling code | 47% |
-| recovered methods with some statements commented out | 44% |
+| recovered methods that are whole compiling code | 48% |
+| recovered methods with some statements commented out | 43% |
 | recovered methods with nothing in them | 8% |
 
 265 methods could not be repaired statement by statement and were emptied, and 14013 statements were commented out.
 The project imports into the editor with no compile errors and no shader errors, at content level 2 and 3 alike.
 Improvements are ongoing.
 
-Iterator methods are a known gap, though a narrower one than it was. All 48 of the game's iterators now reach the
-decompiler's iterator transform, where they used to be rejected before it ran, and three come back with `yield break`.
-None yet comes back with `yield return`: the transform requires the yielding path to end in `return true`, and the
-native code has no such constant to recover - the compiler merged every return into one block that computes the value
-from the state. Producing it means duplicating that block back into the paths that reach it and folding the result,
-which is a control flow analysis rather than a translation, so nothing here invents it. The transform now says which
-requirement each iterator fails, which is the map for doing that work.
+Iterator methods partly recover. 13 come back as `yield return` and 12 as `yield break`; 26 do not, and say which
+requirement of the decompiler's iterator transform they failed rather than failing silently. The two that were fixed
+to get there were a merged return, which gives back no literal for the transform to find, and a field read the
+simplifier was carrying past the writes that invalidated it.
 
 What comes out is a readable trace of what the native code does, not the original source. Expect calls into helpers the analysis could not name and values it could not type. Level 2 remains the setting for a faithful project; Level 3 is for reading the logic.
 

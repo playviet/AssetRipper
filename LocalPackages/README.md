@@ -12,7 +12,7 @@ So the two packages here are built locally instead, and `nuget.config` adds this
 * `SamboyCoding/Cpp2IL` `development` (`b20ca0d`, "Lib: Fix v106"), which is still its head
 * the three commits the `assetripper` branch adds on top, cherry picked: `Move dependencies into main projects`,
   `Change package id`, `Change version`
-* twenty-six local fixes, all for arm64, which is the architecture every Android build ships and which upstream
+* twenty-nine local fixes, all for arm64, which is the architecture every Android build ships and which upstream
   exercises far less than x86:
   1. `ApplicationAnalysisContext.ThrowHelperNamesByAddress` from `Dictionary` to `ConcurrentDictionary`. Throw helper
      recovery is new in `development` and reads that cache from the threads that build the assemblies in parallel, so
@@ -133,6 +133,21 @@ So the two packages here are built locally instead, and `nuget.config` adds this
       it becomes the constructor's argument and stops being a store. It is found by tracing the object back
       through however many copies of the allocation were made, since the store is rarely made through the same
       one. Without this the decompiler's iterator transform rejected every factory and gave up silently.
+
+  27. A value read out of memory was carried past the point where it stopped being true. The simplifier forwarded
+      a field read into every later use of the local it was kept in, walking straight past writes to that same
+      field and past calls - so an iterator's `MoveNext` ended in `return this.<>1__state == 0`, reading a field
+      twice that the machine code read once and then overwrote twice. It now stops at a write, at a call, and at
+      a join, since the substitution is made in an instruction that every path into the join shares and only one
+      of them has to write the field for the value to differ. This was a wrong answer, not an untidy one.
+  28. A merged return gave back no constant. A compiler routinely folds several returns into one block that works
+      the value out - `cmp w21, #0; cset w0, eq` is `return num == 0` for every path at once - and while that is
+      the same value, it is not the literal the source wrote, and a reader looking for an iterator needs the
+      literal. Where a path reaching the return has already tested the condition the return computes, the return
+      is copied into it with the answer written out. 13 iterators come back as `yield return` and 12 as `yield
+      break` where none did before.
+  29. `movk` writes one 16 bit field of a register and leaves the rest, which is how a constant too wide for one
+      instruction is built - most often the bit pattern of a float, so this feeds the float literal recovery.
 
 Measured on an arm64 Android game, against the original Unity project the build came from. Over the game's own
 assembly, counted on the graph the IL is generated from: instructions the lifter could not translate fell from 4702
