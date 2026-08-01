@@ -25,6 +25,12 @@ namespace AssetRipper.Export.UnityProjects.Scripts;
 /// compile, which is worth far more than the statement was: a method usually has one or two the analysis could not
 /// type and dozens it could.
 /// </para>
+/// <para>
+/// Some of what is rejected is not lost, only misspelled: the analysis knew what the native code did and wrote it in a
+/// form the language has no syntax for, such as a null pointer written as the number zero. Those are rewritten into
+/// what C# calls the same thing, so the statement is kept rather than commented out. Only shapes that say what they
+/// mean on their own are rewritten, because a statement that compiles and is wrong is worse than one that is not there.
+/// </para>
 /// </remarks>
 internal static class InvalidSourceRepair
 {
@@ -70,6 +76,7 @@ internal static class InvalidSourceRepair
 		SilenceTraces(outputFolder, fileSystem, parseOptions);
 
 		int commented = 0;
+		int rewritten = 0;
 		int emptied = 0;
 		HashSet<string> repairedFiles = [];
 
@@ -96,15 +103,23 @@ internal static class InvalidSourceRepair
 
 				fileSystem.File.WriteAllText(file.Path, ApplyEdits(file.Text, edits));
 				repairedFiles.Add(file.Path);
+
+				int rewrittenHere = edits.Count(edit => edit.Rewritten);
+				rewritten += rewrittenHere;
+				commented += edits.Count - rewrittenHere;
 				repaired += edits.Count;
 				emptied += emptiedHere;
 			}
 
-			commented += repaired;
 			if (repaired == 0)
 			{
 				break;
 			}
+		}
+
+		if (rewritten > 0)
+		{
+			Logger.Info(LogCategory.Export, $"Rewrote {rewritten} statements that recovery had written in a form the language has no syntax for");
 		}
 
 		if (commented > 0)
@@ -158,6 +173,15 @@ internal static class InvalidSourceRepair
 				{
 					edits.Add((invocation.Span, $"_ = {message}"));
 				}
+
+				//A zero native integer, which the decompiler writes as a null cast to one. The editor rejects that -
+				//there is no conversion from null to a native integer - while the compiler used to check the source
+				//here accepts it, so this is not something the compile loop below would ever find. Both spellings
+				//mean the same value, and only one of them builds.
+				if (node is CastExpressionSyntax cast && NativeIntegerZero(cast.Type) is { } zero && IsNullLiteral(cast.Expression))
+				{
+					edits.Add((cast.Span, zero));
+				}
 			}
 
 			if (edits.Count == 0)
@@ -181,6 +205,45 @@ internal static class InvalidSourceRepair
 		if (silenced > 0)
 		{
 			Logger.Info(LogCategory.Export, $"Silenced {silenced} messages that recovery would otherwise have written at runtime");
+		}
+	}
+
+	/// <summary>
+	/// How to write a zero of the type, if the type is a native integer. The keyword spelling has no members of
+	/// its own in every language version this runs at, so the answer is always given as the framework type.
+	/// </summary>
+	private static string? NativeIntegerZero(TypeSyntax type)
+	{
+		string name = type switch
+		{
+			IdentifierNameSyntax identifier => identifier.Identifier.ValueText,
+			QualifiedNameSyntax qualified => qualified.Right.Identifier.ValueText,
+			_ => "",
+		};
+
+		return name switch
+		{
+			"nint" or "IntPtr" => "global::System.IntPtr.Zero",
+			"nuint" or "UIntPtr" => "global::System.UIntPtr.Zero",
+			_ => null,
+		};
+	}
+
+	private static bool IsNullLiteral(ExpressionSyntax expression)
+	{
+		while (true)
+		{
+			switch (expression)
+			{
+				case ParenthesizedExpressionSyntax parenthesized:
+					expression = parenthesized.Expression;
+					continue;
+				case CheckedExpressionSyntax @checked:
+					expression = @checked.Expression;
+					continue;
+				default:
+					return expression.IsKind(SyntaxKind.NullLiteralExpression);
+			}
 		}
 	}
 
@@ -226,9 +289,17 @@ internal static class InvalidSourceRepair
 	}
 
 	/// <summary>
-	/// A stretch of source to comment out, and what to put in its place if leaving nothing there would not compile.
+	/// A stretch of source to comment out or replace, and what to put in its place.
 	/// </summary>
-	private readonly record struct Edit(TextSpan Span, string? Replacement);
+	/// <param name="Replacement">
+	/// What to leave behind: for a span being commented out, whatever the surrounding code still needs there, and for a
+	/// span being replaced, the source that takes its place.
+	/// </param>
+	/// <param name="Rewritten">
+	/// Whether the replacement is the same statement said in a way that compiles, rather than something to fall back on
+	/// once the statement is gone. Such a span is replaced outright instead of being commented out.
+	/// </param>
+	private readonly record struct Edit(TextSpan Span, string? Replacement, bool Rewritten = false);
 
 	/// <summary>
 	/// The edits to make to one file: the statement around each problem, or the whole body of a method that cannot be
@@ -239,8 +310,9 @@ internal static class InvalidSourceRepair
 		emptied = 0;
 		List<Edit> edits = [];
 		HashSet<TextSpan> seen = [];
+		List<(int Position, string Id)> problems = [.. GetProblemPositions(file)];
 
-		foreach ((int position, string id) in GetProblemPositions(file))
+		foreach ((int position, string id) in problems)
 		{
 			SyntaxNode? node = file.Root.FindToken(position, true).Parent;
 			if (node is null)
@@ -250,12 +322,13 @@ internal static class InvalidSourceRepair
 
 			//A method that no longer returns on every path, or no longer assigns an out parameter, is missing
 			//something rather than containing something wrong. Adding it back is cheaper than emptying the method.
+			//A statement that only needs saying differently is rewritten in place, before anything is given up on.
 			Edit? edit = id == "CS1729"
 				? FindBaseInitializerEdit(node, compilation)
 				: IsMissingSomething(id)
 					? FindFixupEdit(node, id)
 					: (lastAttempt ? null : FindStatement(node)) is { } statement
-						? new Edit(statement.Span, null)
+						? FindRewriteEdit(file, statement, problems, compilation) ?? new Edit(statement.Span, null)
 						: FindBodyEdit(node);
 
 			if (edit is null)
@@ -263,7 +336,7 @@ internal static class InvalidSourceRepair
 				continue;
 			}
 
-			if (edit.Value.Replacement is not null || lastAttempt || FindStatement(node) is null)
+			if (!edit.Value.Rewritten && (edit.Value.Replacement is not null || lastAttempt || FindStatement(node) is null))
 			{
 				emptied++;
 			}
@@ -354,6 +427,14 @@ internal static class InvalidSourceRepair
 	{
 		for (SyntaxNode? current = node; current is not null; current = current.Parent)
 		{
+			//A member written with an arrow has no statement anywhere in it, so there is nothing to comment out and
+			//the loop below would walk past it. What it says has to be replaced instead, since deleting the arrow
+			//would leave a member with no body at all.
+			if (current is ArrowExpressionClauseSyntax arrow)
+			{
+				return new Edit(arrow.Expression.Span, ReturnsValue(GetArrowReturnType(arrow)) ? "default" : "_ = 0", Rewritten: true);
+			}
+
 			(BlockSyntax? body, TypeSyntax? returnType) = current switch
 			{
 				MethodDeclarationSyntax method => (method.Body, method.ReturnType),
@@ -421,6 +502,406 @@ internal static class InvalidSourceRepair
 			p => $"default({p.Type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat)})"));
 
 		return new Edit(new TextSpan(constructor.ParameterList.Span.End, 0), $" : base({arguments})");
+	}
+
+	/// <summary>
+	/// A statement said the way C# says it, for the idioms recovery writes in a form the language has no syntax for.
+	/// </summary>
+	/// <remarks>
+	/// These are shapes where the native code left no doubt about what was meant and only the writing of it is wrong: a
+	/// null pointer written as the number zero, a test of one written as a chain of casts, a constructor called by the
+	/// name it has in metadata. Each is checked against the semantic model rather than read off the text, because what
+	/// the shape means depends on the types in it, and any part of it that cannot be resolved leaves the statement to be
+	/// commented out as before.
+	/// </remarks>
+	private static Edit? FindRewriteEdit(SourceFile file, StatementSyntax statement, List<(int Position, string Id)> problems, CSharpCompilation? compilation)
+	{
+		if (compilation is null)
+		{
+			//Without the references there is no semantic model, and none of this can be decided from the syntax alone.
+			return null;
+		}
+
+		SemanticModel model = compilation.GetSemanticModel(statement.SyntaxTree);
+		List<(TextSpan Span, string Text)> rewrites = [];
+		int end = statement.SpanStart;
+
+		foreach (SyntaxNode node in statement.DescendantNodesAndSelf())
+		{
+			if (node.SpanStart < end)
+			{
+				//Inside something already rewritten, which was rewritten from the text as it stands.
+				continue;
+			}
+
+			string? text = RewriteNullPointer(node, model)
+				?? RewriteNativeBooleanTest(node, model, compilation)
+				?? RewriteConstructorCall(node, model);
+
+			if (text is not null)
+			{
+				rewrites.Add((node.Span, text));
+				end = node.Span.End;
+			}
+		}
+
+		if (rewrites.Count == 0)
+		{
+			return null;
+		}
+
+		//A rewrite is only worth making when it answers everything the compiler objected to in the statement. If
+		//something else in there is broken as well the statement is going to be commented out regardless, and it is
+		//more use commented out as recovery wrote it than as half of it rewritten.
+		foreach ((int position, _) in problems)
+		{
+			if (statement.Span.Contains(position)
+				&& file.Root.FindToken(position, true).Parent is { } node
+				&& FindStatement(node)?.Span == statement.Span
+				&& !rewrites.Exists(rewrite => rewrite.Span.Contains(position)))
+			{
+				return null;
+			}
+		}
+
+		StringBuilder builder = new();
+		int written = statement.SpanStart;
+		foreach ((TextSpan span, string text) in rewrites)
+		{
+			builder.Append(file.Text, written, span.Start - written).Append(text);
+			written = span.End;
+		}
+		builder.Append(file.Text, written, statement.Span.End - written);
+
+		return new Edit(statement.Span, builder.ToString(), true);
+	}
+
+	/// <summary>
+	/// A null reference written as the number zero.
+	/// </summary>
+	/// <remarks>
+	/// Native code has no null: a null reference is a zero in a register, and recovery writes one back as that zero cast
+	/// to whatever the register was holding. C# will not cast a number to a reference type, and what the cast says is a
+	/// null of that type, so it becomes one. The type is kept, as <c>default(T)</c>, wherever it might still be needed
+	/// to tell overloads apart; where the statement is an assignment it is the assignment that gives the type, and the
+	/// plain <c>null</c> the original would have had is enough.
+	/// <para>
+	/// Not where the null is the thing being called, though. The exported project is meant to run as the game did, and a
+	/// statement that was commented out does nothing, which is wrong but harmless. Calling a member on a null that was
+	/// written back out throws where the game did not, and a crash in recovered code is far harder to trace than a
+	/// statement that is visibly not there.
+	/// </para>
+	/// </remarks>
+	private static string? RewriteNullPointer(SyntaxNode node, SemanticModel model)
+	{
+		if (node is not CastExpressionSyntax cast
+			|| !IsZero(cast.Expression)
+			|| cast.Type.DescendantNodesAndSelf().OfType<OmittedTypeArgumentSyntax>().Any()
+			|| IsBeingCalled(cast))
+		{
+			return null;
+		}
+
+		//A cast of zero the language does accept means what it says: a boxed number, or a type that declares a
+		//conversion from one. Only the cast it rejects can be read as a pointer that was null. Value types are left
+		//alone as well, because a zeroed register is not the same thing as a zeroed struct.
+		if (model.GetTypeInfo(cast.Type).Type is not { } type
+			|| type.TypeKind is not (TypeKind.Class or TypeKind.Interface or TypeKind.Delegate or TypeKind.Array)
+			|| model.ClassifyConversion(cast.Expression, type).Exists)
+		{
+			return null;
+		}
+
+		return node.Parent is AssignmentExpressionSyntax assignment
+			&& assignment.IsKind(SyntaxKind.SimpleAssignmentExpression)
+			&& assignment.Right == node
+			&& model.GetTypeInfo(assignment.Left).Type is { IsReferenceType: true }
+			? "null"
+			: $"default({cast.Type})";
+	}
+
+	/// <summary>
+	/// A test of whether a reference is null, written as the casts a native boolean goes through.
+	/// </summary>
+	/// <remarks>
+	/// Il2Cpp returns a boolean in the low byte of a register, so recovery writes a test of one as
+	/// <c>(byte)(int)x != 0</c>. Where x is a reference there is no such cast in C#, and what the native code was
+	/// testing is whether the pointer was null. For a <c>UnityEngine.Object</c> that is also the right way to say it:
+	/// the class overloads equality to ask the engine whether the object is still alive, which is the very call this
+	/// idiom was written in place of.
+	/// </remarks>
+	private static string? RewriteNativeBooleanTest(SyntaxNode node, SemanticModel model, CSharpCompilation compilation)
+	{
+		if (node is not BinaryExpressionSyntax binary
+			|| !binary.IsKind(SyntaxKind.NotEqualsExpression) && !binary.IsKind(SyntaxKind.EqualsExpression)
+			|| !IsZero(binary.Right)
+			|| binary.Left is not CastExpressionSyntax { Type: PredefinedTypeSyntax { Keyword.RawKind: (int)SyntaxKind.ByteKeyword } } outer
+			|| outer.Expression is not CastExpressionSyntax { Type: PredefinedTypeSyntax { Keyword.RawKind: (int)SyntaxKind.IntKeyword } } inner)
+		{
+			return null;
+		}
+
+		//A value that does convert to a number is being tested as a number, whatever else it is, and the casts are
+		//there to narrow it rather than to stand in for a null check.
+		if (model.GetTypeInfo(inner.Expression).Type is not { IsReferenceType: true } operand
+			|| operand.TypeKind is TypeKind.Error or TypeKind.Dynamic
+			|| model.ClassifyConversion(inner.Expression, compilation.GetSpecialType(SpecialType.System_Int32)).Exists)
+		{
+			return null;
+		}
+
+		return $"{inner.Expression} {binary.OperatorToken} null";
+	}
+
+	/// <summary>
+	/// A constructor called by the name it has in metadata.
+	/// </summary>
+	/// <remarks>
+	/// Recovery turns the instruction that makes an object into a call to <c>.ctor</c> on the variable the object was
+	/// about to be stored in, with the name escaped to <c>_002Ector</c> so that it is an identifier. As C# that is a
+	/// call to a method which does not exist; what it says is the construction and the store that the language writes
+	/// as one assignment. A delegate is made the same way, from a target and a function pointer taken with
+	/// <c>__ldftn</c>, and is written back as the method group C# takes a delegate over.
+	/// </remarks>
+	private static string? RewriteConstructorCall(SyntaxNode node, SemanticModel model)
+	{
+		if (node is not InvocationExpressionSyntax { Parent: ExpressionStatementSyntax } invocation
+			|| invocation.Expression is not MemberAccessExpressionSyntax { Name.Identifier.ValueText: "_002Ector" } access)
+		{
+			return null;
+		}
+
+		//What is being constructed has to be something the assignment can be written back to, and its type is what says
+		//which type to construct. A cast receiver gives neither: recovery casts where it lost the type, so the type in
+		//the cast is its guess rather than something it knew. An untyped one says nothing at all.
+		if (access.Expression is not (IdentifierNameSyntax or MemberAccessExpressionSyntax)
+			|| model.GetSymbolInfo(access.Expression).Symbol is not (ILocalSymbol or IFieldSymbol or IParameterSymbol)
+			|| model.GetTypeInfo(access.Expression).Type is not INamedTypeSymbol type
+			|| type.TypeKind is not (TypeKind.Class or TypeKind.Struct or TypeKind.Delegate)
+			|| type.SpecialType is SpecialType.System_Object
+			|| type.IsAbstract
+			|| !IsResolved(type))
+		{
+			return null;
+		}
+
+		string? construction = type.TypeKind is TypeKind.Delegate
+			? BuildDelegateCreation(invocation, type, model)
+			: BuildObjectCreation(invocation, type, model);
+
+		return construction is null ? null : $"{access.Expression} = {construction}";
+	}
+
+	/// <summary>
+	/// The method group a delegate was built over, from the target and function pointer it was built from.
+	/// </summary>
+	private static string? BuildDelegateCreation(InvocationExpressionSyntax invocation, INamedTypeSymbol type, SemanticModel model)
+	{
+		if (invocation.ArgumentList.Arguments is not [{ Expression: { } target }, { Expression: { } pointer }]
+			|| type.DelegateInvokeMethod is not { } signature)
+		{
+			return null;
+		}
+
+		//The function pointer is the only place the method's name survived, and it is written there qualified by the
+		//type that declares it.
+		if (Unwrap(pointer) is not InvocationExpressionSyntax { Expression: IdentifierNameSyntax { Identifier.ValueText: "__ldftn" } } taken
+			|| taken.ArgumentList.Arguments is not [{ Expression: MemberAccessExpressionSyntax method }]
+			|| model.GetSymbolInfo(method.Expression).Symbol is not INamedTypeSymbol declaring)
+		{
+			return null;
+		}
+
+		//One method of that name and nothing else of it, so that the delegate cannot come out over a different overload
+		//than the one the pointer was taken from, and a signature that is the delegate's own, so that it cannot come out
+		//over a method the delegate would have to convert to reach.
+		if (declaring.GetMembers(method.Name.Identifier.ValueText) is not [IMethodSymbol resolved]
+			|| !model.IsAccessible(invocation.SpanStart, resolved)
+			|| !HasSignature(resolved, signature))
+		{
+			return null;
+		}
+
+		if (resolved.IsStatic)
+		{
+			//A delegate over a static method is built with no target, and anything else in that argument is something
+			//this does not understand.
+			return IsNull(Unwrap(target)) ? $"new {Display(type)}({method})" : null;
+		}
+
+		//The instance the method is taken from has to be the one the target argument holds, or the delegate would come
+		//out over a different object than the native code built it over.
+		ExpressionSyntax instance = Unwrap(target);
+		return model.GetTypeInfo(instance).Type is { } held && Inherits(held, declaring)
+			? $"new {Display(type)}({instance}.{method.Name})"
+			: null;
+	}
+
+	/// <summary>
+	/// The construction of an object, from the arguments the constructor was called with.
+	/// </summary>
+	private static string? BuildObjectCreation(InvocationExpressionSyntax invocation, INamedTypeSymbol type, SemanticModel model)
+	{
+		SeparatedSyntaxList<ArgumentSyntax> arguments = invocation.ArgumentList.Arguments;
+
+		//Named arguments and arguments passed by reference would each have to be matched to a parameter before it is
+		//known which is which, and recovery has no reason to write either.
+		if (arguments.Any(argument => argument.NameColon is not null || !argument.RefKindKeyword.IsKind(SyntaxKind.None)))
+		{
+			return null;
+		}
+
+		//Exactly one constructor may be able to take these arguments. Recovery loses argument types as readily as it
+		//loses anything else, and a call that two constructors could take is a call whose meaning would be a guess.
+		IMethodSymbol? chosen = null;
+		foreach (IMethodSymbol candidate in type.InstanceConstructors)
+		{
+			if (candidate.Parameters.Length != arguments.Count
+				|| !model.IsAccessible(invocation.SpanStart, candidate)
+				|| !Takes(candidate, arguments, model))
+			{
+				continue;
+			}
+
+			if (chosen is not null)
+			{
+				return null;
+			}
+
+			chosen = candidate;
+		}
+
+		return chosen is null ? null : $"new {Display(type)}({arguments})";
+	}
+
+	/// <summary>
+	/// Whether every argument would reach its parameter on its own, which is what the call has to do to be the call
+	/// recovery meant.
+	/// </summary>
+	private static bool Takes(IMethodSymbol candidate, SeparatedSyntaxList<ArgumentSyntax> arguments, SemanticModel model)
+	{
+		for (int i = 0; i < arguments.Count; i++)
+		{
+			Conversion conversion = model.ClassifyConversion(arguments[i].Expression, candidate.Parameters[i].Type);
+			if (!conversion.Exists || !conversion.IsImplicit)
+			{
+				return false;
+			}
+		}
+
+		return true;
+	}
+
+	/// <summary>
+	/// Whether a method could be reached through a delegate of this signature without anything being converted, which
+	/// is the only case where the method the native code named is certainly the method C# would find.
+	/// </summary>
+	private static bool HasSignature(IMethodSymbol method, IMethodSymbol signature)
+	{
+		if (method.MethodKind is not MethodKind.Ordinary
+			|| method.Parameters.Length != signature.Parameters.Length
+			|| method.RefKind != signature.RefKind
+			|| !SymbolEqualityComparer.Default.Equals(method.ReturnType, signature.ReturnType))
+		{
+			return false;
+		}
+
+		for (int i = 0; i < method.Parameters.Length; i++)
+		{
+			if (method.Parameters[i].RefKind != signature.Parameters[i].RefKind
+				|| !SymbolEqualityComparer.Default.Equals(method.Parameters[i].Type, signature.Parameters[i].Type))
+			{
+				return false;
+			}
+		}
+
+		return true;
+	}
+
+	/// <summary>
+	/// Whether a type, and everything it is made of, is one the compilation knows about.
+	/// </summary>
+	/// <remarks>
+	/// Recovery writes a placeholder wherever it lost a type argument, and a type named after one cannot be written back
+	/// out: the name would resolve to nothing.
+	/// </remarks>
+	private static bool IsResolved(ITypeSymbol type)
+	{
+		return type.TypeKind is not TypeKind.Error
+			&& (type is not INamedTypeSymbol named || named.TypeArguments.All(IsResolved))
+			&& (type is not IArrayTypeSymbol array || IsResolved(array.ElementType));
+	}
+
+	private static bool Inherits(ITypeSymbol type, ITypeSymbol other)
+	{
+		for (ITypeSymbol? current = type; current is not null; current = current.BaseType)
+		{
+			if (SymbolEqualityComparer.Default.Equals(current, other))
+			{
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	/// <summary>
+	/// Whether an expression is the thing a member is being taken from, rather than a value being passed around.
+	/// </summary>
+	private static bool IsBeingCalled(ExpressionSyntax expression)
+	{
+		SyntaxNode current = expression;
+		while (current.Parent is ParenthesizedExpressionSyntax parenthesized)
+		{
+			current = parenthesized;
+		}
+
+		return current.Parent switch
+		{
+			MemberAccessExpressionSyntax access => access.Expression == current,
+			ConditionalAccessExpressionSyntax conditional => conditional.Expression == current,
+			ElementAccessExpressionSyntax element => element.Expression == current,
+			InvocationExpressionSyntax invocation => invocation.Expression == current,
+			_ => false,
+		};
+	}
+
+	/// <summary>
+	/// What is left of an expression once the casts recovery wrapped it in are taken off.
+	/// </summary>
+	private static ExpressionSyntax Unwrap(ExpressionSyntax expression)
+	{
+		while (true)
+		{
+			switch (expression)
+			{
+				case CastExpressionSyntax cast:
+					expression = cast.Expression;
+					break;
+				case ParenthesizedExpressionSyntax parenthesized:
+					expression = parenthesized.Expression;
+					break;
+				default:
+					return expression;
+			}
+		}
+	}
+
+	private static bool IsNull(ExpressionSyntax expression)
+	{
+		return expression.IsKind(SyntaxKind.NullLiteralExpression) || IsZero(expression);
+	}
+
+	private static bool IsZero(ExpressionSyntax expression)
+	{
+		return expression is LiteralExpressionSyntax literal
+			&& literal.IsKind(SyntaxKind.NumericLiteralExpression)
+			&& literal.Token.Value is 0 or 0L or 0u or 0uL;
+	}
+
+	private static string Display(ITypeSymbol type)
+	{
+		return type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
 	}
 
 	/// <summary>
@@ -497,6 +978,24 @@ internal static class InvalidSourceRepair
 	}
 
 	/// <summary>
+	/// What the member an arrow belongs to returns. A property or an indexer written with an arrow is a getter, so
+	/// the member's own type is what the expression has to produce.
+	/// </summary>
+	private static TypeSyntax? GetArrowReturnType(ArrowExpressionClauseSyntax arrow)
+	{
+		return arrow.Parent switch
+		{
+			MethodDeclarationSyntax method => method.ReturnType,
+			LocalFunctionStatementSyntax function => function.ReturnType,
+			OperatorDeclarationSyntax @operator => @operator.ReturnType,
+			ConversionOperatorDeclarationSyntax conversion => conversion.Type,
+			BasePropertyDeclarationSyntax property => property.Type,
+			AccessorDeclarationSyntax accessor => GetAccessorReturnType(accessor),
+			_ => null,
+		};
+	}
+
+	/// <summary>
 	/// What an accessor returns, which is the property's type for a getter and nothing for anything else.
 	/// </summary>
 	private static TypeSyntax? GetAccessorReturnType(AccessorDeclarationSyntax accessor)
@@ -514,7 +1013,7 @@ internal static class InvalidSourceRepair
 		StringBuilder builder = new(text.Length + edits.Count * 128);
 		int position = 0;
 
-		foreach ((TextSpan span, string? replacement) in edits)
+		foreach ((TextSpan span, string? replacement, bool rewritten) in edits)
 		{
 			if (span.Start < position)
 			{
@@ -527,6 +1026,15 @@ internal static class InvalidSourceRepair
 			{
 				//An insertion, with nothing to comment out.
 				builder.Append(replacement).Append('\n');
+				position = span.End;
+				continue;
+			}
+
+			if (rewritten)
+			{
+				//The statement is being kept, so what was there is of no further use: the replacement says the same
+				//thing.
+				builder.Append(replacement);
 				position = span.End;
 				continue;
 			}
