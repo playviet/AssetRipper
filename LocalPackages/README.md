@@ -7,13 +7,13 @@ made Il2Cpp method body recovery work. Script content level 3 is a different fea
 
 So the two packages here are built locally instead, and `nuget.config` adds this folder as a package source.
 
-## What 1.0.26 is
+## What 1.0.29 is
 
 * `SamboyCoding/Cpp2IL` `development` (`b20ca0d`, "Lib: Fix v106"), which is still its head
 * the three commits the `assetripper` branch adds on top, cherry picked: `Move dependencies into main projects`,
   `Change package id`, `Change version`
-* five local fixes, all for arm64, which is the architecture every Android build ships and which upstream exercises
-  far less than x86:
+* twenty-three local fixes, all for arm64, which is the architecture every Android build ships and which upstream
+  exercises far less than x86:
   1. `ApplicationAnalysisContext.ThrowHelperNamesByAddress` from `Dictionary` to `ConcurrentDictionary`. Throw helper
      recovery is new in `development` and reads that cache from the threads that build the assemblies in parallel, so
      an unsynchronised dictionary corrupts itself and every method in the assembly ends up as a body that throws the
@@ -61,9 +61,63 @@ So the two packages here are built locally instead, and `nuget.config` adds this
       x0 alone, where the receiver usually still sits. Returning it says something plainly untrue and does not
       compile, so a method whose return could not be recovered now returns a default instead.
 
-Measured on an arm64 Android game: the placeholders recovery writes where it could not translate a call fell from
-15532 to 6497, recovered object creation went from 11 expressions to 686, string literals from none to 18943, and the
-share of methods recovered as compiling code with nothing commented out went from 12.5 to 34.3 percent.
+  13. `NewArmV8InstructionSet` lifted `b.cond` as an unconditional jump. Disarm reports a conditional branch as a
+      plain `B` carrying a condition code, and nothing looked at the condition, so the fall-through path of every
+      `b.eq`/`b.ne`/`b.lt`/... simply vanished: roughly ten thousand branches in the game's own assembly, and with
+      them most of the code each `if` guarded. The branch is now lifted as the comparison it makes, by recording
+      what the preceding compare put in the flags. This is the change that made most of the method bodies appear
+      at all, so it is also why the remaining numbers below moved in both directions.
+  14. Instructions the lifter had no case for became a placeholder string sitting in the middle of whatever statement
+      they belonged to, which took that statement down with it. Implemented: the loads and stores that differ from
+      `ldr`/`str` only in width or scaling, `blr`, `movi`, the conversions, `fdiv`/`sdiv`/`udiv`, `fneg`, the
+      multiply-accumulate family, the bit-clear family, the variable shifts, `cset`, and the conditional selects -
+      the last through a new ISIL opcode, since CIL has no select and it has to become the branches the compiler
+      removed. System register reads and barriers now produce nothing rather than a placeholder, which is what they
+      mean in managed terms.
+  15. `ThrowHelperRecovery` found the helpers that exist purely to throw by looking for an x86 `lea` of a string
+      constant, so on arm64 it found none and every one of them stayed an untranslated call. On arm64 a constant's
+      address is built from an `adrp`/`add` pair, so the pair is followed instead. That recovered 2649 `throw`
+      statements, most of them the null check in front of a field access.
+  16. Stack slots were addresses. Arm64 spills through `[sp, #n]`, and a load from one is a load from memory nothing
+      can say anything about - so every spilled local, and every register saved in a prologue, poisoned the statement
+      that read it. A slot is a variable, not an address, and modelling it as one lets a spill and its reload become
+      a copy, which type propagation follows and copy propagation then removes outright. The x86 side already worked
+      this way; the arm64 lifter just never produced the operand for it.
+  17. One physical register had several names. Arm64 calls the low half of `x1` `w1`, and `v0` is also `s0`, `d0`
+      and `q0` - and each name was its own variable, so a value written as a 32-bit integer and read as a pointer
+      was never connected to itself. An `int` parameter passed in `w1` and looked for in `x1` was the case that
+      matters most: it made every iterator's generated constructor read `this.<>1__state = default(int)` instead of
+      `this.<>1__state = <parameter>`, which is exactly the shape ILSpy checks for before it will write a method
+      back as `yield return`.
+  18. `x31` in a data-processing operand is the zero register, not the stack pointer, so reading it always yields
+      zero - but it was left as a register, which made a field set to `0`, `false` or `null` read as an unexplained
+      local. A zero stored where a reference is expected now emits `ldnull`, since storing an integer into a
+      reference field is not verifiable IL and the whole body would be discarded for it.
+  19. A value whose type was never established lowers to a native integer, and C# has no ordering operators on
+      `IntPtr`/`UIntPtr`. Once (13) started producing ordered comparisons, 213 of them decompiled to source the
+      editor rejects; both sides are now widened to a 64-bit integer first, which says the same thing and compiles.
+
+  20. Virtual dispatch was never recovered. A virtual call compiles to three steps - read the runtime class out
+      of the object's header, read a slot out of that class's vtable, call through it - and none of them names
+      a method, so the call stayed indirect and the statement around it was lost. The object's type is right
+      there in the first step, though, and with the slot it says exactly which method was meant.
+      `VirtualCallRecovery` puts the call back: `FreeModifier.set_Radius` now ends in
+      `_Graphic.SetVerticesDirty()`, as it does in the original source.
+  21. `IlGenerator` had no case for the runtime helpers the key function search does name, so a call to one
+      became a placeholder. `SzArrayNew` is `newarr`, `il2cpp_vm_object_is_inst` is `isinst`, and a metadata
+      initialisation the guard remover could not reach says nothing a managed reader can see, so it is dropped.
+  22. A default value for a runtime handle was `null`. A handle reports that it is not a value type, because
+      there is no managed type behind it to be one, but it lowers to a native integer - and null is not one.
+  23. A local typed as a managed reference or a pointer. Nothing here emits `ldloca` or `ldarga`, so such a
+      local can only hold a lie, and it does not compile either: C# has no pointer to a managed type, and the
+      decompiler writes the declaration out as one.
+
+Measured on an arm64 Android game, against the original Unity project the build came from. Over the game's own
+assembly, counted on the graph the IL is generated from: instructions the lifter could not translate fell from 4702
+to 570, calls left unresolved from 6097 to 3683, and unresolvable memory operands from 29680 to 22384 - while the
+branch fix made roughly seventy percent more code reachable, so all three fell against a much larger denominator.
+In the exported scripts the placeholders written where a call could not be translated fell from 15532 to 2824,
+recovered object creation went from 11 expressions to 686, and string literals from none to 18943.
 
 ## Rebuilding
 
@@ -72,7 +126,7 @@ git clone https://github.com/SamboyCoding/Cpp2IL.git
 cd Cpp2IL
 git checkout b20ca0d
 git cherry-pick 97566c8 800cc39 e3aa824   # from https://github.com/AssetRipper/Cpp2IL
-# apply the five fixes above, set VersionPrefix in Cpp2IL.Core and LibCpp2IL
+# apply the fixes above, set VersionPrefix in Cpp2IL.Core and LibCpp2IL
 dotnet build Cpp2IL.Core/Cpp2IL.Core.csproj -c Release
 dotnet build LibCpp2IL/LibCpp2IL.csproj -c Release
 dotnet pack Cpp2IL.Core/Cpp2IL.Core.csproj -c Release --no-build -o <this folder>
