@@ -49,15 +49,24 @@ internal class InvalidSourceRepairTests
 	{
 		//The editor has no conversion from null to a native integer, but the compiler this repair uses to check
 		//the source does, so this shape has to be recognised outright rather than waited for as an error.
+		//Against something else, what that something is decides the zero's type, and only `default` is right
+		//whichever it turns out to be - the editor rejects both `int == IntPtr` and `IntPtr == 0`.
 		string result = Repair("""
 			using System;
 			namespace Game
 			{
 				public class Widget
 				{
-					public bool Broken(IntPtr handle)
+					public IntPtr Held;
+
+					public bool Compared(IntPtr handle)
 					{
-						return handle == (IntPtr)unchecked((nint)null);
+						return handle == unchecked((nint)null);
+					}
+
+					public void Assigned()
+					{
+						Held = unchecked((nint)null);
 					}
 				}
 			}
@@ -65,7 +74,8 @@ internal class InvalidSourceRepairTests
 
 		using (Assert.EnterMultipleScope())
 		{
-			Assert.That(result, Does.Contain("global::System.IntPtr.Zero"));
+			Assert.That(result, Does.Contain("return handle == unchecked(default);"));
+			Assert.That(result, Does.Contain("Held = unchecked(global::System.IntPtr.Zero);"));
 			Assert.That(result, Does.Not.Contain("null"));
 			Assert.That(result, Does.Not.Contain(Marker));
 		}

@@ -19,6 +19,8 @@ public class ScriptExporter : IAssetExporter
 			ScriptContentLevel = configuration.ImportSettings.ScriptContentLevel,
 			FullyQualifiedTypeNames = configuration.ExportSettings.ScriptTypesFullyQualified,
 			IlExportMode = configuration.ExportSettings.ScriptIlExportMode,
+			OriginalSourceDirectories = configuration.ExportSettings.ScriptOriginalSourceDirectories,
+			UnityVersion = configuration.Version,
 		};
 		ExportMode = configuration.ExportSettings.ScriptExportMode;
 		ReferenceAssemblyDictionary = ReferenceAssemblies.GetReferenceAssemblies(AssemblyManager, configuration.Version);

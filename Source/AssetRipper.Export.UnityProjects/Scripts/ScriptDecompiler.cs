@@ -20,6 +20,8 @@ internal class ScriptDecompiler
 	public ScriptingBackend ScriptingBackend { get; set; } = ScriptingBackend.Unknown;
 	public bool FullyQualifiedTypeNames { get; set; } = false;
 	public ScriptIlExportMode IlExportMode { get; set; } = ScriptIlExportMode.None;
+	public IReadOnlyList<string> OriginalSourceDirectories { get; set; } = [];
+	public UnityVersion UnityVersion { get; set; }
 
 	public ScriptDecompiler(IAssemblyManager assemblyManager)
 	{
@@ -34,10 +36,14 @@ internal class ScriptDecompiler
 
 		DecompileWholeProject(decompiler, assembly, outputFolder);
 
+		//Before the repair below, so that the project is still compiled as a whole: a substituted file is real source
+		//but not necessarily source this project can build, and everything that calls into it has to agree with it.
+		OriginalSourceSubstitution.Apply(assembly, OriginalSourceDirectories, UnityVersion, decompiler.Settings.UseNestedDirectoriesForNamespaces, outputFolder, fileSystem);
+
 		//Only recovered bodies produce source that does not compile, and only Level3 recovers any.
 		if (ScriptContentLevel == ScriptContentLevel.Level3)
 		{
-			InvalidSourceRepair.Apply(assembly, assemblyManager, GetRoslynLanguageVersion(), outputFolder, fileSystem);
+			InvalidSourceRepair.Apply(assembly, assemblyManager, GetRoslynLanguageVersion(), UnityVersion, outputFolder, fileSystem);
 		}
 
 		//Written last, so that a companion describes the source that was actually kept.

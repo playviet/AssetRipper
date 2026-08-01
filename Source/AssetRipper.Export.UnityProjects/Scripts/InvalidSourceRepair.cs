@@ -47,11 +47,20 @@ internal static class InvalidSourceRepair
 	private const string Marker = "//AssetRipper: commented out, this could not be kept as code.";
 
 	public static void Apply(AssemblyDefinition assembly, IAssemblyManager manager, LanguageVersion languageVersion, string outputFolder, FileSystem fileSystem)
+		=> Apply(assembly, manager, languageVersion, default, outputFolder, fileSystem);
+
+	/// <inheritdoc cref="Apply(AssemblyDefinition, IAssemblyManager, LanguageVersion, string, FileSystem)"/>
+	/// <param name="unityVersion">
+	/// The version the game was built with, which decides which of Unity's version gates are open. Without it this
+	/// reads a different file from the one the editor will compile: code behind a gate is invisible here and present
+	/// there, so a method that still yields can be given a return, and a statement that does not compile can be left.
+	/// </param>
+	public static void Apply(AssemblyDefinition assembly, IAssemblyManager manager, LanguageVersion languageVersion, UnityVersion unityVersion, string outputFolder, FileSystem fileSystem)
 	{
 		List<AssemblyMetadata> metadata = GetMetadata(assembly, manager);
 		try
 		{
-			Apply(metadata.ConvertAll(m => (MetadataReference)m.GetReference()), languageVersion, outputFolder, fileSystem);
+			Apply(metadata.ConvertAll(m => (MetadataReference)m.GetReference()), languageVersion, unityVersion, outputFolder, fileSystem);
 		}
 		finally
 		{
@@ -67,11 +76,15 @@ internal static class InvalidSourceRepair
 	/// The assemblies to compile against. Without them only the source that is broken on its own can be found.
 	/// </param>
 	public static void Apply(List<MetadataReference> references, LanguageVersion languageVersion, string outputFolder, FileSystem fileSystem)
+		=> Apply(references, languageVersion, default, outputFolder, fileSystem);
+
+	/// <inheritdoc cref="Apply(AssemblyDefinition, IAssemblyManager, LanguageVersion, UnityVersion, string, FileSystem)"/>
+	public static void Apply(List<MetadataReference> references, LanguageVersion languageVersion, UnityVersion unityVersion, string outputFolder, FileSystem fileSystem)
 	{
 		//The source was written for this version, and so is the editor going to read it. Checking it against a newer
 		//one accepts what the editor will not: a struct whose fields go unassigned is an error before C# 11 and quietly
 		//defaulted after it.
-		CSharpParseOptions parseOptions = new(languageVersion);
+		CSharpParseOptions parseOptions = OriginalSourceSubstitution.GetParseOptions(unityVersion).WithLanguageVersion(languageVersion);
 
 		SilenceTraces(outputFolder, fileSystem, parseOptions);
 
@@ -180,7 +193,11 @@ internal static class InvalidSourceRepair
 				//mean the same value, and only one of them builds.
 				if (node is CastExpressionSyntax cast && NativeIntegerZero(cast.Type) is { } zero && IsNullLiteral(cast.Expression))
 				{
-					edits.Add((cast.Span, zero));
+					//Which zero to write depends on what it is being compared with, and that is not visible here.
+					//`default` is: it takes the type of whatever it meets, so it is right against a native integer
+					//and against an ordinary one alike. Everywhere else the framework type is the clearer thing to
+					//read, and there is only one type it could be.
+					edits.Add((cast.Span, IsComparedWithSomething(cast) ? "default" : zero));
 				}
 			}
 
@@ -206,6 +223,22 @@ internal static class InvalidSourceRepair
 		{
 			Logger.Info(LogCategory.Export, $"Silenced {silenced} messages that recovery would otherwise have written at runtime");
 		}
+	}
+
+	/// <summary>
+	/// Whether the expression is one side of an equality test, where the other side decides what type a zero has.
+	/// </summary>
+	private static bool IsComparedWithSomething(ExpressionSyntax expression)
+	{
+		SyntaxNode? node = expression;
+
+		while (node?.Parent is ParenthesizedExpressionSyntax or CheckedExpressionSyntax or CastExpressionSyntax)
+		{
+			node = node.Parent;
+		}
+
+		return node?.Parent is BinaryExpressionSyntax binary
+			&& (binary.IsKind(SyntaxKind.EqualsExpression) || binary.IsKind(SyntaxKind.NotEqualsExpression));
 	}
 
 	/// <summary>
@@ -452,7 +485,7 @@ internal static class InvalidSourceRepair
 			}
 
 			TextSpan span = TextSpan.FromBounds(body.Statements[0].SpanStart, body.Statements[^1].Span.End);
-			return new Edit(span, ReturnsValue(returnType) ? "return default;" : null);
+			return new Edit(span, MissingReturn(body, returnType));
 		}
 
 		return null;
@@ -937,8 +970,8 @@ internal static class InvalidSourceRepair
 			//A return only has to be there when the end of the method is reached, but an assignment has to have
 			//happened however the method leaves, so it goes at the top where every path passes through it.
 			return id is "CS0161" or "CS0126"
-				? ReturnsValue(returnType)
-					? new Edit(new TextSpan(body.CloseBraceToken.SpanStart, 0), "return default;")
+				? MissingReturn(body, returnType) is { } missing
+					? new Edit(new TextSpan(body.CloseBraceToken.SpanStart, 0), missing)
 					: null
 				: BuildPrologue(current, parameters) is { Length: > 0 } prologue
 					? new Edit(new TextSpan(body.OpenBraceToken.Span.End, 0), prologue)
@@ -975,6 +1008,21 @@ internal static class InvalidSourceRepair
 	private static bool ReturnsValue(TypeSyntax? returnType)
 	{
 		return returnType is not null and not PredefinedTypeSyntax { Keyword.RawKind: (int)SyntaxKind.VoidKeyword };
+	}
+
+	/// <summary>
+	/// What has to be put back where a method no longer returns on every path. An iterator does not return a
+	/// value at all - the values it produces come out of its yields - so returning one there does not compile,
+	/// and what it needs is the statement that ends the iteration.
+	/// </summary>
+	private static string? MissingReturn(BlockSyntax body, TypeSyntax? returnType)
+	{
+		if (body.DescendantNodes().OfType<YieldStatementSyntax>().Any())
+		{
+			return "yield break;";
+		}
+
+		return ReturnsValue(returnType) ? "return default;" : null;
 	}
 
 	/// <summary>

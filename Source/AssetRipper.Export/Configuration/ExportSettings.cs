@@ -40,6 +40,17 @@ public sealed record class ExportSettings
 	public ScriptIlExportMode ScriptIlExportMode { get; set; } = ScriptIlExportMode.None;
 
 	/// <summary>
+	/// Directories holding the original C# of libraries the game compiled in as source, searched recursively.
+	/// </summary>
+	/// <remarks>
+	/// A library embedded as source ends up inside Assembly-CSharp and is decompiled with the rest of it, which for an
+	/// Il2Cpp game means it comes back badly. Where the original of such a type is in one of these directories and can
+	/// be shown to declare what the recovered assembly says the type has, the original file is written instead of the
+	/// decompiled one. Empty by default, which changes nothing.
+	/// </remarks>
+	public List<string> ScriptOriginalSourceDirectories { get; set; } = new();
+
+	/// <summary>
 	/// How to export shaders?
 	/// </summary>
 	public ShaderExportMode ShaderExportMode { get; set; } = ShaderExportMode.Dummy;
@@ -88,6 +99,7 @@ public sealed record class ExportSettings
 		Logger.Info(LogCategory.General, $"{nameof(ScriptExportMode)}: {ScriptExportMode}");
 		Logger.Info(LogCategory.General, $"{nameof(ScriptLanguageVersion)}: {ScriptLanguageVersion}");
 		Logger.Info(LogCategory.General, $"{nameof(ScriptIlExportMode)}: {ScriptIlExportMode}");
+		Logger.Info(LogCategory.General, $"{nameof(ScriptOriginalSourceDirectories)}: {(ScriptOriginalSourceDirectories.Count == 0 ? "none" : string.Join(", ", ScriptOriginalSourceDirectories))}");
 		Logger.Info(LogCategory.General, $"{nameof(ShaderExportMode)}: {ShaderExportMode}");
 		Logger.Info(LogCategory.General, $"{nameof(ShaderNamingMode)}: {ShaderNamingMode}");
 		Logger.Info(LogCategory.General, $"{nameof(RelinkUnityPackages)}: {RelinkUnityPackages}");

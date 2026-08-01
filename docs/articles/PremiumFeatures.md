@@ -48,11 +48,11 @@ Measured on an arm64 Android game, against the original Unity project it was bui
 |---|---|
 | types in the original with a counterpart recovered | 590 of 617 (96%) |
 | methods in those types with a counterpart recovered | 2973 of 3040 (98%) |
-| recovered methods that are whole compiling code | 48% |
-| recovered methods with some statements commented out | 43% |
-| recovered methods with nothing in them | 8% |
+| recovered methods that are whole compiling code | 63% |
+| recovered methods with some statements commented out | 31% |
+| recovered methods with nothing in them | 6% |
 
-265 methods could not be repaired statement by statement and were emptied, and 14013 statements were commented out.
+163 methods could not be repaired statement by statement and were emptied, and 11387 statements were commented out.
 The project imports into the editor with no compile errors and no shader errors, at content level 2 and 3 alike.
 Improvements are ongoing.
 

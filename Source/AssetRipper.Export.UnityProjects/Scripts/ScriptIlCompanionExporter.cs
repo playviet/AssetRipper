@@ -5,7 +5,6 @@ using AsmResolver.PE.DotNet.Cil;
 using AssetRipper.CIL;
 using AssetRipper.Import.Logging;
 using AssetRipper.Import.Structure.Assembly.Managers;
-using ICSharpCode.Decompiler.CSharp.ProjectDecompiler;
 using System.Text;
 
 namespace AssetRipper.Export.UnityProjects.Scripts;
@@ -45,7 +44,7 @@ public static class ScriptIlCompanionExporter
 	{
 		int written = 0;
 
-		foreach ((string relativePath, List<TypeDefinition> types) in GroupTypesByFile(assembly, nestedDirectoriesForNamespaces))
+		foreach ((string relativePath, _, List<TypeDefinition> types) in ScriptFileLayout.GroupTypesByFile(assembly, nestedDirectoriesForNamespaces))
 		{
 			string scriptPath = fileSystem.Path.Join(outputFolder, relativePath);
 			if (!fileSystem.File.Exists(scriptPath))
@@ -399,67 +398,6 @@ public static class ScriptIlCompanionExporter
 			return "private protected ";
 		}
 		return "private ";
-	}
-
-	/// <summary>
-	/// Groups the types of an assembly the way the decompiler groups them into files.
-	/// </summary>
-	/// <remarks>
-	/// A file is named after the top level type it holds, and a nested type is written inside its declaring type, so it
-	/// belongs to the same file. Two top level types that differ only in case share a file, which is why the paths are
-	/// compared without case: the decompiler groups them the same way, and one of the two would otherwise be lost.
-	/// </remarks>
-	private static List<(string Path, List<TypeDefinition> Types)> GroupTypesByFile(AssemblyDefinition assembly, bool nestedDirectoriesForNamespaces)
-	{
-		List<(string Path, List<TypeDefinition> Types)> files = new();
-		Dictionary<string, int> indices = new(StringComparer.OrdinalIgnoreCase);
-
-		foreach (ModuleDefinition module in assembly.Modules)
-		{
-			foreach (TypeDefinition type in module.TopLevelTypes)
-			{
-				if (type.Name == "<Module>")
-				{
-					continue;
-				}
-
-				string path = GetRelativeScriptPath(type, nestedDirectoriesForNamespaces);
-				if (!indices.TryGetValue(path, out int index))
-				{
-					index = files.Count;
-					indices.Add(path, index);
-					files.Add((path, new List<TypeDefinition>()));
-				}
-
-				AddWithNestedTypes(files[index].Types, type);
-			}
-		}
-
-		return files;
-	}
-
-	private static void AddWithNestedTypes(List<TypeDefinition> destination, TypeDefinition type)
-	{
-		destination.Add(type);
-		foreach (TypeDefinition nested in type.NestedTypes)
-		{
-			AddWithNestedTypes(destination, nested);
-		}
-	}
-
-	private static string GetRelativeScriptPath(TypeDefinition type, bool nestedDirectoriesForNamespaces)
-	{
-		string fileName = WholeProjectDecompiler.CleanUpFileName(type.Name?.ToString() ?? "", ScriptExtension);
-		string @namespace = type.Namespace?.ToString() ?? "";
-		if (@namespace.Length == 0)
-		{
-			return fileName;
-		}
-
-		string directory = nestedDirectoriesForNamespaces
-			? WholeProjectDecompiler.CleanUpPath(@namespace)
-			: WholeProjectDecompiler.CleanUpDirectoryName(@namespace);
-		return Path.Combine(directory, fileName);
 	}
 
 	/// <summary>

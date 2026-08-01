@@ -12,7 +12,7 @@ So the two packages here are built locally instead, and `nuget.config` adds this
 * `SamboyCoding/Cpp2IL` `development` (`b20ca0d`, "Lib: Fix v106"), which is still its head
 * the three commits the `assetripper` branch adds on top, cherry picked: `Move dependencies into main projects`,
   `Change package id`, `Change version`
-* twenty-nine local fixes, all for arm64, which is the architecture every Android build ships and which upstream
+* thirty-six local fixes, all for arm64, which is the architecture every Android build ships and which upstream
   exercises far less than x86:
   1. `ApplicationAnalysisContext.ThrowHelperNamesByAddress` from `Dictionary` to `ConcurrentDictionary`. Throw helper
      recovery is new in `development` and reads that cache from the threads that build the assemblies in parallel, so
@@ -148,6 +148,33 @@ So the two packages here are built locally instead, and `nuget.config` adds this
       break` where none did before.
   29. `movk` writes one 16 bit field of a register and leaves the rest, which is how a constant too wide for one
       instruction is built - most often the bit pattern of a float, so this feeds the float literal recovery.
+
+  30. `tbz`/`tbnz` - test one bit and branch, which is how a bool is tested - masked nothing and then branched on
+      the zero flag, which belongs to whatever set it last. Roughly nine thousand branches in the game's own
+      assembly went the wrong way, and the block structure around each one went with them.
+  31. A call was only resolved when it was the last instruction of its block, so a constructor whose whole body is
+      a call to its base and a return had that call left unresolved, along with every other call sharing a block.
+  32. Every instantiation of a generic method compiles to one shared body, so several methods answer to one
+      address. The lifter took the first candidate's signature and the *caller's* return register, which dropped
+      the runtime method argument - the only thing that says which instantiation is being called - and left the
+      result unconnected. `SaveManager.I` came back as `((SaveManager)0)`. Both the call and the tail call form
+      now hand over every register the convention could have used, and the step that reads that argument resolves
+      them. That step also no longer requires the address to name a method at all, since for a shared body it
+      does not.
+  33. A field a type inherits was not looked for, because only the type's own declarations were searched. Where
+      the base is generic the metadata has no offsets for it - they depend on the type arguments - but a generic
+      type deriving straight from object has its fields at the top of the object, so that offset is the header
+      and nothing else. That is the layout rule rather than a guess, and it is the only case taken.
+  34. Negating a bool held in a field was a bitwise not, because only a typed local counted as boolean. That is
+      what wrote `if (~(Define.DisableTutorial ? 1u : 0u) != 0)`.
+  35. A by-reference parameter and the receiver of a value type method both want an address, and a value was
+      being loaded into those positions - not verifiable IL, and written back out as a pointer to a managed type,
+      which C# does not have. Both now pass the address of a local, and where the argument already is a local
+      that one is used, so what the callee writes lands where the code reads it.
+  36. A call kept the operands it does not take. Under the unknown-callee convention a call is lifted with every
+      register, and il2cpp adds a hidden trailing argument of its own - a delegate invoke is handed the
+      delegate's method pointer - so the surplus kept the load that produced it alive and wrote it out as a
+      placeholder.
 
 Measured on an arm64 Android game, against the original Unity project the build came from. Over the game's own
 assembly, counted on the graph the IL is generated from: instructions the lifter could not translate fell from 4702
