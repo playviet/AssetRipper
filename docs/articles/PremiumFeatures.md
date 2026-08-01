@@ -53,6 +53,7 @@ Measured on an arm64 Android game, against the original Unity project it was bui
 | recovered methods with nothing in them | 8% |
 
 270 methods could not be repaired statement by statement and were emptied, and 14007 statements were commented out.
+The project imports into the editor with no compile errors and no shader errors, at content level 2 and 3 alike.
 Improvements are ongoing.
 
 Iterator methods are a known gap. All 48 of the game's iterators come back with their compiler-generated state
