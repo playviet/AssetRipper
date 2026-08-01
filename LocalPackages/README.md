@@ -12,7 +12,7 @@ So the two packages here are built locally instead, and `nuget.config` adds this
 * `SamboyCoding/Cpp2IL` `development` (`b20ca0d`, "Lib: Fix v106"), which is still its head
 * the three commits the `assetripper` branch adds on top, cherry picked: `Move dependencies into main projects`,
   `Change package id`, `Change version`
-* twenty-four local fixes, all for arm64, which is the architecture every Android build ships and which upstream
+* twenty-six local fixes, all for arm64, which is the architecture every Android build ships and which upstream
   exercises far less than x86:
   1. `ApplicationAnalysisContext.ThrowHelperNamesByAddress` from `Dictionary` to `ConcurrentDictionary`. Throw helper
      recovery is new in `development` and reads that cache from the threads that build the assemblies in parallel, so
@@ -121,6 +121,18 @@ So the two packages here are built locally instead, and `nuget.config` adds this
       stream rather than through the analysis, so it costs almost nothing, cannot recurse back into the analysis
       that asked, and cannot race another thread doing the same. `Vector2.zero`, `Vector3.one`,
       `Quaternion.identity` and the rest of that family all come back as themselves.
+
+  25. A pre-indexed store dropped the writeback. `str xzr, [x19, #0x18]!` moves the base before writing through
+      it, and the instructions after it address the frame from the new value - so losing it made every following
+      store land at an offset nothing could resolve, and the store was discarded. The load side had handled this
+      for a long time; the store side never had. Around 260 stores across the assembly, and the reason an
+      iterator's state machine came back missing the fields it sets.
+  26. An iterator's factory set its state twice. Il2cpp inlines the one-line constructor of a state machine, so
+      what is left is an allocation followed by a store of the state - and the constructor was reconstructed with
+      a default argument while the store was emitted as well. The store is the one that knows the real value, so
+      it becomes the constructor's argument and stops being a store. It is found by tracing the object back
+      through however many copies of the allocation were made, since the store is rarely made through the same
+      one. Without this the decompiler's iterator transform rejected every factory and gave up silently.
 
 Measured on an arm64 Android game, against the original Unity project the build came from. Over the game's own
 assembly, counted on the graph the IL is generated from: instructions the lifter could not translate fell from 4702
