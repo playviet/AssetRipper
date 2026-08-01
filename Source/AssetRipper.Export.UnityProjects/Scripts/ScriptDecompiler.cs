@@ -1,4 +1,5 @@
 ﻿using AsmResolver.DotNet;
+using AssetRipper.Export.Configuration;
 using AssetRipper.Export.Scripts;
 using AssetRipper.Import.Configuration;
 using AssetRipper.Import.Logging;
@@ -18,6 +19,7 @@ internal class ScriptDecompiler
 	public ScriptContentLevel ScriptContentLevel { get; set; } = ScriptContentLevel.Level2;
 	public ScriptingBackend ScriptingBackend { get; set; } = ScriptingBackend.Unknown;
 	public bool FullyQualifiedTypeNames { get; set; } = false;
+	public ScriptIlExportMode IlExportMode { get; set; } = ScriptIlExportMode.None;
 
 	public ScriptDecompiler(IAssemblyManager assemblyManager)
 	{
@@ -36,6 +38,12 @@ internal class ScriptDecompiler
 		if (ScriptContentLevel == ScriptContentLevel.Level3)
 		{
 			InvalidSourceRepair.Apply(assembly, assemblyManager, GetRoslynLanguageVersion(), outputFolder, fileSystem);
+		}
+
+		//Written last, so that a companion describes the source that was actually kept.
+		if (IlExportMode == ScriptIlExportMode.Companion)
+		{
+			ScriptIlCompanionExporter.Export(assembly, decompiler.Settings.UseNestedDirectoriesForNamespaces, outputFolder, fileSystem);
 		}
 	}
 

@@ -48,13 +48,17 @@ Measured on an arm64 Android game, against the original Unity project it was bui
 |---|---|
 | types in the original with a counterpart recovered | 590 of 617 (96%) |
 | methods in those types with a counterpart recovered | 2973 of 3040 (98%) |
-| recovered methods that are whole compiling code | 34% |
-| recovered methods with some statements commented out | 50% |
-| recovered methods with nothing in them | 16% |
+| recovered methods that are whole compiling code | 45% |
+| recovered methods with some statements commented out | 46% |
+| recovered methods with nothing in them | 8% |
 
-2727 bodies were discarded as unreadable, 431 methods could not be repaired statement by statement and were emptied,
-and 13201 statements were commented out. The project imports into the editor with no compile errors. Improvements are
-ongoing.
+270 methods could not be repaired statement by statement and were emptied, and 14007 statements were commented out.
+Improvements are ongoing.
+
+Iterator methods are a known gap. All 48 of the game's iterators come back with their compiler-generated state
+machine intact and their factory returning it, and the state machine's `MoveNext` reads as the switch it is - but none
+of them is written back as `yield return`, because the decompiler's iterator transform needs more of `MoveNext` to be
+analysable than the recovery currently gives it.
 
 What comes out is a readable trace of what the native code does, not the original source. Expect calls into helpers the analysis could not name and values it could not type. Level 2 remains the setting for a faithful project; Level 3 is for reading the logic.
 
