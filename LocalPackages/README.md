@@ -12,7 +12,7 @@ So the two packages here are built locally instead, and `nuget.config` adds this
 * `SamboyCoding/Cpp2IL` `development` (`b20ca0d`, "Lib: Fix v106"), which is still its head
 * the three commits the `assetripper` branch adds on top, cherry picked: `Move dependencies into main projects`,
   `Change package id`, `Change version`
-* twenty-three local fixes, all for arm64, which is the architecture every Android build ships and which upstream
+* twenty-four local fixes, all for arm64, which is the architecture every Android build ships and which upstream
   exercises far less than x86:
   1. `ApplicationAnalysisContext.ThrowHelperNamesByAddress` from `Dictionary` to `ConcurrentDictionary`. Throw helper
      recovery is new in `development` and reads that cache from the threads that build the assemblies in parallel, so
@@ -111,6 +111,16 @@ So the two packages here are built locally instead, and `nuget.config` adds this
   23. A local typed as a managed reference or a pointer. Nothing here emits `ldloca` or `ldarga`, so such a
       local can only hold a lie, and it does not compile either: C# has no pointer to a managed type, and the
       decompiler writes the declaration out as one.
+
+  24. A static field the project cannot name now goes through the property it is reached by. `Vector2.zero` is a
+      property over a private static field, and il2cpp reads the field, so the recovered code named the field -
+      which the project cannot see, and which its own build of that assembly may not even have. Which property it
+      is comes out of the getter: it loads the type's static storage and takes one offset out of it, so matching
+      on that offset identifies the value exactly. Matching on the field's name would only be a convention, and
+      would put a wrong value in the output the moment it did not hold. The getter is read from the instruction
+      stream rather than through the analysis, so it costs almost nothing, cannot recurse back into the analysis
+      that asked, and cannot race another thread doing the same. `Vector2.zero`, `Vector3.one`,
+      `Quaternion.identity` and the rest of that family all come back as themselves.
 
 Measured on an arm64 Android game, against the original Unity project the build came from. Over the game's own
 assembly, counted on the graph the IL is generated from: instructions the lifter could not translate fell from 4702
