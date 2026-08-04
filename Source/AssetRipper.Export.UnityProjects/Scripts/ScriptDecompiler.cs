@@ -34,7 +34,7 @@ internal class ScriptDecompiler
 	{
 		CustomWholeProjectDecompiler decompiler = new(CreateSettings(), assemblyResolver, fileSystem);
 
-		DecompileWholeProject(decompiler, assembly, outputFolder);
+		DecompileWholeProject(decompiler, assembly, outputFolder, fileSystem);
 
 		//Before the repair below, so that the project is still compiled as a whole: a substituted file is real source
 		//but not necessarily source this project can build, and everything that calls into it has to agree with it.
@@ -93,17 +93,41 @@ internal class ScriptDecompiler
 		return settings;
 	}
 
-	private void DecompileWholeProject(WholeProjectDecompiler decompiler, AssemblyDefinition assembly, string outputFolder)
+	private void DecompileWholeProject(CustomWholeProjectDecompiler decompiler, AssemblyDefinition assembly, string outputFolder, FileSystem fileSystem)
 	{
-		try
+		//An assembly is decompiled as a whole and one type that throws ends the run, so a single method the
+		//decompiler cannot read costs every file not yet written. Give up that method's body and run again.
+		HashSet<string> emptied = [];
+
+		for (int attempt = 0; attempt <= MaximumEmptiedMethods; attempt++)
 		{
-			decompiler.DecompileProject(assemblyResolver.Resolve(assembly), outputFolder, TextWriter.Null);
-		}
-		catch (Exception exception)
-		{
-			Logger.Error(exception);
+			//The resolver holds the copy of the assembly it read, so an emptied method needs a new one.
+			ILSpyAssemblyResolver resolver = attempt == 0 ? assemblyResolver : new ILSpyAssemblyResolver(assemblyManager);
+			CustomWholeProjectDecompiler attemptDecompiler = attempt == 0
+				? decompiler
+				: new CustomWholeProjectDecompiler(decompiler.Settings, resolver, fileSystem);
+
+			try
+			{
+				attemptDecompiler.DecompileProject(resolver.Resolve(assembly), outputFolder, TextWriter.Null);
+				return;
+			}
+			catch (Exception exception)
+			{
+				if (!UndecompilableMethodRemoval.EmptyTheMethodThatFailed(assemblyManager, assembly, exception, emptied))
+				{
+					Logger.Error(exception);
+					return;
+				}
+			}
 		}
 	}
+
+	/// <summary>
+	/// How many methods will be given up before the assembly is written off. A run that keeps failing is
+	/// failing for a reason other than one unreadable body, and repeating it forever would not find it.
+	/// </summary>
+	private const int MaximumEmptiedMethods = 16;
 
 	private sealed class CustomWholeProjectDecompiler(DecompilerSettings settings, ILSpyAssemblyResolver assemblyResolver, FileSystem fileSystem) : ILSpyWholeProjectDecompiler(settings, assemblyResolver, NullProjectFileWriter.Instance, fileSystem)
 	{

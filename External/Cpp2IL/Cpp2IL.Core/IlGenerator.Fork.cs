@@ -1,0 +1,1240 @@
+using System.Collections.Generic;
+using System.Linq;
+using AsmResolver.DotNet;
+using AsmResolver.DotNet.Code.Cil;
+using AsmResolver.DotNet.Signatures;
+using AsmResolver.PE.DotNet.Cil;
+using AsmResolver.PE.DotNet.Metadata.Tables;
+using Cpp2IL.Core.Analysis;
+using Cpp2IL.Core.Graphs;
+using Cpp2IL.Core.ISIL;
+using Cpp2IL.Core.Model.Contexts;
+using Cpp2IL.Core.Utils.AsmResolver;
+using LibCpp2IL.BinaryStructures;
+
+namespace Cpp2IL.Core;
+
+/// <summary>
+/// The half of <see cref="IlGenerator"/> this fork adds: laying the blocks out in the order control takes,
+/// keeping values on the evaluation stack instead of naming every one of them, folding the runtime helper
+/// calls the code generator expanded back into the CIL instruction each one stands for, and filling in the
+/// operands where a value's type and the place it is going do not agree.
+///
+/// It is kept apart from the file it belongs to so that the file stays as close to upstream as it can, and
+/// a later version of Cpp2IL can be merged without the two sets of changes meeting.
+/// </summary>
+public static partial class IlGenerator
+{
+    /// <summary>
+    /// Whether the operand is a value that only holds part of a struct - the first of the several registers
+    /// a struct of floats travels in. Loading it as the struct would be a lie, and every use of it after
+    /// that reads as one.
+    /// </summary>
+    private static bool SpansSeveralRegisters(object? operand)
+        => operand is LocalVariable { Type: { } type } && Analysis.HomogeneousFloatStruct.SpansSeveralRegisters(type);
+
+    /// <summary>
+    /// The element an operand names, if it names one: the array, the index into it, and what an element is.
+    ///
+    /// Indexing an array compiles to the array's address plus the header plus the index scaled by the width
+    /// of an element, and the analysis puts that back together as one operand. Here it becomes the one CIL
+    /// instruction it was: nothing else can be written down, because the fields of an array header have no
+    /// names a C# file may use.
+    /// </summary>
+    private static (object Array, object? Index, TypeAnalysisContext Element)? ArrayElement(MemoryOperand memory, MethodAnalysisContext context)
+    {
+        var pointerSize = context.AppContext.Binary.is32Bit ? 4 : 8;
+        var elements = context.AppContext.Binary.is32Bit ? 0x10 : 0x20;
+
+        //An array reached straight out of a field is the same array; nothing about the access changes
+        //because the reference was not first copied into a register the compiler happened to keep.
+        object? array = memory.Base as LocalVariable;
+        array ??= memory.Base as FieldReference;
+
+        var arrayType = array switch
+        {
+            LocalVariable local => local.Type,
+            FieldReference field => field.Field.FieldType,
+            _ => null,
+        };
+
+        var element = arrayType switch
+        {
+            SzArrayTypeAnalysisContext szArray => szArray.ElementType,
+            ArrayTypeAnalysisContext { Rank: 1 } singleDimension => singleDimension.ElementType,
+            _ => null,
+        };
+
+        if (array == null || element == null)
+            return null;
+
+        if (memory.Addend == elements)
+            return (array, memory.Index, element);
+
+        //A constant subscript is folded into the one offset the load already had, so there is no index
+        //register left to read it from - the distance past the first element is the subscript, provided
+        //it is a whole number of them. Which it is, or the compiler was not indexing this array.
+        if (memory.Index != null || memory.Addend < elements
+            || ArrayTypeInference.Width(element, pointerSize) is not { } width || width == 0
+            || (memory.Addend - elements) % width != 0)
+            return null;
+
+        return (array, (int)((memory.Addend - elements) / width), element);
+    }
+
+    private static bool TryLoadArrayElement(MemoryOperand memory, MethodDefinition method,
+        Dictionary<LocalVariable, CilLocalVariable> locals)
+    {
+        if (CurrentContext is not { } context || ArrayElement(memory, context) is not { } element)
+            return false;
+
+        var instructions = method.CilMethodBody!.Instructions;
+
+        LoadArray(element.Array, method, locals);
+        LoadIndex(element.Index, method, locals);
+        instructions.Add(CilOpCodes.Ldelem, method.DeclaringModule!.DefaultImporter.ImportType(element.Element.ToTypeSignature(method.DeclaringModule!).ToTypeDefOrRef()));
+        return true;
+    }
+
+    private static bool TryStoreArrayElement(MemoryOperand memory, MethodDefinition method,
+        Dictionary<LocalVariable, CilLocalVariable> locals)
+    {
+        if (CurrentContext is not { } context || ArrayElement(memory, context) is not { } element)
+            return false;
+
+        var module = method.DeclaringModule!;
+        var instructions = method.CilMethodBody!.Instructions;
+
+        //stelem wants the array and the index underneath the value, and the value is already on the stack.
+        var scratch = new CilLocalVariable(element.Element.ToTypeSignature(module));
+        method.CilMethodBody!.LocalVariables.Add(scratch);
+
+        instructions.Add(CilOpCodes.Stloc, scratch);
+        LoadArray(element.Array, method, locals);
+        LoadIndex(element.Index, method, locals);
+        instructions.Add(CilOpCodes.Ldloc, scratch);
+        instructions.Add(CilOpCodes.Stelem, module.DefaultImporter.ImportType(element.Element.ToTypeSignature(module).ToTypeDefOrRef()));
+        return true;
+    }
+
+    /// <summary>An operand with no index is element zero, which is how a pointer to the first one reads.</summary>
+    private static void LoadIndex(object? index, MethodDefinition method, Dictionary<LocalVariable, CilLocalVariable> locals)
+    {
+        switch (index)
+        {
+            case LocalVariable local:
+                LoadLocal(local, method, locals);
+                break;
+            case int constant:
+                method.CilMethodBody!.Instructions.Add(CilOpCodes.Ldc_I4, constant);
+                break;
+            case FieldReference:
+                LoadArray(index, method, locals);
+                break;
+            default:
+                method.CilMethodBody!.Instructions.Add(CilOpCodes.Ldc_I4_0);
+                break;
+        }
+    }
+
+    /// <summary>The array itself, wherever it was being held.</summary>
+    private static void LoadArray(object array, MethodDefinition method, Dictionary<LocalVariable, CilLocalVariable> locals)
+    {
+        switch (array)
+        {
+            case LocalVariable local:
+                LoadLocal(local, method, locals);
+                break;
+            case NestedFieldReference nested:
+                LoadNestedField(nested, method, locals, method.DeclaringModule!);
+                break;
+            case FieldReference field when field.Field.IsStatic:
+                method.CilMethodBody!.Instructions.Add(CilOpCodes.Ldsfld, field.Field.ToFieldDescriptor(method.DeclaringModule!));
+                break;
+            case FieldReference field:
+                LoadLocal(field.Local, method, locals);
+                method.CilMethodBody!.Instructions.Add(CilOpCodes.Ldfld, field.Field.ToFieldDescriptor(method.DeclaringModule!));
+                break;
+        }
+    }
+
+    /// <summary>
+    /// The method being generated, so that the pieces that only know about operands can still ask what the
+    /// binary looks like. Generation is one method at a time on one thread, so a value per thread is enough.
+    /// </summary>
+    [System.ThreadStatic]
+    private static MethodAnalysisContext? CurrentContext;
+
+    /// <summary>
+    /// Two CIL instructions that say the same thing are equal, and before offsets are worked out a body is
+    /// full of instructions that say the same thing - every <c>nop</c>, every <c>ldc.i4 0</c>. Position is
+    /// what these passes are about, so they have to tell one from another by which object it is.
+    /// </summary>
+    private sealed class ByIdentity : IEqualityComparer<CilInstruction>
+    {
+        public static readonly ByIdentity Instance = new();
+
+        public bool Equals(CilInstruction? left, CilInstruction? right) => ReferenceEquals(left, right);
+
+        public int GetHashCode(CilInstruction instruction) => System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(instruction);
+    }
+
+    /// <summary>
+    /// The order to write the blocks out in: each one followed, where it can be, by the block control reaches
+    /// next. The graph numbers its blocks in the order they were discovered, which has little to do with the
+    /// order they run in, and writing them out that way separates a value from its use by the whole method.
+    ///
+    /// Every block ends with a jump to its successor written out in full - nothing here relies on one block
+    /// falling into the next - so the order is free to be chosen, and choosing the order control takes lets
+    /// the jump between neighbours be dropped and the value travel on the stack.
+    /// </summary>
+    private static List<Block> LayoutOrder(ISILControlFlowGraph graph)
+    {
+        var order = new List<Block>();
+        var seen = new HashSet<Block>();
+        var pending = new Stack<Block>();
+
+        pending.Push(graph.EntryBlock);
+
+        while (pending.Count > 0)
+        {
+            var block = pending.Pop();
+
+            if (!seen.Add(block))
+                continue;
+
+            order.Add(block);
+
+            //Pushed in reverse so that the first successor is the one taken off next, and so ends up adjacent.
+            var successors = SuccessorsInLayoutOrder(block, graph).ToList();
+
+            for (var i = successors.Count - 1; i >= 0; i--)
+                pending.Push(successors[i]);
+        }
+
+        //A block the walk never reached is still written out, so that nothing is silently dropped.
+        foreach (var block in graph.Blocks)
+        {
+            if (seen.Add(block))
+                order.Add(block);
+        }
+
+        return order;
+    }
+
+    /// <summary>
+    /// A block's successors, with the one reached by falling past the end first. For a two-way branch that is
+    /// the one the condition does not name, which is the block the generated jump would otherwise have to
+    /// reach around.
+    /// </summary>
+    private static IEnumerable<Block> SuccessorsInLayoutOrder(Block block, ISILControlFlowGraph graph)
+    {
+        if (block.Instructions.Count == 0 || block.Instructions[^1].OpCode != OpCode.ConditionalJump)
+            return block.Successors;
+
+        var taken = TryResolveJumpTargetBlock(block.Instructions[^1], graph);
+
+        return taken == null
+            ? block.Successors
+            : block.Successors.Where(s => s != taken).Concat(block.Successors.Where(s => s == taken));
+    }
+
+    /// <summary>
+    /// Removes a jump whose destination is the instruction after it.
+    ///
+    /// Each block of the graph is emitted with the jump to its successor spelled out, even where that
+    /// successor comes next and nothing else reaches it. The jump changes nothing, but it stands between the
+    /// instruction that produced a value and the one that consumes it, and it makes the instruction after it
+    /// a place that is jumped to - so the value has to be parked in a local to get across, which is what
+    /// filled the recovered methods with variables that are read once and named after a register.
+    /// </summary>
+    private static void RemoveBranchesToTheFollowingInstruction(CilMethodBody body, Dictionary<Block, CilInstruction> blockEntryMap)
+    {
+        var instructions = body.Instructions;
+
+        for (var i = instructions.Count - 2; i >= 0; i--)
+        {
+            var branch = instructions[i];
+
+            if (branch.OpCode.Code is not (CilCode.Br or CilCode.Br_S))
+                continue;
+
+            if (branch.Operand is not CilInstructionLabel { Instruction: { } target } || target != instructions[i + 1])
+                continue;
+
+            //Anything that named the jump has to be told where it went, or it would name nothing.
+            Retarget(body, blockEntryMap, branch, instructions[i + 1]);
+            instructions.RemoveAt(i);
+        }
+    }
+
+    /// <summary>Points everything that referred to one instruction at another.</summary>
+    private static void Retarget(CilMethodBody body, Dictionary<Block, CilInstruction> blockEntryMap, CilInstruction from, CilInstruction to)
+    {
+        foreach (var instruction in body.Instructions)
+        {
+            switch (instruction.Operand)
+            {
+                case CilInstructionLabel { Instruction: { } single } when single == from:
+                    instruction.Operand = new CilInstructionLabel(to);
+                    break;
+
+                case IList<ICilLabel> labels:
+                    for (var i = 0; i < labels.Count; i++)
+                    {
+                        if (labels[i] is CilInstructionLabel { Instruction: { } branchTarget } && branchTarget == from)
+                            labels[i] = new CilInstructionLabel(to);
+                    }
+                    break;
+            }
+        }
+
+        foreach (var block in blockEntryMap.Keys.ToList())
+        {
+            if (blockEntryMap[block] == from)
+                blockEntryMap[block] = to;
+        }
+    }
+
+    /// <summary>
+    /// Moves the plain loads that open an operation ahead of the value written immediately before them, so
+    /// that the value meets its use with nothing in between.
+    ///
+    /// <see cref="KeepSingleUseValuesOnStack"/> can only drop a store whose load comes next, and the load
+    /// rarely does: an operation pushes its operands left to right, so a value computed last - the last
+    /// argument of a call, the right side of a comparison - is loaded after the ones before it, and the
+    /// store and the load end up a receiver apart. That is enough to keep the local, and a local in the
+    /// middle of an argument list stops the decompiler folding anything around it, so
+    /// <c>TutorialMenu.I.Show()</c> came back as three statements and two named variables.
+    ///
+    /// What sits in between is only ever loads of locals, arguments and literals. None of those can be
+    /// changed by the value's own computation, and none of them can fail, so running them first computes
+    /// the same operands in the same order the source wrote them in - a receiver is evaluated before its
+    /// arguments. Only a run that a branch cannot land in the middle of is moved, and only when the value
+    /// is written and read once, so the local it leaves behind is the one about to be dropped.
+    /// </summary>
+    private static void MoveArgumentLoadsAheadOfTheValueTheyFollow(CilMethodBody body,
+        Dictionary<Instruction, List<CilInstruction>> instructionMap)
+    {
+        //Which ISIL instruction wrote each piece of CIL, named by the first piece it wrote. Only a whole
+        //one of these is moved past: half of an operation is not a value.
+        var producedBy = new Dictionary<CilInstruction, CilInstruction>(ByIdentity.Instance);
+
+        foreach (var generated in instructionMap.Values)
+        {
+            if (generated.Count == 0)
+                continue;
+
+            foreach (var instruction in generated)
+                producedBy[instruction] = generated[0];
+        }
+
+        var instructions = body.Instructions.ToList();
+        var jumpedTo = BranchTargets(instructions);
+        var stores = new Dictionary<CilLocalVariable, int>();
+        var loads = new Dictionary<CilLocalVariable, int>();
+
+        foreach (var instruction in instructions)
+        {
+            if (LocalOf(instruction, CilOpCodes.Stloc) is { } stored)
+                stores[stored] = stores.GetValueOrDefault(stored) + 1;
+            else if (LocalOf(instruction, CilOpCodes.Ldloc) is { } loaded)
+                loads[loaded] = loads.GetValueOrDefault(loaded) + 1;
+            else if (instruction.OpCode == CilOpCodes.Ldloca && instruction.Operand is CilLocalVariable addressed)
+                stores[addressed] = int.MaxValue;
+        }
+
+        var moved = false;
+
+        for (var store = 0; store < instructions.Count; store++)
+        {
+            if (LocalOf(instructions[store], CilOpCodes.Stloc) is not { } local)
+                continue;
+
+            if (stores.GetValueOrDefault(local) != 1 || loads.GetValueOrDefault(local) != 1)
+                continue;
+
+            var load = store + 1;
+
+            //The load being waited for is itself a plain one, so the run has to stop at it rather than
+            //take it in.
+            while (load < instructions.Count && LocalOf(instructions[load], CilOpCodes.Ldloc) != local
+                && IsPlainLoad(instructions[load]))
+                load++;
+
+            //Nothing to move, or what follows the run is not the load this store is waiting for.
+            if (load == store + 1 || load >= instructions.Count || LocalOf(instructions[load], CilOpCodes.Ldloc) != local)
+                continue;
+
+            if (!TryFindProducer(instructions, producedBy, store, out var producer))
+                continue;
+
+            //A value handed straight from one operation to the next belongs to both: inserting between them
+            //would separate a store from the load that was about to make it unnecessary, so the pair is taken
+            //in and the run goes ahead of the whole chain.
+            while (producer > 0
+                && LocalOf(instructions[producer - 1], CilOpCodes.Stloc) is { } carried
+                && LocalOf(instructions[producer], CilOpCodes.Ldloc) == carried
+                && stores.GetValueOrDefault(carried) == 1 && loads.GetValueOrDefault(carried) == 1
+                && TryFindProducer(instructions, producedBy, producer - 1, out var earlier))
+            {
+                producer = earlier;
+            }
+
+            if (Enumerable.Range(producer, load - producer + 1).Any(index => jumpedTo.Contains(instructions[index])))
+                continue;
+
+            if (LoadsSomethingTheProducerWrites(instructions, producer, store, load))
+                continue;
+
+            var run = instructions.GetRange(store + 1, load - store - 1);
+            instructions.RemoveRange(store + 1, run.Count);
+            instructions.InsertRange(producer, run);
+            moved = true;
+            store = load - 1;
+        }
+
+        if (!moved)
+            return;
+
+        body.Instructions.Clear();
+
+        foreach (var instruction in instructions)
+            body.Instructions.Add(instruction);
+    }
+
+    /// <summary>
+    /// Where the ISIL instruction that ends at <paramref name="store"/> begins, if the whole of it lies in
+    /// one unbroken run ending there and computes rather than branches.
+    /// </summary>
+    private static bool TryFindProducer(List<CilInstruction> instructions,
+        Dictionary<CilInstruction, CilInstruction> producedBy, int store, out int producer)
+    {
+        producer = store;
+
+        if (!producedBy.TryGetValue(instructions[store], out var start))
+            return false;
+
+        while (producer > 0 && producedBy.TryGetValue(instructions[producer - 1], out var previous) && previous == start)
+            producer--;
+
+        if (instructions[producer] != start)
+            return false;
+
+        for (var index = producer; index <= store; index++)
+        {
+            if (!producedBy.TryGetValue(instructions[index], out var owner) || owner != start)
+                return false;
+
+            //Control has to reach the end of the run for the value to exist at all, and an argument the run
+            //writes is not one the loads may be moved above.
+            if (instructions[index].OpCode.FlowControl is not (CilFlowControl.Next or CilFlowControl.Call))
+                return false;
+
+            if (instructions[index].OpCode.Code is CilCode.Starg or CilCode.Starg_S)
+                return false;
+        }
+
+        return true;
+    }
+
+    /// <summary>Whether the run being moved reads a local the value's computation writes.</summary>
+    private static bool LoadsSomethingTheProducerWrites(List<CilInstruction> instructions, int producer, int store, int load)
+    {
+        var written = new HashSet<CilLocalVariable>();
+
+        for (var index = producer; index <= store; index++)
+        {
+            if (LocalOf(instructions[index], CilOpCodes.Stloc) is { } stored)
+                written.Add(stored);
+        }
+
+        for (var index = store + 1; index < load; index++)
+        {
+            if (LocalOf(instructions[index], CilOpCodes.Ldloc) is { } loaded && written.Contains(loaded))
+                return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// A push of something already sitting somewhere: a local, an argument, or a literal. None of these can
+    /// be altered by anything a method body does to memory, so where they are read does not matter.
+    /// </summary>
+    private static bool IsPlainLoad(CilInstruction instruction) =>
+        instruction.OpCode.Code is CilCode.Nop
+            or CilCode.Ldloc or CilCode.Ldloc_S or CilCode.Ldloc_0 or CilCode.Ldloc_1 or CilCode.Ldloc_2 or CilCode.Ldloc_3
+            or CilCode.Ldarg or CilCode.Ldarg_S or CilCode.Ldarg_0 or CilCode.Ldarg_1 or CilCode.Ldarg_2 or CilCode.Ldarg_3
+            or CilCode.Ldc_I4 or CilCode.Ldc_I4_S or CilCode.Ldc_I4_M1 or CilCode.Ldc_I4_0 or CilCode.Ldc_I4_1
+            or CilCode.Ldc_I4_2 or CilCode.Ldc_I4_3 or CilCode.Ldc_I4_4 or CilCode.Ldc_I4_5 or CilCode.Ldc_I4_6
+            or CilCode.Ldc_I4_7 or CilCode.Ldc_I4_8 or CilCode.Ldc_I8 or CilCode.Ldc_R4 or CilCode.Ldc_R8
+            or CilCode.Ldnull or CilCode.Ldstr or CilCode.Ldtoken;
+
+    /// <summary>The instructions something branches to, which no run may be moved across.</summary>
+    private static HashSet<CilInstruction> BranchTargets(IEnumerable<CilInstruction> instructions)
+    {
+        var jumpedTo = new HashSet<CilInstruction>(ByIdentity.Instance);
+
+        foreach (var instruction in instructions)
+        {
+            switch (instruction.Operand)
+            {
+                case CilInstructionLabel { Instruction: { } target }:
+                    jumpedTo.Add(target);
+                    break;
+                case IEnumerable<ICilLabel> labels:
+                    foreach (var label in labels)
+                    {
+                        if (label is CilInstructionLabel { Instruction: { } switchTarget })
+                            jumpedTo.Add(switchTarget);
+                    }
+                    break;
+            }
+        }
+
+        return jumpedTo;
+    }
+
+    /// <summary>
+    /// Removes a local that only carries a value from the instruction that produced it to the one that
+    /// consumes it, leaving the value on the evaluation stack instead.
+    ///
+    /// Every value here is given a local of its own, so a call whose result is used once is written out,
+    /// stored, and loaded straight back. The decompiler will fold a value it finds on the stack into the
+    /// expression that uses it, but it keeps a local as a local - so what the source wrote as
+    /// <c>SaveManager.I.GetLevel()</c> came back as two named variables and two statements, and a method
+    /// of a few lines as a dozen.
+    ///
+    /// A store followed immediately by a load of the same local is exactly the identity on the stack, so
+    /// dropping the pair is value-preserving. It is only dropped when the local is written and read once
+    /// in the whole body - otherwise the local is still needed - and when neither instruction is jumped
+    /// to, since removing an instruction a branch names would leave the branch pointing nowhere.
+    /// </summary>
+    private static void KeepSingleUseValuesOnStack(CilMethodBody body)
+    {
+        var instructions = body.Instructions.ToList();
+        var stores = new Dictionary<CilLocalVariable, int>();
+        var loads = new Dictionary<CilLocalVariable, int>();
+
+        foreach (var instruction in instructions)
+        {
+            if (LocalOf(instruction, CilOpCodes.Stloc) is { } stored)
+                stores[stored] = stores.GetValueOrDefault(stored) + 1;
+            else if (LocalOf(instruction, CilOpCodes.Ldloc) is { } loaded)
+                loads[loaded] = loads.GetValueOrDefault(loaded) + 1;
+            else if (instruction.OpCode == CilOpCodes.Ldloca && instruction.Operand is CilLocalVariable addressed)
+            {
+                //Its address escapes, so what happens to it cannot be seen from here.
+                stores[addressed] = int.MaxValue;
+            }
+        }
+
+        //Only what something actually branches to counts. Where a block begins is not itself a reason: the
+        //blocks were laid out in order and the jumps between neighbours have already been dropped, so a block
+        //nothing jumps to is simply the code that follows.
+        var jumpedTo = BranchTargets(instructions);
+        var removed = new HashSet<int>();
+
+        for (var i = 0; i < instructions.Count - 1; i++)
+        {
+            if (LocalOf(instructions[i], CilOpCodes.Stloc) is not { } local)
+                continue;
+
+            //Instructions that fold into their neighbours leave a nop behind, and a nop between the store and
+            //the load says nothing about either.
+            var load = i + 1;
+
+            while (load < instructions.Count && instructions[load].OpCode == CilOpCodes.Nop)
+                load++;
+
+            if (load >= instructions.Count || LocalOf(instructions[load], CilOpCodes.Ldloc) != local)
+                continue;
+
+            if (stores.GetValueOrDefault(local) != 1 || loads.GetValueOrDefault(local) != 1)
+                continue;
+
+            if (Enumerable.Range(i, load - i + 1).Any(index => jumpedTo.Contains(instructions[index])))
+                continue;
+
+            for (var index = i; index <= load; index++)
+                removed.Add(index);
+
+            body.LocalVariables.Remove(local);
+            i = load;
+        }
+
+        if (removed.Count == 0)
+            return;
+
+        //By position, not by value: an instruction is equal to any other that says the same thing, so asking
+        //the body to remove one of them removes whichever comes first.
+        body.Instructions.Clear();
+
+        for (var index = 0; index < instructions.Count; index++)
+        {
+            if (!removed.Contains(index))
+                body.Instructions.Add(instructions[index]);
+        }
+    }
+
+    /// <summary>
+    /// Throws away a value written into a local nothing ever reads, instead of naming it.
+    ///
+    /// A method whose result the caller ignores still returns one, and the lifter gives that result a
+    /// register like any other, so the body ends up storing it. Nothing reads it, but the decompiler will
+    /// not drop a store on its own account, and writes it out as a declaration - <c>Coroutine coroutine =
+    /// self.InvokeDelay(...);</c> for a line the source wrote as a call and nothing else.
+    ///
+    /// Discarding the value says the same thing and needs no name for it. Only a local that no instruction
+    /// reads and whose address is never taken is treated this way, so what is thrown away is a value that
+    /// had nowhere to go.
+    /// </summary>
+    private static void DiscardValuesNothingReads(CilMethodBody body)
+    {
+        var stores = new Dictionary<CilLocalVariable, int>();
+        var read = new HashSet<CilLocalVariable>();
+
+        foreach (var instruction in body.Instructions)
+        {
+            if (LocalOf(instruction, CilOpCodes.Stloc) is { } stored)
+                stores[stored] = stores.GetValueOrDefault(stored) + 1;
+            else if (LocalOf(instruction, CilOpCodes.Ldloc) is { } loaded)
+                read.Add(loaded);
+            else if (instruction.OpCode == CilOpCodes.Ldloca && instruction.Operand is CilLocalVariable addressed)
+                read.Add(addressed);
+        }
+
+        var discarded = new List<CilLocalVariable>();
+
+        foreach (var (local, _) in stores)
+        {
+            if (!read.Contains(local))
+                discarded.Add(local);
+        }
+
+        if (discarded.Count == 0)
+            return;
+
+        //Rewritten in place: a branch may name the store, and the instruction it names is still there.
+        foreach (var instruction in body.Instructions)
+        {
+            if (LocalOf(instruction, CilOpCodes.Stloc) is { } stored && !read.Contains(stored))
+            {
+                instruction.OpCode = CilOpCodes.Pop;
+                instruction.Operand = null;
+            }
+        }
+
+        foreach (var local in discarded)
+            body.LocalVariables.Remove(local);
+    }
+
+    /// <summary>The local an instruction stores to or loads from, once the compact forms are accounted for.</summary>
+    private static CilLocalVariable? LocalOf(CilInstruction instruction, CilOpCode opCode)
+    {
+        var isStore = opCode == CilOpCodes.Stloc;
+        var code = instruction.OpCode.Code;
+
+        var matches = isStore
+            ? code is CilCode.Stloc or CilCode.Stloc_S or CilCode.Stloc_0 or CilCode.Stloc_1 or CilCode.Stloc_2 or CilCode.Stloc_3
+            : code is CilCode.Ldloc or CilCode.Ldloc_S or CilCode.Ldloc_0 or CilCode.Ldloc_1 or CilCode.Ldloc_2 or CilCode.Ldloc_3;
+
+        return matches ? instruction.Operand as CilLocalVariable : null;
+    }
+
+    /// <summary>
+    /// A call to one of the runtime helpers the key function search identified by name. Each of these is a
+    /// CIL instruction the code generator expanded into a call, so it can be folded straight back.
+    /// Returns whether the call was handled; anything else falls through to the placeholder.
+    /// </summary>
+    private static bool TryEmitKeyFunction(string name, Instruction instruction, MethodDefinition method,
+        Dictionary<LocalVariable, CilLocalVariable> locals, MemberReference writeLine, MemberReference stringCtor)
+    {
+        var body = method.CilMethodBody!;
+        var instructions = body.Instructions;
+        var module = method.DeclaringModule!;
+        var importer = module.DefaultImporter!;
+
+        switch (name)
+        {
+            // The guard around it is removed where it can be recognised; where it could not, the call on its
+            // own does nothing a managed reader can see, so it says less than nothing to keep it.
+            case "il2cpp_codegen_initialize_runtime_metadata":
+            case "il2cpp_codegen_initialize_method":
+                return true;
+
+            // Allocating a vector: the class operand describes the array type, whose element type is what
+            // newarr takes, and the operand after it is the length.
+            //A one dimensional array is its own kind of type here, not an array type of rank one, so both are
+            //asked for the element type newarr takes.
+            case "SzArrayNew" when ClassArgument(Argument(instruction, 1)) is SzArrayTypeAnalysisContext or ArrayTypeAnalysisContext:
+            {
+                var length = Argument(instruction, 2);
+                var elementType = ClassArgument(Argument(instruction, 1)) switch
+                {
+                    SzArrayTypeAnalysisContext single => single.ElementType,
+                    ArrayTypeAnalysisContext multiple => multiple.ElementType,
+                    _ => null,
+                };
+
+                if (length is null || elementType is null)
+                    return false;
+
+                LoadOperand(length, method, locals, writeLine, stringCtor);
+                instructions.Add(CilOpCodes.Newarr, importer.ImportType(elementType.ToTypeSignature(module).ToTypeDefOrRef()));
+                StoreResult(instruction, method, locals, writeLine);
+                return true;
+            }
+
+            // A type test: the value, then the class it is being tested against.
+            //Boxing puts a copy of a value on the heap, which is the one instruction it is.
+            case "il2cpp_codegen_box" when ClassArgument(Argument(instruction, 2)) is { IsValueType: true } boxed:
+            {
+                var boxedValue = Argument(instruction, 1);
+                if (boxedValue is null)
+                    return false;
+
+                LoadOperand(boxedValue, method, locals, writeLine, stringCtor, boxed);
+                instructions.Add(CilOpCodes.Box, importer.ImportType(boxed.ToTypeSignature(module).ToTypeDefOrRef()));
+                StoreResult(instruction, method, locals, writeLine);
+                return true;
+            }
+
+            case "il2cpp_vm_object_is_inst" when ClassArgument(Argument(instruction, 2)) is { } testedAgainst:
+            {
+                var value = Argument(instruction, 1);
+                if (value is null)
+                    return false;
+
+                LoadOperand(value, method, locals, writeLine, stringCtor);
+                instructions.Add(CilOpCodes.Isinst, importer.ImportType(testedAgainst.ToTypeSignature(module).ToTypeDefOrRef()));
+                StoreResult(instruction, method, locals, writeLine);
+                return true;
+            }
+
+            default:
+                return false;
+        }
+    }
+
+    /// <summary>
+    /// The type a runtime class argument describes. The metadata load is sometimes still in a local and
+    /// sometimes has been folded into the call, so both shapes have to be recognised.
+    /// </summary>
+    private static TypeAnalysisContext? ClassArgument(object? operand) => operand switch
+    {
+        LocalVariable { Type: RuntimeClassTypeAnalysisContext runtimeClass } => runtimeClass.RepresentedType,
+        RuntimeClassTypeAnalysisContext runtimeClass => runtimeClass.RepresentedType,
+        TypeAnalysisContext type => type,
+        _ => null,
+    };
+
+    // The nth argument of a call, counting past the target and, for a call that produces one, the result.
+    private static object? Argument(Instruction instruction, int index)
+    {
+        var start = instruction.OpCode == OpCode.Call ? 2 : 1;
+        return instruction.Operands.Count > start + index - 1 ? instruction.Operands[start + index - 1] : null;
+    }
+
+    private static void StoreResult(Instruction instruction, MethodDefinition method,
+        Dictionary<LocalVariable, CilLocalVariable> locals, MemberReference writeLine)
+    {
+        if (instruction.OpCode == OpCode.Call && instruction.Operands.Count > 1)
+            StoreToOperand(instruction.Operands[1], method, locals, writeLine);
+        else
+            method.CilMethodBody!.Instructions.Add(CilOpCodes.Pop);
+    }
+
+    /// <summary>
+    /// Loads the value of a move, knowing where it is about to be stored.
+    /// </summary>
+    /// <remarks>
+    /// A move carries no type of its own: arm64 writes a register, and how wide the value is and whether it is a
+    /// number at all is only known from the destination. Loading it blind writes an eight-byte constant into whatever
+    /// the destination turns out to be, and a struct assigned from one is not C# - so the declaration is commented
+    /// out, and with it every later statement that used the local. `BoardController::ComputeHighlights` lost 847 of
+    /// its 849 lines to four such declarations.
+    /// </remarks>
+    private static void LoadOperandInto(object destination, object value, MethodDefinition method,
+        Dictionary<LocalVariable, CilLocalVariable> locals, MemberReference writeLine, MemberReference stringCtor)
+    {
+        var type = TypeOfOperand(destination);
+
+        //Zero is what a cleared register holds, and in a struct it means an empty one - `(Dictionary<int,
+        //object>.Enumerator)0L` is not C#, so the declaration is dropped and every statement using the local
+        //goes with it.
+        if (type is { IsValueType: true } && IsZeroConstant(value) && !IsNumeric(type) && !LowersToNativeInt(type))
+        {
+            var module = method.DeclaringModule!;
+            AddDefaultValue(method.CilMethodBody!.Instructions, type, module, module.DefaultImporter!);
+            return;
+        }
+
+        //Only a value type is handed down, and only so an immediate is loaded at the width it is about to be
+        //stored at. Telling the loader a reference is expected would also let it read a zero as null, and a
+        //move is the one place that is wrong: a register the analysis typed as a reference and that in fact
+        //holds a number is common enough that doing so loses more bodies than it saves.
+        LoadOperand(value, method, locals, writeLine, stringCtor, type is { IsValueType: true } ? type : null);
+    }
+
+    // What a value is, where that is known. A field says what it holds just as directly as a typed local.
+    private static TypeAnalysisContext? TypeOfOperand(object operand) => operand switch
+    {
+        LocalVariable local => local.Type,
+        FieldReference field => field.Field.FieldType,
+        _ => null,
+    };
+
+    // The types a value sits in a 32-bit slot for, which includes an enum with any of them underneath.
+    private static bool IsThirtyTwoBitInteger(TypeAnalysisContext? type) =>
+        type?.Type is Il2CppTypeEnum.IL2CPP_TYPE_I4 or Il2CppTypeEnum.IL2CPP_TYPE_U4
+            or Il2CppTypeEnum.IL2CPP_TYPE_I2 or Il2CppTypeEnum.IL2CPP_TYPE_U2
+            or Il2CppTypeEnum.IL2CPP_TYPE_I1 or Il2CppTypeEnum.IL2CPP_TYPE_U1
+            or Il2CppTypeEnum.IL2CPP_TYPE_BOOLEAN or Il2CppTypeEnum.IL2CPP_TYPE_CHAR;
+
+    /// <summary>
+    /// Whether the operand ends up as a native integer in the emitted IL: either a value whose type was
+    /// never established, or one of the runtime handles that has no managed type to lower to.
+    /// </summary>
+    private static bool LowersToNativeInt(object operand) =>
+        operand is LocalVariable local && LowersToNativeInt(local.Type);
+
+    /// <summary>
+    /// A local whose address can be handed to a by-reference parameter. Where the argument is a value the method
+    /// already has a local for, that local is used, so what the callee writes lands where the code reads it.
+    /// </summary>
+    private static CilLocalVariable ScratchLocal(object? argument, TypeSignature elementType, MethodDefinition method,
+        Dictionary<LocalVariable, CilLocalVariable> locals)
+    {
+        if (argument is LocalVariable local && locals.TryGetValue(local, out var existing) && existing.VariableType == elementType)
+            return existing;
+
+        var scratch = new CilLocalVariable(elementType);
+        method.CilMethodBody!.LocalVariables.Add(scratch);
+        return scratch;
+    }
+
+    /// <summary>
+    /// Whether the value a method was found to return can actually be its return value.
+    /// </summary>
+    /// <remarks>
+    /// Aapcs64 returns a struct in the vector registers when its fields are all floats, in a pair of general purpose
+    /// registers when it is small enough, and through memory the caller points x8 at when it is not. Recovery reads
+    /// the return from x0 in every case, so for a struct it picks up whatever happened to be in x0, usually the
+    /// receiver. Returning that says something plainly untrue and does not compile either, so it is better to return
+    /// nothing in particular.
+    /// </remarks>
+    private static bool ReturnsTheRightThing(object returned, TypeAnalysisContext returnType)
+    {
+        if (!returnType.IsValueType)
+            return true;
+
+        //Nothing is known about the value, so there is nothing to object to.
+        if (returned is not LocalVariable { Type: { } valueType })
+            return true;
+
+        if (ReferenceEquals(valueType, returnType))
+            return true;
+
+        //A reference where a value type is expected is the receiver left in x0 by a body that was not recovered, and
+        //one struct where another is expected is whatever else was in the register. Only a number standing in for
+        //another number is worth keeping, since the conversion between them is real.
+        return IsNumeric(valueType) && IsNumeric(returnType);
+    }
+
+    private static bool IsNumeric(TypeAnalysisContext type) => type.Type is
+        Il2CppTypeEnum.IL2CPP_TYPE_BOOLEAN or Il2CppTypeEnum.IL2CPP_TYPE_CHAR
+        or Il2CppTypeEnum.IL2CPP_TYPE_I1 or Il2CppTypeEnum.IL2CPP_TYPE_U1
+        or Il2CppTypeEnum.IL2CPP_TYPE_I2 or Il2CppTypeEnum.IL2CPP_TYPE_U2
+        or Il2CppTypeEnum.IL2CPP_TYPE_I4 or Il2CppTypeEnum.IL2CPP_TYPE_U4
+        or Il2CppTypeEnum.IL2CPP_TYPE_I8 or Il2CppTypeEnum.IL2CPP_TYPE_U8
+        or Il2CppTypeEnum.IL2CPP_TYPE_R4 or Il2CppTypeEnum.IL2CPP_TYPE_R8
+        or Il2CppTypeEnum.IL2CPP_TYPE_I or Il2CppTypeEnum.IL2CPP_TYPE_U;
+
+    /// <summary>
+    /// Pushes a default value of <paramref name="type"/>, for an argument that the code being recovered no longer
+    /// contains because the constructor it belonged to was inlined.
+    /// </summary>
+    /// <remarks>
+    /// The value has to match the signature the argument is passed as, not the analysis type, because a runtime
+    /// handle is not a reference even though nothing managed stands behind it: it is a native integer, and pushing
+    /// null for one does not compile.
+    /// </remarks>
+    private static void AddDefaultValue(CilInstructionCollection instructions, TypeAnalysisContext type, ModuleDefinition module, ReferenceImporter importer)
+    {
+        var signature = type.ToTypeSignature(module).ImportWith(importer);
+
+        switch (signature.ElementType)
+        {
+            case ElementType.R4:
+                instructions.Add(CilOpCodes.Ldc_R4, 0f);
+                return;
+            case ElementType.R8:
+                instructions.Add(CilOpCodes.Ldc_R8, 0d);
+                return;
+            case ElementType.I8:
+            case ElementType.U8:
+                instructions.Add(CilOpCodes.Ldc_I4_0);
+                instructions.Add(CilOpCodes.Conv_I8);
+                return;
+            case ElementType.I:
+            case ElementType.U:
+            case ElementType.Ptr:
+            case ElementType.FnPtr:
+                instructions.Add(CilOpCodes.Ldc_I4_0);
+                instructions.Add(CilOpCodes.Conv_I);
+                return;
+            case ElementType.Boolean:
+            case ElementType.Char:
+            case ElementType.I1:
+            case ElementType.U1:
+            case ElementType.I2:
+            case ElementType.U2:
+            case ElementType.I4:
+            case ElementType.U4:
+                instructions.Add(CilOpCodes.Ldc_I4_0);
+                return;
+            case ElementType.Class:
+            case ElementType.Object:
+            case ElementType.String:
+            case ElementType.Array:
+            case ElementType.SzArray:
+                instructions.Add(CilOpCodes.Ldnull);
+                return;
+        }
+
+        if (signature.IsValueType)
+        {
+            var local = new CilLocalVariable(signature);
+            instructions.Owner.LocalVariables.Add(local);
+            instructions.Add(CilOpCodes.Ldloca, local);
+            instructions.Add(CilOpCodes.Initobj, signature.ToTypeDefOrRef());
+            instructions.Add(CilOpCodes.Ldloc, local);
+        }
+        else
+        {
+            instructions.Add(CilOpCodes.Ldnull);
+        }
+    }
+
+    /// <summary>
+    /// The constructor of <paramref name="type"/> that takes the fewest arguments, for an allocation whose own
+    /// constructor call was inlined away and so cannot be read back out of the code.
+    /// </summary>
+    private static MethodAnalysisContext? ShortestConstructor(TypeAnalysisContext? type, AssemblyAnalysisContext? assembly)
+    {
+        if (type is null or RuntimeClassTypeAnalysisContext || type.Name is null)
+            return null;
+
+        //Only a type of this assembly can be trusted here. A build strips its class libraries down to what the game
+        //used, so a constructor that exists in the build may not exist, or may not be reachable, in the copy the
+        //project is compiled against, and a call to it would not compile.
+        if (assembly is null || !ReferenceEquals(type.DeclaringAssembly, assembly))
+            return null;
+
+        MethodAnalysisContext? shortest = null;
+
+        foreach (var method in type.Methods)
+        {
+            if (method.IsStatic || method.Name != ".ctor")
+                continue;
+
+            if (shortest == null || method.Parameters.Count < shortest.Parameters.Count)
+                shortest = method;
+        }
+
+        return shortest;
+    }
+
+    /// <summary>
+    /// The constructor call belonging to an allocation, wherever along the path it is made.
+    ///
+    /// The language allocates an object and constructs it in one instruction; il2cpp writes the two
+    /// separately, and it does not always keep them together - a delegate is allocated, the method it is to
+    /// call is worked out, and only then is the constructor called, which puts a block boundary between them.
+    /// Looking only inside the allocation's own block therefore misses the delegates, and a delegate that is
+    /// not built in one instruction is not one a decompiler will write back as the lambda it was: it sees an
+    /// object being handed a method pointer, which C# has no syntax for at all.
+    ///
+    /// Only along a path that had to be taken: each step is followed only where the block goes one way and
+    /// the block it goes to is reached no other way, so what is found is what runs. Anything that reads the
+    /// object before its constructor stops the search, since an object already in use was not still being
+    /// built.
+    /// </summary>
+    private static Instruction? FindConstructorCallAlongPath(MethodAnalysisContext context, Instruction newobj)
+    {
+        var newObject = newobj.Operands[0];
+        var block = context.ControlFlowGraph!.Blocks.FirstOrDefault(candidate => candidate.Instructions.Contains(newobj));
+
+        if (block == null)
+            return null;
+
+        var index = block.Instructions.IndexOf(newobj) + 1;
+        var walked = new HashSet<Block>();
+
+        while (block != null && walked.Add(block))
+        {
+            for (var i = index; i < block.Instructions.Count; i++)
+            {
+                var candidate = block.Instructions[i];
+
+                if (candidate is { OpCode: OpCode.CallVoid, Operands: [MethodAnalysisContext { Name: ".ctor" }, _, ..] }
+                    && ReferenceEquals(candidate.Operands[1], newObject))
+                    return candidate;
+
+                if (Mentions(candidate, newObject))
+                    return null;
+            }
+
+            block = block.Successors.Count == 1 && block.Successors[0].Predecessors.Count == 1
+                ? block.Successors[0]
+                : null;
+
+            index = 0;
+        }
+
+        return null;
+    }
+
+    /// <summary>Whether an instruction names a value, directly or as the place it reads or writes through.</summary>
+    private static bool Mentions(Instruction instruction, object value)
+    {
+        foreach (var operand in instruction.Operands)
+            switch (operand)
+            {
+                case MemoryOperand memory when ReferenceEquals(memory.Base, value) || ReferenceEquals(memory.Index, value):
+                case FieldReference field when ReferenceEquals(field.Local, value):
+                    return true;
+                default:
+                    if (ReferenceEquals(operand, value))
+                        return true;
+                    break;
+            }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Whether a constructor is the one belonging to the type being allocated, rather than the base one
+    /// il2cpp leaves behind where it inlined the real constructor into its caller.
+    ///
+    /// Compared by name: a constructed generic type is worked out fresh wherever it is needed, so the type
+    /// a call names and the type the allocation names are two objects saying the same thing - and comparing
+    /// the objects would reject every delegate, whose type is always a constructed one.
+    /// </summary>
+    private static bool ConstructsAllocatedType(MethodAnalysisContext constructor, TypeAnalysisContext? allocatedType, Instruction? call)
+        => allocatedType != null
+           && (ReferenceEquals(constructor.DeclaringType, allocatedType) || constructor.DeclaringType?.FullName == allocatedType.FullName)
+           && DelegateTakesItsTarget(constructor, call)
+           && CanBeNamed(constructor.DeclaringType);
+
+    /// <summary>
+    /// Whether a delegate is being built around a method it can actually stand for.
+    ///
+    /// Building the delegate in one instruction is what lets a decompiler write it back as the lambda it came
+    /// from, and to do that it reads the lambda's parameter names off the delegate's own <c>Invoke</c>, one
+    /// per parameter. A method that does not take what the delegate hands out therefore has no name for one
+    /// of its parameters, and the decompiler stops - taking the rest of the assembly with it, since it is
+    /// decompiling all of it at once. Where the two do not agree the allocation is left as it was: the
+    /// delegate reads as an object handed a method pointer, which is worse to read but costs only itself.
+    /// </summary>
+    /// <summary>
+    /// Whether a type is one the recovered project can write down.
+    ///
+    /// A generic body is compiled once for all the arguments that share a representation, and il2cpp records
+    /// that one body against stand-ins rather than against any of the types it actually serves - an enum
+    /// argument becomes <c>System.Int32Enum</c>, which the runtime library keeps to itself. Building the
+    /// delegate in one instruction names its type in the source; naming a type the project cannot see does not
+    /// compile, and takes the declaration it is part of with it. Left unfused it is a cast among statements
+    /// that can be dropped one at a time, which costs far less.
+    /// </summary>
+    private static bool CanBeNamed(TypeAnalysisContext? type)
+    {
+        switch (type)
+        {
+            case null:
+                return true;
+
+            case GenericInstanceTypeAnalysisContext generic:
+                return CanBeNamed(generic.GenericType) && generic.GenericArguments.All(CanBeNamed);
+
+            default:
+                var visibility = type.Attributes & System.Reflection.TypeAttributes.VisibilityMask;
+                return !IsSharedEnumStandIn(type)
+                       && (visibility is System.Reflection.TypeAttributes.Public or System.Reflection.TypeAttributes.NestedPublic
+                           || type.Definition == null);
+        }
+    }
+
+    /// <summary>
+    /// The constructor to build the allocated type with, given the one the compiled code called.
+    ///
+    /// A generic body is compiled once for every argument that shares a representation, so the constructor the
+    /// code calls belongs to whichever instantiation il2cpp recorded that shared body against - for an enum
+    /// argument, one written against a stand-in the runtime library keeps to itself. The allocation names the
+    /// real type, and it is the real type the object is: the same constructor on it is the one to build it
+    /// with, and it is the only one of the two the project can write down.
+    /// </summary>
+    private static MethodAnalysisContext? ConstructorOfAllocatedType(MethodAnalysisContext? called, TypeAnalysisContext? allocatedType)
+    {
+        if (called == null || allocatedType == null || CanBeNamed(called.DeclaringType))
+            return called;
+
+        return allocatedType.Methods.FirstOrDefault(m => m is { Name: ".ctor", IsStatic: false }
+                                                         && m.Parameters.Count == called.Parameters.Count);
+    }
+
+    /// <summary>
+    /// Whether a constructor takes what the call passed: it either is that constructor, or is the same one on
+    /// the type actually allocated. A constructor picked for any other reason is one the compiled code never
+    /// called, and what it was passed says nothing about what this one takes.
+    /// </summary>
+    private static bool TakesTheCallsArguments(MethodAnalysisContext constructor, MethodAnalysisContext? called)
+        => called != null
+           && (ReferenceEquals(constructor, called)
+               || (constructor.Name == ".ctor" && constructor.Parameters.Count == called.Parameters.Count
+                   && !CanBeNamed(called.DeclaringType)));
+
+    /// <summary>
+    /// Whether a type is one of the stand-ins il2cpp records a shared generic body against.
+    ///
+    /// They are declared like any other type in the metadata il2cpp writes, and are public there, but they are
+    /// not in the runtime library the project is built against - no assembly Unity ships has a
+    /// <c>System.Int32Enum</c>. Nothing tells them apart except that they are these, so they are listed.
+    /// </summary>
+    private static bool IsSharedEnumStandIn(TypeAnalysisContext type)
+        => type.Namespace == "System"
+           && type.Name is "SByteEnum" or "ByteEnum" or "Int16Enum" or "UInt16Enum"
+                        or "Int32Enum" or "UInt32Enum" or "Int64Enum" or "UInt64Enum";
+
+    private static bool DelegateTakesItsTarget(MethodAnalysisContext constructor, Instruction? call)
+    {
+        var invoke = constructor.DeclaringType?.Methods.FirstOrDefault(m => m is { Name: "Invoke", IsStatic: false });
+
+        if (invoke == null || call == null)
+            return true;
+
+        foreach (var operand in call.Operands.Skip(2))
+            if (operand is RuntimeMethodInfoAnalysisContext { RepresentedMethod: { } target })
+                return target.Parameters.Count == invoke.Parameters.Count;
+
+        return true;
+    }
+    /// <summary>
+    /// Loads a field that sits inside a struct held in another field, one step at a time.
+    /// </summary>
+    /// <remarks>
+    /// Only the first step decides where the walk starts - a static field is simply there, an instance one
+    /// is on something. After that each step is the same instruction, because a struct on the stack is read
+    /// through exactly as an object reference is.
+    /// </remarks>
+    private static void LoadNestedField(NestedFieldReference nested, MethodDefinition method,
+        Dictionary<LocalVariable, CilLocalVariable> locals, ModuleDefinition module)
+    {
+        var instructions = method.CilMethodBody!.Instructions;
+        var outer = nested.Path[0];
+
+        if (outer.IsStatic)
+        {
+            instructions.Add(CilOpCodes.Ldsfld, outer.ToFieldDescriptor(module));
+        }
+        else
+        {
+            LoadLocal(nested.Local, method, locals);
+            instructions.Add(CilOpCodes.Ldfld, outer.ToFieldDescriptor(module));
+        }
+
+        for (var i = 1; i < nested.Path.Length; i++)
+            instructions.Add(CilOpCodes.Ldfld, nested.Path[i].ToFieldDescriptor(module));
+    }
+    /// <summary>
+    /// Gives the body an ending, where the code it was built from never had one.
+    /// </summary>
+    /// <remarks>
+    /// A <c>ret</c> is written only where the ISIL says the method returns, and plenty of bodies never say
+    /// it: one whose only instruction is an undecoded jump, one whose last block falls into the exit rather
+    /// than branching to it, one that ends in a call the analysis could not see past. The instructions are
+    /// then all correct and the body still cannot be read, because control runs off the end of it - which a
+    /// reader reports as the stack being wrong, at whatever offset it walked off.
+    ///
+    /// Only three kinds of instruction end a path: returning, throwing, and branching somewhere
+    /// unconditionally. Anything else falls through, and if it is the last thing in the body it falls out of
+    /// the method. What the method is supposed to hand back is not known here, so it hands back nothing in
+    /// particular - which is what a body that was given up on is worth, and is the difference between a
+    /// method that reads and one that is thrown away whole.
+    /// </remarks>
+    private static void EnsureTheBodyEnds(MethodAnalysisContext context, MethodDefinition definition,
+        ModuleDefinition module, ReferenceImporter importer)
+    {
+        var instructions = definition.CilMethodBody!.Instructions;
+
+        if (instructions.Count > 0
+            && instructions[^1].OpCode.FlowControl is CilFlowControl.Return or CilFlowControl.Throw or CilFlowControl.Branch)
+        {
+            return;
+        }
+
+        if (context.ReturnType is { } returned && returned.FullName != "System.Void")
+        {
+            AddDefaultValue(instructions, returned, module, importer);
+        }
+
+        instructions.Add(CilOpCodes.Ret);
+    }
+    /// <summary>
+    /// The instruction a branch to this block arrives at, following on where the block itself has none left.
+    /// </summary>
+    /// <remarks>
+    /// A block is emptied whenever everything in it turns out to be dead - most often a tail that only loaded
+    /// the return value, once the value is known from elsewhere - and the graph then drops it and re-points the
+    /// edges around it. The branches are not re-pointed: their operand is still the block, and a branch whose
+    /// operand is a block rather than an instruction was **thrown away entirely**, condition and all. That is
+    /// what a lost `if` looks like in the output - the comparison is still computed and then discarded:
+    /// <code>
+    /// _ = cells.Length &lt; 4;                              // the test, with nothing left to read it
+    /// if (cells[0] == Colour.None || cells[0] != cells[3]) { _ = cells[1] == Colour.None; }
+    /// return true;                                        // whatever the answer was
+    /// </code>
+    /// An empty block has no branch of its own and so exactly one successor, so following it is unambiguous.
+    /// </remarks>
+    private static Instruction? FirstInstructionFrom(Block block)
+    {
+        var seen = new HashSet<Block>();
+        var pending = new Queue<Block>();
+        pending.Enqueue(block);
+
+        while (pending.Count > 0)
+        {
+            var next = pending.Dequeue();
+
+            if (!seen.Add(next))
+                continue;
+
+            if (next.Instructions.Count > 0)
+                return next.Instructions[0];
+
+            foreach (var successor in next.Successors)
+                pending.Enqueue(successor);
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Takes a branch out where its target could not be worked out, without upsetting the stack.
+    /// </summary>
+    /// <remarks>
+    /// A branch that goes nowhere has to go, but the two kinds do not leave the same thing behind. An
+    /// unconditional one reads nothing and can simply be dropped. A conditional one has already had its
+    /// condition put on the stack by the instructions in front of it, and dropping it strands that value
+    /// there - so the block after this one is reached along one path with a value on the stack and along
+    /// another without, which is exactly the disagreement that makes a body unreadable. Discarding the
+    /// condition is what the branch would have done with it.
+    /// </remarks>
+    private static void StopBranching(CilInstruction branch)
+    {
+        branch.OpCode = branch.OpCode.StackBehaviourPop == CilStackBehaviour.PopI ? CilOpCodes.Pop : CilOpCodes.Nop;
+        branch.Operand = null;
+    }
+}

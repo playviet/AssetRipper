@@ -32,7 +32,7 @@ namespace AssetRipper.Export.UnityProjects.Scripts;
 /// mean on their own are rewritten, because a statement that compiles and is wrong is worse than one that is not there.
 /// </para>
 /// </remarks>
-internal static class InvalidSourceRepair
+internal static partial class InvalidSourceRepair
 {
 	/// <summary>
 	/// How many times the source may be compiled and repaired.
@@ -456,6 +456,9 @@ internal static class InvalidSourceRepair
 	/// The usual cause is a method that no longer returns on every path, because the return was one of the statements
 	/// commented out earlier. Such a method needs something left behind to return, hence the replacement.
 	/// </remarks>
+	/// <summary>What is written where a method that could not be repaired used to be.</summary>
+	internal const string EmptiedNote = "AssetRipper: emptied, this method could not be repaired statement by statement.";
+
 	private static Edit? FindBodyEdit(SyntaxNode node)
 	{
 		for (SyntaxNode? current = node; current is not null; current = current.Parent)
@@ -465,7 +468,8 @@ internal static class InvalidSourceRepair
 			//would leave a member with no body at all.
 			if (current is ArrowExpressionClauseSyntax arrow)
 			{
-				return new Edit(arrow.Expression.Span, ReturnsValue(GetArrowReturnType(arrow)) ? "default" : "_ = 0", Rewritten: true);
+				return new Edit(arrow.Expression.Span,
+					(ReturnsValue(GetArrowReturnType(arrow)) ? "default" : "_ = 0") + $" /*{EmptiedNote}*/", Rewritten: true);
 			}
 
 			(BlockSyntax? body, TypeSyntax? returnType) = current switch
@@ -485,7 +489,13 @@ internal static class InvalidSourceRepair
 			}
 
 			TextSpan span = TextSpan.FromBounds(body.Statements[0].SpanStart, body.Statements[^1].Span.End);
-			return new Edit(span, MissingReturn(body, returnType));
+
+			//Where the whole body goes and something has to stand in its place, the statements are replaced
+			//rather than commented, so nothing in the file says the method used to do anything. It then reads
+			//as a method that really was empty - and every measure taken of the export believes that, which is
+			//how a hundred and sixty emptied methods were being counted as whole.
+			string? missing = MissingReturn(body, returnType);
+			return new Edit(span, missing is null ? null : $"//{EmptiedNote}\r\n\t\t\t{missing}");
 		}
 
 		return null;
@@ -569,7 +579,8 @@ internal static class InvalidSourceRepair
 
 			string? text = RewriteNullPointer(node, model)
 				?? RewriteNativeBooleanTest(node, model, compilation)
-				?? RewriteConstructorCall(node, model);
+				?? RewriteConstructorCall(node, model)
+				?? RewriteInaccessibleMember(node, model);
 
 			if (text is not null)
 			{

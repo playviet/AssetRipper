@@ -47,14 +47,29 @@ Measured on an arm64 Android game, against the original Unity project it was bui
 | | |
 |---|---|
 | types in the original with a counterpart recovered | 590 of 617 (96%) |
-| methods in those types with a counterpart recovered | 2973 of 3040 (98%) |
-| recovered methods that are whole compiling code | 63% |
-| recovered methods with some statements commented out | 31% |
-| recovered methods with nothing in them | 6% |
+| methods in those types with a counterpart recovered | 2974 of 3040 (98%) |
+| recovered methods that are whole compiling code | 75% |
+| recovered methods with some statements commented out | 21% |
+| recovered methods with nothing in them | 3% |
+| coroutines in the original whose body still has `yield return` | 44 of 50 |
+| methods keeping at least nine tenths of what the binary says they do | 62% |
 
-163 methods could not be repaired statement by statement and were emptied, and 11387 statements were commented out.
+150 methods could not be repaired statement by statement and were emptied, and 3554 statements were commented out.
+
+Compiling is not the same as being right, and the two are measured separately. What the binary says a method
+does - which calls it makes, which fields it touches, which literals it holds - is read out of the analysed
+code and looked for in the exported source, counting only what is not commented out. That needs no original
+project, so it is the measure that carries to a game nobody has the source of, and it is the one that
+notices a body which was quietly replaced rather than recovered: such a body compiles perfectly and does
+nothing. Nine hundred of them were being discarded before export for an unbalanced evaluation stack and
+counted as whole by every other measure.
 The project imports into the editor with no compile errors and no shader errors, at content level 2 and 3 alike.
 Improvements are ongoing.
+
+Every value the lifter computes lands in a register, every register becomes a local, and the decompiler writes a
+local out as a declaration - so one line of source came back as a variable per step. A value written and read once
+travels on the evaluation stack instead, and a result nothing reads is discarded rather than given a name, which is
+what makes a recovered call read as the expression it was.
 
 Iterator methods partly recover. 13 come back as `yield return` and 12 as `yield break`; 26 do not, and say which
 requirement of the decompiler's iterator transform they failed rather than failing silently. The two that were fixed

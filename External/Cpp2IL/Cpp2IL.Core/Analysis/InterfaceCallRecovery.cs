@@ -1,0 +1,411 @@
+using System.Collections.Generic;
+using System.Linq;
+using Cpp2IL.Core.Graphs;
+using Cpp2IL.Core.ISIL;
+using Cpp2IL.Core.Model.Contexts;
+
+namespace Cpp2IL.Core.Analysis;
+
+/// <summary>
+/// Turns il2cpp's interface dispatch back into the call it came from.
+/// </summary>
+/// <remarks>
+/// A class does not know where in its table an interface's methods begin, so the runtime finds out: every
+/// class carries a list of the interfaces it implements paired with the offset each one starts at, and a call
+/// on an interface walks that list looking for the interface, then calls through the table at the offset it
+/// found plus the method's own slot. il2cpp writes the walk out at the call site rather than calling a helper
+/// to do it, so what a single <c>foreach</c> or one interface method call becomes is a read of a count, a read
+/// of a pointer, a loop that compares and steps, and an indirect call through whatever it landed on - none of
+/// which names a method, and all of which is left as reads of unmanaged memory.
+///
+/// It is also the most common thing left unrecovered in this game: reading the count alone accounts for nearly
+/// five hundred of them.
+///
+/// Everything needed is in the walk. The interface is the constant the loop compares each entry against; the
+/// method is the slot added to the offset that was found, which is a constant too; and the object is what the
+/// class was read out of. That is a call, and it can be written as one - after which the walk is the runtime
+/// detail it always was.
+/// </remarks>
+public static class InterfaceCallRecovery
+{
+    /// <summary>Where a class's method table starts, which the found offset and the slot are added to.</summary>
+    private const int VTableOffset64 = 0x138;
+
+    /// <summary>How far back the interface sits from the offset the search walks over.</summary>
+    private const int InterfaceFromOffset = -8;
+
+    /// <summary>What one entry of a method table takes up: the method's address and its runtime method.</summary>
+    private const int SlotWidth = 0x10;
+
+    /// <summary>Where a class records how many interfaces it has offsets for, which opens the walk.</summary>
+    private const int InterfaceCountOffset = 0x12E;
+
+    /// <summary>What a count of table entries is shifted by to become a distance in bytes.</summary>
+    private const int EntriesToBytes = 4;
+
+    /// <summary>
+    /// As many slots as an interface could plausibly declare. A constant added before the scaling is only
+    /// the slot when it is one an interface could have; anything larger is arithmetic of some other kind.
+    /// </summary>
+    private const int MaximumSlot = 1024;
+
+    public static bool Run(MethodAnalysisContext method)
+    {
+        if (method.AppContext.Binary.is32Bit)
+            return false;
+
+        var voidType = method.AppContext.SystemTypes.SystemVoidType;
+        var definitions = new Dictionary<LocalVariable, List<Instruction>>();
+
+        foreach (var instruction in method.ControlFlowGraph!.Instructions)
+            if (instruction.Destination is LocalVariable destination)
+                (definitions.TryGetValue(destination, out var list) ? list : definitions[destination] = []).Add(instruction);
+
+        var changed = false;
+
+        foreach (var block in method.ControlFlowGraph.Blocks.ToList())
+        foreach (var instruction in block.Instructions.ToList())
+        {
+            if (instruction.OpCode != OpCode.IndirectCall || instruction.Operands.Count < 3)
+                continue;
+
+            if (Dispatch(instruction.Operands[0], definitions, method) is not { } dispatch)
+                continue;
+
+            if (MethodInSlot(dispatch.Interface, dispatch.Slot) is not { } callee || callee.IsStatic)
+                continue;
+
+            //The call was handed every register an argument could have come in, because nothing was known
+            //about what it took. Now that the callee is named, the convention says which of them it read.
+            if (Aapcs64.ParametersOf(callee, instruction.Operands) is not { } parameters)
+                continue;
+
+            List<object> arguments = [dispatch.Receiver, .. parameters];
+
+            if (ReferenceEquals(callee.ReturnType, voidType))
+            {
+                instruction.OpCode = OpCode.CallVoid;
+                instruction.Operands = [callee, .. arguments];
+            }
+            else if (instruction.Operands[1] is LocalVariable result)
+            {
+                instruction.OpCode = OpCode.Call;
+                instruction.Operands = [callee, result, .. arguments];
+            }
+            else
+            {
+                //A value comes back but there is nowhere left to put it, so leaving the call alone keeps the
+                //stack honest rather than dropping a value the emitted IL would still push.
+                continue;
+            }
+
+            //The walk was only ever working out which method to call, and the call now names it. Left in
+            //place it is a loop over unmanaged memory wrapped around a statement that has been recovered.
+            SkipTheWalk(method.ControlFlowGraph, block, dispatch.RuntimeClass);
+
+            changed = true;
+        }
+
+        return changed;
+    }
+
+    /// <summary>
+    /// Sends the path straight to the recovered call, past the walk that used to work out where to go.
+    /// </summary>
+    /// <remarks>
+    /// The walk is a diamond: a test of whether the class implements any interfaces at all, the loop itself,
+    /// and the runtime helper the loop falls back on, all meeting again at the call. Deciding that test in
+    /// favour of the call leaves both arms reached from nowhere, and they go with whatever led only to them.
+    /// Nothing else can be attached to them - il2cpp writes the walk out immediately before the call it is
+    /// for - and the reads and the loop counter in there are read by nothing else either.
+    /// </remarks>
+    private static void SkipTheWalk(ISILControlFlowGraph cfg, Block callBlock, LocalVariable runtimeClass)
+    {
+        //The test that opens the walk is the one asking how many interfaces the class has.
+        var guard = cfg.Blocks.FirstOrDefault(candidate =>
+            candidate.BlockType == BlockType.TwoWay
+            && candidate.Instructions.Count > 0
+            && candidate.Instructions[^1].OpCode == OpCode.ConditionalJump
+            && candidate.Instructions.Any(instruction => instruction.Operands.Any(operand =>
+                operand is MemoryOperand { Base: LocalVariable held } read
+                && read.Addend == InterfaceCountOffset
+                && ReferenceEquals(held, runtimeClass))));
+
+        if (guard == null || ReferenceEquals(guard, callBlock) || guard.Successors.Contains(callBlock))
+            return;
+
+        //Only where the whole diamond is behind the guard: if the call is reachable another way, redirecting
+        //here would skip whatever that way does.
+        if (!callBlock.Predecessors.All(predecessor => Reaches(guard, predecessor, callBlock)))
+            return;
+
+        foreach (var successor in guard.Successors.ToList())
+            successor.Predecessors.Remove(guard);
+
+        guard.Successors.Clear();
+        guard.Instructions[^1].OpCode = OpCode.Jump;
+        guard.Instructions[^1].Operands = [callBlock];
+        guard.Successors.Add(callBlock);
+        callBlock.Predecessors.Add(guard);
+        guard.CalculateBlockType();
+
+        foreach (var stranded in cfg.Blocks.ToList())
+            if (stranded.Predecessors.Count == 0 && stranded != cfg.EntryBlock && stranded != cfg.ExitBlock)
+                Prune(cfg, stranded);
+    }
+
+    /// <summary>Whether every way from a block to the call passes through the walk the guard opens.</summary>
+    private static bool Reaches(Block guard, Block from, Block callBlock)
+    {
+        var seen = new HashSet<Block>();
+        var queue = new Queue<Block>();
+        queue.Enqueue(from);
+
+        while (queue.Count > 0)
+        {
+            var block = queue.Dequeue();
+
+            if (ReferenceEquals(block, guard))
+                return true;
+
+            if (ReferenceEquals(block, callBlock) || !seen.Add(block))
+                continue;
+
+            foreach (var predecessor in block.Predecessors)
+                queue.Enqueue(predecessor);
+        }
+
+        return false;
+    }
+
+    private static void Prune(ISILControlFlowGraph cfg, Block block)
+    {
+        var queue = new Queue<Block>();
+        queue.Enqueue(block);
+
+        while (queue.Count > 0)
+        {
+            var unreachable = queue.Dequeue();
+
+            if (unreachable.Predecessors.Count > 0 || unreachable == cfg.EntryBlock || unreachable == cfg.ExitBlock)
+                continue;
+
+            foreach (var successor in unreachable.Successors.ToList())
+            {
+                successor.Predecessors.Remove(unreachable);
+                queue.Enqueue(successor);
+            }
+
+            unreachable.Successors.Clear();
+            unreachable.Instructions.Clear();
+            cfg.Blocks.Remove(unreachable);
+        }
+    }
+
+    /// <summary>
+    /// The interface, the slot and the object, taken out of the address an indirect call goes through.
+    ///
+    /// The address is the one the search settled on, and it is reached by two paths - the walk, and the
+    /// runtime helper the walk falls back on - so it is written more than once. Only the walk says anything,
+    /// and it is the one this reads.
+    /// </summary>
+    private static (TypeAnalysisContext Interface, int Slot, LocalVariable Receiver, LocalVariable RuntimeClass)? Dispatch(
+        object target, Dictionary<LocalVariable, List<Instruction>> definitions, MethodAnalysisContext method)
+    {
+        //The table entry is either still read into its own local or folded into the call by propagation.
+        var entry = target switch
+        {
+            MemoryOperand { Index: null, Scale: 0, Addend: 0, Base: LocalVariable held } => held,
+            LocalVariable local => LoadedFrom(local, definitions),
+            _ => null,
+        };
+
+        if (entry == null)
+            return null;
+
+        foreach (var address in Sources(entry, definitions))
+        {
+            //vtable + the offset the search found + this method's own slot, all as one addition.
+            if (address is not { OpCode: OpCode.Add, Operands: [_, LocalVariable found, { } added] }
+                || Constant(added) is not { } fromClass
+                || fromClass < VTableOffset64)
+                continue;
+
+            //Worked out here rather than taken from the shared helper, which reports the first slot as no slot
+            //at all: for a class that is right, since its first entry is not something a call reaches this
+            //way, but an interface's first method is slot zero and is called like any other.
+            var inVtable = fromClass - Il2CppClassUsefulOffsets.GetVtableOffset(method.AppContext.MetadataVersion, false);
+
+            if (inVtable < 0 || inVtable % SlotWidth != 0)
+                continue;
+
+            //What the offset was added to is the class, and the class was read out of the object.
+            if (Single(found, definitions) is not { OpCode: OpCode.Add, Operands: [_, LocalVariable runtimeClass, LocalVariable scaled] })
+                continue;
+
+            //What type the object has does not matter here, and usually is not known: it arrives from a cast
+            //whose result nothing typed. The interface is what says which method this is.
+            if (LoadedFrom(runtimeClass, definitions) is not { } receiver)
+                continue;
+
+            if (Scaling(scaled, definitions) is not var (walked, alreadyCounted))
+                continue;
+
+            if (InterfaceComparedAgainst(walked, method, definitions) is not { } interfaceType)
+                continue;
+
+            return (interfaceType, (int)(inVtable / SlotWidth) + alreadyCounted, receiver, runtimeClass);
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// The entry the walk stopped on, and how much of the slot the scaling in front of it already carries.
+    /// </summary>
+    /// <remarks>
+    /// The offset the walk found is a count of table entries, so it is scaled up by the width of one to
+    /// reach the method. A slot is a fixed distance in entries into the interface's part of the table, and
+    /// so can just as well be counted before the scaling as added as bytes after it - which arrangement the
+    /// compiler picks says nothing about the call, and both have to be read the same way.
+    /// </remarks>
+    private static (LocalVariable Walked, int Slot)? Scaling(
+        LocalVariable scaled, Dictionary<LocalVariable, List<Instruction>> definitions)
+    {
+        if (Single(scaled, definitions) is not { OpCode: OpCode.ShiftLeft, Operands: [_, { } counted, { } by] }
+            || Constant(by) != EntriesToBytes)
+            return null;
+
+        var slot = 0;
+
+        if (counted is LocalVariable sum)
+        {
+            if (Single(sum, definitions) is not { OpCode: OpCode.Add, Operands: [_, { } offset, { } added] }
+                || Constant(added) is not { } entries || entries < 0 || entries > MaximumSlot)
+                return null;
+
+            slot = (int)entries;
+            counted = offset;
+        }
+
+        return counted is MemoryOperand { Index: null, Scale: 0, Addend: 0, Base: LocalVariable walked }
+            ? (walked, slot)
+            : null;
+    }
+
+    /// <summary>
+    /// The interface the search walks the list looking for: the entry it steps over holds the offset, and the
+    /// interface sits beside it, so the comparison that ends the walk names it outright.
+    /// </summary>
+    private static TypeAnalysisContext? InterfaceComparedAgainst(LocalVariable walked, MethodAnalysisContext method,
+        Dictionary<LocalVariable, List<Instruction>> definitions)
+    {
+        foreach (var instruction in method.ControlFlowGraph!.Instructions)
+        {
+            if (instruction.OpCode is not (OpCode.CheckEqual or OpCode.CheckNotEqual) || instruction.Operands.Count < 3)
+                continue;
+
+            var compared = instruction.Operands[1] is MemoryOperand memory ? memory : instruction.Operands[2] as MemoryOperand?;
+            var against = instruction.Operands[1] is MemoryOperand ? instruction.Operands[2] : instruction.Operands[1];
+
+            if (compared is not { Index: null, Scale: 0, Base: LocalVariable entry } read || read.Addend != InterfaceFromOffset)
+                continue;
+
+            if (!ReferenceEquals(entry, walked))
+                continue;
+
+            if (against is TypeAnalysisContext named and not RuntimeClassTypeAnalysisContext)
+                return named;
+
+            if (against is LocalVariable { Type: RuntimeClassTypeAnalysisContext { RepresentedType: var represented } })
+                return represented;
+
+            //A type constant names the slot the class is kept in, not the class, so the value actually compared
+            //here is one dereference further on and carries no type of its own. Following that one step is what
+            //the walk needs: without it the interface is never named, the loop is never recognised as the call
+            //it stands for, and the reads it is made of - the table at 0xB0, the count at 0x12E, the entry it
+            //stepped over - are all written out as unmanaged memory.
+            if (against is LocalVariable indirect
+                && Single(indirect, definitions) is { OpCode: OpCode.Move, Operands: [_, MemoryOperand { Index: null, Scale: 0, Addend: 0 } slot] }
+                && slot.Base is LocalVariable { Type: RuntimeClassTypeAnalysisContext { RepresentedType: var held } })
+            {
+                return held;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>The method occupying a slot of an interface.</summary>
+    private static MethodAnalysisContext? MethodInSlot(TypeAnalysisContext type, int slot)
+    {
+        var declaring = type is GenericInstanceTypeAnalysisContext generic ? generic.GenericType : type;
+        var found = declaring.Methods.FirstOrDefault(m => m.Definition?.slot == slot);
+
+        if (found == null)
+            return null;
+
+        return type is GenericInstanceTypeAnalysisContext instance
+            ? new ConcreteGenericMethodAnalysisContext(found, instance.GenericArguments, [])
+            : found;
+    }
+
+    /// <summary>Everything a local is ever assigned, as instructions.</summary>
+    private static IEnumerable<Instruction> Sources(LocalVariable local, Dictionary<LocalVariable, List<Instruction>> definitions)
+        => Sources(local, definitions, []);
+
+    /// <summary>
+    /// Everything a local is ever assigned, following the copies that stand between it and the value.
+    /// </summary>
+    /// <remarks>
+    /// Copies can lead back to where they started. This is out of SSA, and taking a graph out of it writes a
+    /// copy on each edge into a join - so a value carried around a loop is copied to the local the loop reads
+    /// and back again, and following copies without remembering where one has been does not terminate. It
+    /// takes a particular shape to reach: a local held across a loop, reused for something an interface call
+    /// is made on. Nothing here had it until a change elsewhere altered which locals were typed.
+    /// </remarks>
+    private static IEnumerable<Instruction> Sources(
+        LocalVariable local, Dictionary<LocalVariable, List<Instruction>> definitions, HashSet<LocalVariable> seen)
+    {
+        if (!seen.Add(local) || !definitions.TryGetValue(local, out var assignments))
+            yield break;
+
+        foreach (var assignment in assignments)
+        {
+            //A copy stands for whatever it was copied from, and the paths meeting here are written as copies.
+            if (assignment is { OpCode: OpCode.Move, Operands: [_, LocalVariable copied] })
+            {
+                foreach (var behind in Sources(copied, definitions, seen))
+                    yield return behind;
+            }
+            else
+            {
+                yield return assignment;
+            }
+        }
+    }
+
+    /// <summary>The one instruction a local is assigned by, where it is assigned only once.</summary>
+    private static Instruction? Single(LocalVariable local, Dictionary<LocalVariable, List<Instruction>> definitions)
+    {
+        var assignments = Sources(local, definitions).ToList();
+        return assignments.Count == 1 ? assignments[0] : null;
+    }
+
+    /// <summary>What a local was read from, where it was read from an object at offset zero.</summary>
+    private static LocalVariable? LoadedFrom(LocalVariable local, Dictionary<LocalVariable, List<Instruction>> definitions)
+        => Single(local, definitions) is { OpCode: OpCode.Move, Operands: [_, MemoryOperand { Index: null, Scale: 0, Addend: 0, Base: LocalVariable held }] }
+            ? held
+            : null;
+
+    private static long? Constant(object operand)
+        => operand switch
+        {
+            int i => i,
+            uint u => u,
+            long l => l,
+            ulong ul => (long)ul,
+            _ => null,
+        };
+
+}

@@ -36,6 +36,11 @@ public sealed class UnreadableMethodBodyProcessor : IAssetProcessor
 		if (replaced > 0)
 		{
 			Logger.Info(LogCategory.Processing, $"Discarded {replaced} unreadable method {(replaced == 1 ? "body" : "bodies")}");
+			foreach (KeyValuePair<string, int> reason in Reasons.OrderByDescending(r => r.Value))
+			{
+				Logger.Info(LogCategory.Processing, $"  unreadable because {reason.Key}: {reason.Value}");
+			}
+
 		}
 	}
 
@@ -51,10 +56,11 @@ public sealed class UnreadableMethodBodyProcessor : IAssetProcessor
 		{
 			foreach (MethodDefinition method in type.Methods)
 			{
-				if (method.CilMethodBody is { } body && !IsReadable(body))
+				if (method.CilMethodBody is { } body && WhyUnreadable(body) is { } reason)
 				{
 					method.ReplaceMethodBodyWithMinimalImplementation();
 					replaced++;
+					Reasons[reason] = Reasons.GetValueOrDefault(reason) + 1;
 				}
 			}
 		}
@@ -69,6 +75,45 @@ public sealed class UnreadableMethodBodyProcessor : IAssetProcessor
 	/// Label verification covers the branches that go nowhere, and the max stack computation covers the paths that
 	/// disagree about how much is on the stack. Between them they reject the bodies a reader chokes on.
 	/// </remarks>
+	/// <summary>
+	/// Which check a body fails, so the count can be attributed rather than just reported. Null when it
+	/// passes. Every one of the nine hundred bodies this used to discard failed the same check, which is
+	/// how the three faults behind them were found; a line saying so is worth keeping for the next time.
+	/// </summary>
+	internal static readonly Dictionary<string, int> Reasons = [];
+
+	private static string? WhyUnreadable(CilMethodBody body)
+	{
+		try
+		{
+			body.Instructions.CalculateOffsets();
+		}
+		catch (Exception e)
+		{
+			return "offsets: " + e.GetType().Name;
+		}
+
+		try
+		{
+			body.VerifyLabels();
+		}
+		catch (Exception e)
+		{
+			return "labels: " + e.GetType().Name;
+		}
+
+		try
+		{
+			body.ComputeMaxStack();
+		}
+		catch (Exception e)
+		{
+			return "stack: " + e.GetType().Name;
+		}
+
+		return null;
+	}
+
 	private static bool IsReadable(CilMethodBody body)
 	{
 		try
