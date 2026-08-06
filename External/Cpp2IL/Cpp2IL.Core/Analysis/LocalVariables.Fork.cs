@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System.Linq;
 using Cpp2IL.Core.ISIL;
+using LibCpp2IL.BinaryStructures;
 using Cpp2IL.Core.Model.Contexts;
 
 namespace Cpp2IL.Core.Analysis;
@@ -322,6 +323,122 @@ public static partial class LocalVariables
         }
     }
 
+    /// <summary>
+    /// Types a local from the fact that a bitwise operation is done to it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// C# has no <c>&amp;</c>, <c>|</c> or <c>^</c> on a reference, so a local that is an operand of one is not
+    /// a reference, whatever the inference concluded. Left as <c>object</c> the statement cannot be written -
+    /// <c>if ((int)(obj8 &amp; 1L) != 0)</c> - and it is a condition, so the branch goes with it.
+    /// </para>
+    /// <para>
+    /// This is the one operator family where the argument is airtight. Addition is <b>not</b> included on
+    /// purpose: <c>obj + 8L</c> really can be il2cpp walking a pointer, and calling that a number makes it
+    /// compile while saying something the program never did - the trap recorded in
+    /// <c>the loop that kept no subscript</c>.
+    /// </para>
+    /// <para>
+    /// The width comes from whatever else is in the expression rather than being guessed, so nothing is
+    /// invented: the destination if it is a number, otherwise the other operand.
+    /// </para>
+    /// </remarks>
+    internal static void SeedBitwiseOperands(MethodAnalysisContext method)
+    {
+        CurrentTypes = method.AppContext.SystemTypes;
+
+        foreach (var instruction in method.ControlFlowGraph!.Instructions)
+        {
+            if (instruction.OpCode is not (OpCode.And or OpCode.Or or OpCode.Xor) || instruction.Operands.Count != 3)
+                continue;
+
+            var width = Numeric(instruction.Operands[0]) ?? Numeric(instruction.Operands[1]) ?? Numeric(instruction.Operands[2]);
+
+            if (width is null)
+                continue;
+
+            for (var side = 1; side <= 2; side++)
+            {
+                if (instruction.Operands[side] is LocalVariable local
+                    && local.Type is null or { IsValueType: false })
+                    local.Type = width;
+            }
+        }
+    }
+
+    /// <summary>
+    /// The type of an operand where that is a number, and nothing where it is not.
+    /// </summary>
+    /// <remarks>
+    /// A literal counts. <c>obj8 &amp; 1L</c> is the commonest shape of all and there is no other local in it
+    /// to take a width from - reading only locals here made the whole seed inert.
+    /// </remarks>
+    private static TypeAnalysisContext? Numeric(object operand)
+    {
+        var types = CurrentTypes;
+
+        return operand switch
+        {
+            LocalVariable { Type: { IsValueType: true } type } when IsInteger(type) => type,
+            long or ulong => types?.SystemInt64Type,
+            int or uint or short or ushort or sbyte or byte => types?.SystemInt32Type,
+            _ => null,
+        };
+    }
+
+    private static bool IsInteger(TypeAnalysisContext type) => type.Type is
+        Il2CppTypeEnum.IL2CPP_TYPE_I1 or Il2CppTypeEnum.IL2CPP_TYPE_U1
+        or Il2CppTypeEnum.IL2CPP_TYPE_I2 or Il2CppTypeEnum.IL2CPP_TYPE_U2
+        or Il2CppTypeEnum.IL2CPP_TYPE_I4 or Il2CppTypeEnum.IL2CPP_TYPE_U4
+        or Il2CppTypeEnum.IL2CPP_TYPE_I8 or Il2CppTypeEnum.IL2CPP_TYPE_U8;
+
+    private static SystemTypesContext? CurrentTypes;
+
+    /// <summary>
+    /// Types what an array element was read into, from the array it was read out of.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <c>Move v191, [shapes (Shape[]) + 0x20 + i*8]</c> says everything needed - the array's type is known and
+    /// the read is a proper element access - and yet the local it lands in had no type at all. Everything done
+    /// with the element afterwards then had nothing to go on, and the one that costs most is a virtual call:
+    /// <see cref="VirtualCallRecovery"/> needs the receiver's type to know which vtable slot means which
+    /// method, so <c>foreach (Shape s in shapes) s.Area()</c> stayed an indirect call and the loop was lost.
+    /// </para>
+    /// <para>
+    /// Seeded rather than inferred for the same reason the allocations are: nothing downstream of the read
+    /// states what the element is, so it has to come from the read itself.
+    /// </para>
+    /// </remarks>
+    internal static void SeedArrayElements(MethodAnalysisContext method)
+    {
+        var elements = method.AppContext.Binary.is32Bit ? 0x10 : 0x20;
+
+        foreach (var instruction in method.ControlFlowGraph!.Instructions)
+        {
+            if (instruction.OpCode != OpCode.Move || instruction.Operands.Count != 2
+                || instruction.Operands[0] is not LocalVariable { Type: null } read
+                || instruction.Operands[1] is not MemoryOperand { Base: { } from, Index: not null, Scale: > 0, Addend: var at }
+                || at != elements)
+                continue;
+
+            //Only a reference element. A struct read out of an array is the value, not a reference to it, and
+            //saying otherwise would put a type on a register holding half a struct - which is its own defect.
+            if (ElementOf(from) is { IsValueType: false } element)
+                read.Type = element;
+        }
+    }
+
+    /// <summary>What one element of the array a read is based on is, where the base says it is an array.</summary>
+    private static TypeAnalysisContext? ElementOf(object held) => held switch
+    {
+        LocalVariable { Type: SzArrayTypeAnalysisContext array } => array.ElementType,
+        LocalVariable { Type: ArrayTypeAnalysisContext { Rank: 1 } array } => array.ElementType,
+        FieldReference { Field.FieldType: SzArrayTypeAnalysisContext array } => array.ElementType,
+        FieldReference { Field.FieldType: ArrayTypeAnalysisContext { Rank: 1 } array } => array.ElementType,
+        _ => null,
+    };
+
     /// <summary>The array type an allocation was asked for, however the type reached the call.</summary>
     private static TypeAnalysisContext? Allocated(object operand)
     {
@@ -335,4 +452,47 @@ public static partial class LocalVariables
 
         return type is SzArrayTypeAnalysisContext or ArrayTypeAnalysisContext ? type : null;
     }
+
+    /// <summary>
+    /// Types a local from the parameter it is handed to, overruling a runtime stand-in that is standing where
+    /// a managed type belongs.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A register reused for two unrelated things across a join is typed by whichever edge the inference
+    /// reached first, and once it has any type at all the parameter it is passed as cannot correct it. In
+    /// <c>GenerateSmartBlock</c> one local is written from six places - three <c>ECellColor[]</c> and three
+    /// <c>List&lt;ECellColor&gt;</c> - and came out as <c>Il2CppMethodInfo</c>, so every one of those writes
+    /// was a reference assigned to a runtime structure and none of them could be written down:
+    /// </para>
+    /// <code>
+    /// //num51 = (nint)_junkPoolA;
+    /// </code>
+    /// <para>
+    /// **Managed code never holds one of these.** A method's own <c>MethodInfo*</c> travels past the end of
+    /// the declared parameters, which the caller already skips, so within the declared ones a stand-in is
+    /// simply wrong and the parameter's own type is the answer.
+    /// </para>
+    /// </remarks>
+    internal static bool SetTypeFromParameter(MethodAnalysisContext inside, LocalVariable local, TypeAnalysisContext? parameterType)
+    {
+        //Not inside a generic body. There the method's own `MethodInfo*` is what every runtime generic
+        //context entry is reached through, so a local holding one is load-bearing however it is also passed -
+        //overruling it took `RemoteConfigManager::Get` from twenty-one of thirty-six instructions to one, and
+        //emptied three other generic extension methods outright. `GenerateSmartBlock`, which this is for, is
+        //not generic.
+        if (parameterType != null && !inside.GenericParameters.Any() && IsRuntimeStandIn(local.Type))
+        {
+            local.Type = parameterType;
+            return true;
+        }
+
+        return SetTypeIfUnknown(local, parameterType);
+    }
+
+    /// <summary>Whether the type is one of the runtime's own structures rather than anything a program names.</summary>
+    private static bool IsRuntimeStandIn(TypeAnalysisContext? type)
+        => type is RuntimeMethodInfoAnalysisContext or RuntimeClassTypeAnalysisContext
+            or StaticFieldStorageTypeAnalysisContext or RgctxTableTypeAnalysisContext
+            or MethodRgctxTableTypeAnalysisContext;
 }

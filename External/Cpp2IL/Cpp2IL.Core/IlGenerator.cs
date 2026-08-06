@@ -346,9 +346,16 @@ public static partial class IlGenerator
                         ? instruction.Operands[2]
                         : null;
 
+                    // And where the allocation carries one operand per parameter, those are the arguments the
+                    // inlined constructor was given - see InlinedConstructorRecovery. The single-parameter
+                    // case is the state machine's, and reads identically either way.
+                    var carriedArguments = CarriedConstructorArguments(instruction, constructor);
+
                     for (var i = 0; i < constructor.Parameters.Count; i++)
                     {
-                        if (stateArgument != null)
+                        if (carriedArguments != null)
+                            LoadOperand(carriedArguments[i], method, locals, writeLine, stringCtor, constructor.Parameters[i].ParameterType);
+                        else if (stateArgument != null)
                             LoadOperand(stateArgument, method, locals, writeLine, stringCtor, constructor.Parameters[i].ParameterType);
                         else if (i < constructorArgs.Count)
                             LoadOperand(constructorArgs[i], method, locals, writeLine, stringCtor, constructor.Parameters[i].ParameterType);
@@ -562,8 +569,9 @@ public static partial class IlGenerator
                 // at the width the value it is being compared or combined with has. Without that, a
                 // comparison against a literal put an int64 next to an int32 - which is what leaves the
                 // decompiler writing `state == 1L` and giving up on the method as a state machine.
-                var leftType = TypeOfOperand(instruction.Operands[1]);
-                var rightType = TypeOfOperand(instruction.Operands[2]);
+                //Never as a struct: see ComparableType in the fork.
+                var leftType = ComparableType(TypeOfOperand(instruction.Operands[1]));
+                var rightType = ComparableType(TypeOfOperand(instruction.Operands[2]));
 
                 LoadOperand(instruction.Operands[1], method, locals, writeLine, stringCtor, rightType);
                 if (widenToInt64)
@@ -604,7 +612,7 @@ public static partial class IlGenerator
                     case OpCode.Divide: instructions.Add(CilOpCodes.Div); break;
 
                     case OpCode.ShiftLeft: instructions.Add(CilOpCodes.Shl); break;
-                    case OpCode.ShiftRight: instructions.Add(CilOpCodes.Shr); break;
+                    case OpCode.ShiftRight: instructions.Add(Analysis.LogicalShift.BringsInZeroes(instruction) ? CilOpCodes.Shr_Un : CilOpCodes.Shr); break;
 
                     case OpCode.And: instructions.Add(CilOpCodes.And); break;
                     case OpCode.Or: instructions.Add(CilOpCodes.Or); break;
@@ -679,6 +687,14 @@ public static partial class IlGenerator
         if (expectedType is { IsValueType: false } && IsZeroConstant(operand))
         {
             instructions.Add(CilOpCodes.Ldnull);
+            return;
+        }
+
+        // And a value type reaches us as a zero in the same way - a cleared register is an empty struct. See
+        // ZeroValueOf in the fork.
+        if (ZeroValueOf(expectedType, operand) is { } empty)
+        {
+            AddDefaultValue(instructions, empty, module, importer);
             return;
         }
 
@@ -765,6 +781,7 @@ public static partial class IlGenerator
                     && memory.Base is LocalVariable local2)
                 {
                     LoadLocal(local2, method, locals);
+
                     break;
                 }
 

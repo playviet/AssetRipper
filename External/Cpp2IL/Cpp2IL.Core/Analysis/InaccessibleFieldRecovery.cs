@@ -78,6 +78,44 @@ public static class InaccessibleFieldRecovery
                 return accessor;
         }
 
+        return written ? null : ForwardingGetter(field, declaring);
+    }
+
+    /// <summary>
+    /// The plain method that stands for the field, where a type forwards to it by hand rather than through a
+    /// property.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <c>LevelManager</c> keeps <c>private ELevelState _currentState</c> and hands it out through
+    /// <c>public ELevelState GetCurrentState()</c>. il2cpp inlines that into every caller, so what arrives
+    /// here is a read of the private field from another type - true, and unwritable. The property search
+    /// above finds nothing, because there is no property: the accessor is an ordinary method.
+    /// </para>
+    /// <para>
+    /// <b>Reads only.</b> A <c>SetX</c> is not the mirror of this: <c>LevelManager.SetState</c> assigns the
+    /// field <i>and</i> raises an event, and calling it where the code assigned a field would put back
+    /// something the program never did. A getter that did more than return the field would have been inlined
+    /// as more than a field read, and then this is not the shape that reached us.
+    /// </para>
+    /// </remarks>
+    private static MethodAnalysisContext? ForwardingGetter(FieldAnalysisContext field, TypeAnalysisContext declaring)
+    {
+        if (Named(field.Name) is not { } name)
+            return null;
+
+        foreach (var candidate in Names(name))
+        {
+            var wanted = "Get" + char.ToUpperInvariant(candidate[0]) + candidate[1..];
+
+            if (declaring.Methods.FirstOrDefault(m => !m.IsStatic && m.Name == wanted
+                    && m.Parameters.Count == 0
+                    && m.ReturnType.FullName == field.FieldType.FullName
+                    && (m.Attributes & MethodAttributes.MemberAccessMask) is MethodAttributes.Public
+                        or MethodAttributes.Assembly or MethodAttributes.FamORAssem) is { } getter)
+                return getter;
+        }
+
         return null;
     }
 
@@ -130,14 +168,58 @@ public static class InaccessibleFieldRecovery
         return string.IsNullOrEmpty(bare) ? null : bare;
     }
 
+    /// <summary>Whether the method could name this field if it were written out as source.</summary>
+    /// <remarks>
+    /// This used to answer by assembly alone - anything in the same assembly was taken to be reachable - and
+    /// that is not what the language says. <c>private</c> is per <b>type</b>, so
+    /// <c>TimersManager</c> cannot name <c>LevelManager._currentState</c> even though the two are compiled
+    /// together. il2cpp had inlined <c>LevelManager.GetCurrentState()</c> into the caller, so that is exactly
+    /// the shape that arrives here, and the pass was declining to act on all of it.
+    /// </remarks>
     private static bool IsVisible(FieldAnalysisContext field, MethodAnalysisContext method)
     {
-        var declaringAssembly = field.DeclaringType?.DeclaringAssembly;
-
-        if (declaringAssembly is null || ReferenceEquals(declaringAssembly, method.DeclaringType?.DeclaringAssembly))
+        if (field.DeclaringType is not { } declaring || method.DeclaringType is not { } from)
             return true;
 
-        return (field.Attributes & FieldAttributes.FieldAccessMask) == FieldAttributes.Public;
+        //Everything of its own is reachable, and a type nested in another may name that other's privates and
+        //the other way round - so it is enough that either encloses the other.
+        if (Encloses(declaring, from) || Encloses(from, declaring))
+            return true;
+
+        var sameAssembly = ReferenceEquals(declaring.DeclaringAssembly, from.DeclaringAssembly);
+
+        return (field.Attributes & FieldAttributes.FieldAccessMask) switch
+        {
+            FieldAttributes.Public => true,
+            FieldAttributes.Assembly => sameAssembly,
+            FieldAttributes.Family => Inherits(from, declaring),
+            FieldAttributes.FamORAssem => sameAssembly || Inherits(from, declaring),
+            FieldAttributes.FamANDAssem => sameAssembly && Inherits(from, declaring),
+            _ => false,
+        };
+    }
+
+    /// <summary>Whether <paramref name="inner"/> is <paramref name="outer"/> or is nested inside it.</summary>
+    private static bool Encloses(TypeAnalysisContext outer, TypeAnalysisContext? inner)
+    {
+        for (var type = inner; type != null; type = type.DeclaringType)
+            if (ReferenceEquals(type, outer))
+                return true;
+
+        return false;
+    }
+
+    private static bool Inherits(TypeAnalysisContext type, TypeAnalysisContext ancestor)
+    {
+        //Bounded rather than trusting the chain to end: a base pointer that resolved oddly must not hang the
+        //whole export, and no real hierarchy in a game is anywhere near this deep.
+        var walked = type;
+
+        for (var steps = 0; walked != null && steps < 64; steps++, walked = walked.BaseType)
+            if (ReferenceEquals(walked, ancestor))
+                return true;
+
+        return false;
     }
 
     private static bool WritesOperandZero(OpCode opCode)

@@ -212,6 +212,8 @@ public static partial class LocalVariables
         SeedRuntimeClassTypes(method);
         SeedDereferencedClasses(method);
         SeedArrayAllocations(method);
+        SeedArrayElements(method);
+        SeedBitwiseOperands(method);
         ArrayWalkerTyping.Run(method);
         SeedNewobjResults(method);
         SeedMethodInfoTypes(method);
@@ -553,7 +555,7 @@ public static partial class LocalVariables
                 if (HomogeneousFloatStruct.SpansSeveralRegisters(parameterType))
                     continue;
 
-                changed |= SetTypeIfUnknown(local, parameterType);
+                changed |= SetTypeFromParameter(method, local, parameterType);
             }
         }
 

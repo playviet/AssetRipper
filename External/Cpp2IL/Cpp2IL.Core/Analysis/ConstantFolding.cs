@@ -106,6 +106,10 @@ public static class ConstantFolding
             //A shift of more than the width is undefined rather than zero, so only the ones that mean
             //something are taken.
             OpCode.ShiftLeft when right is >= 0 and < 64 => unchecked(left << (int)right),
+            //A logical shift brings zeroes in, so folding it as a signed shift would put a sign extension in
+            //a constant the program never had - see LogicalShift.
+            OpCode.ShiftRight when right is >= 0 and < 64 && LogicalShift.BringsInZeroes(instruction)
+                => unchecked((long)((ulong)left >> (int)right)),
             OpCode.ShiftRight when right is >= 0 and < 64 => left >> (int)right,
             _ => null,
         };

@@ -47,6 +47,24 @@ public static class RuntimeClassReadRemover
                 continue;
             }
 
+            //The cast check a value type's unboxing is guarded by: `obj->klass->element_class` against the
+            //target's, and the branch throws InvalidCastException where they differ. Both sides read the same
+            //field of a runtime class, which managed code never touches, and in code that runs they are equal
+            //- so both become the same value and the throw stops being reachable. Without this, `(int)o` on a
+            //boxed int threw, because a read that resolved to nothing compares unequal to one that did.
+            if (instruction.OpCode is OpCode.CheckEqual or OpCode.CheckNotEqual
+                && instruction.Operands.Count > 2
+                && instruction.Operands[1] is MemoryOperand { Index: null, Scale: 0, Addend: Il2CppClassLayout.ElementClass } left
+                && instruction.Operands[2] is MemoryOperand { Index: null, Scale: 0, Addend: Il2CppClassLayout.ElementClass } right
+                && (IsRuntimeClass(left.Base) || IsRuntimeClass(right.Base)))
+            {
+                instruction.Operands[1] = 1;
+                instruction.Operands[2] = 1;
+                ConstantBranchFolding.HasSettledAnswer(instruction);
+                changed = true;
+                continue;
+            }
+
             //The bit saying the type is ready, wherever it is read - on its own or inside the comparison
             //that tests it. Both become the answer it always has by the time this code runs.
             for (var i = 0; i < instruction.Operands.Count; i++)
@@ -57,6 +75,10 @@ public static class RuntimeClassReadRemover
                     continue;
 
                 instruction.Operands[i] = 1;
+
+                //Said out loud, because only the pass that decided the answer knows it was decided rather
+                //than found: ConstantBranchFolding acts on this and on nothing else it happens to see.
+                ConstantBranchFolding.HasSettledAnswer(instruction);
                 changed = true;
             }
         }

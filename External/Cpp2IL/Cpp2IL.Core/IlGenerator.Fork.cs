@@ -794,6 +794,21 @@ public static partial class IlGenerator
                 return true;
             }
 
+            //The same helper, where what came back was read through rather than kept as an object - see
+            //UnboxRecovery. `unbox.any` is the one instruction that checks the class and takes the value out,
+            //which is both halves of what the helper did.
+            case Analysis.UnboxRecovery.ObjectUnbox when ClassArgument(Argument(instruction, 2)) is { } unboxed:
+            {
+                var boxedObject = Argument(instruction, 1);
+                if (boxedObject is null)
+                    return false;
+
+                LoadOperand(boxedObject, method, locals, writeLine, stringCtor);
+                instructions.Add(CilOpCodes.Unbox_Any, importer.ImportType(unboxed.ToTypeSignature(module).ToTypeDefOrRef()));
+                StoreResult(instruction, method, locals, writeLine);
+                return true;
+            }
+
             case "il2cpp_vm_object_is_inst" when ClassArgument(Argument(instruction, 2)) is { } testedAgainst:
             {
                 var value = Argument(instruction, 1);
@@ -854,6 +869,58 @@ public static partial class IlGenerator
     {
         instructions.Add(CilOpCodes.Ldtoken, token.Field.ToFieldDescriptor(module));
     }
+
+    /// <summary>
+    /// The type to load a comparison's operand as, which is never a struct.
+    /// </summary>
+    /// <remarks>
+    /// il2cpp compares small structs by their bits, so a comparison's operands carry the struct's type while
+    /// what is being compared is a register. Handing that type down makes a zero operand become
+    /// <c>default(Vector4)</c>, and then the comparison is between two structs - which the decompiler writes
+    /// as <c>Unsafe.As&lt;Vector4, UIntPtr&gt;(ref a) &gt;= Unsafe.As&lt;Vector4, UIntPtr&gt;(ref b)</c>, and
+    /// C# has no <c>&gt;=</c> on <c>UIntPtr</c>. Three methods in the game failed to compile that way, and
+    /// only the Unity gate saw it - none of the source-based scorers compile anything.
+    /// </remarks>
+    private static TypeAnalysisContext? ComparableType(TypeAnalysisContext? type)
+        => type is { IsValueType: true } && !IsNumeric(type) ? null : type;
+
+    /// <summary>
+    /// The struct an integer zero stands for, where that is what it is standing for.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A cleared register is an empty struct, and the compiler moves one that way rather than spending
+    /// instructions zeroing fields. Read back literally it is a number where a value type belongs -
+    /// <c>(Vector3)0L</c>, <c>(Color32)0L</c> - which is not C#, so the statement holding it was lost. It is
+    /// exactly the same situation as a zero standing for <c>null</c>, which is handled a few lines above, and
+    /// <c>default(Vector3)</c> is the same value written in a way that compiles.
+    /// </para>
+    /// <para>
+    /// A numeric type is excluded because for those the zero is simply the number, and a native integer
+    /// because there the zero is a pointer.
+    /// </para>
+    /// </remarks>
+    /// <summary>
+    /// The arguments an allocation carries for the constructor il2cpp inlined, or null if it carries none.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="Analysis.InlinedConstructorRecovery"/> appends one operand per parameter after the two an
+    /// allocation already has, having matched each of the inlined body's field writes to the parameter that
+    /// stands for it. Only an exact count is taken, so an allocation carrying anything else is left to the
+    /// paths that were already there.
+    /// </remarks>
+    private static List<object>? CarriedConstructorArguments(Instruction allocation, MethodAnalysisContext constructor)
+    {
+        if (constructor.Parameters.Count == 0 || allocation.Operands.Count != 2 + constructor.Parameters.Count)
+            return null;
+
+        return allocation.Operands.Skip(2).ToList();
+    }
+
+    private static TypeAnalysisContext? ZeroValueOf(TypeAnalysisContext? expected, object operand)
+        => expected is { IsValueType: true } && !IsNumeric(expected) && !LowersToNativeInt(expected) && IsZeroConstant(operand)
+            ? expected
+            : null;
 
     private static void LoadOperandInto(object destination, object value, MethodDefinition method,
         Dictionary<LocalVariable, CilLocalVariable> locals, MemberReference writeLine, MemberReference stringCtor,

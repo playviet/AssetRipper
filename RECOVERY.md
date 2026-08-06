@@ -5,7 +5,7 @@ compile and run. This file is the handover: what the state is, how it is measure
 what is left. `CLAUDE.md` is the working rules; `External/Cpp2IL/FORK.md` is how the vendored fork stays
 mergeable; `LocalPackages/README.md` is the fix-by-fix changelog.
 
-## The state, at 1.0.314
+## The state, at 1.0.327
 
 Measured against the original Unity project the build came from (96 files, `Assets/AAA/CF`), and against the
 binary itself.
@@ -15,14 +15,14 @@ binary itself.
 | method bodies discarded as unreadable | **0** (was 907) |
 | `error CS` in the exported project | **0** |
 | Unity 6000.0.78f1 batch import | **0 errors, 0 shader errors**, 533 files |
-| decisions surviving (`if`, loops, `switch`, `?:`, `&&`) | **93.6%**, and 125 of 141 methods keep every one |
-| whole methods, against the original | **291** of 415 measured |
-| whole bodies, game-wide | ~2290 of 2946 |
-| operations surviving, judged from the binary alone | calls **78.6%**, fields 74.4%, literals 82.8% |
-| unresolved memory reads, game-wide | **2291** (2582 before the generic work) |
+| decisions surviving (`if`, loops, `switch`, `?:`, `&&`) | **95.6%**, and 131 of 141 methods keep every one |
+| whole methods, against the original | **307** of 415 measured (was 294) |
+| whole bodies, game-wide | **2325** of 2946 (was 2281) |
+| operations surviving, judged from the binary alone | calls **78.1%**, fields 74.3%, literals 82.0% |
+| unresolved memory reads, game-wide | **1518** (2291 before the stand-in retyping) |
 | arm64 instructions the lifter cannot translate, game-wide | **32** (306 before the vector work), of which 84 are the lane model refusing rather than an encoding it cannot read |
-| calls still made through an unnamed pointer | **121** (155 before) |
-| pure functions that execute identically to the original | **34 of 43** in the corpus, 6 of 10 in the game |
+| calls still made through an unnamed pointer | **96** (121 before) |
+| pure functions that execute identically to the original | **36 of 43** in the corpus, 6 of 10 in the game |
 
 ## How anything here is judged
 
@@ -45,11 +45,19 @@ There are also **two ground-truth corpora**: `scratchpad/corpus/` and `scratchpa
 project written to be recovered and built to arm64 IL2CPP on purpose, so every method has known source on
 shapes chosen rather than found. `autodiff.py` runs the whole of either without being told what to test.
 
+Two of the seven the corpus still fails are **not defects at all**: `Divide` and `Guarded` both divide, and
+arm64's `UDIV`/`SDIV` do not trap - il2cpp emitted no zero check, so clang deleted the handler and the shipped
+binary returns a number where the source would have caught. Writing a `catch` there would be fabrication.
+
 The corpus was grown from 29 methods to 43 once it stopped failing, across eight families it had no shape for
 - lambdas, StringBuilder and string splitting, dictionary and list mutation, switch on a string, shifts and
 masks, boxing, checked arithmetic, try/finally, and virtual dispatch through a base class. Seven of the fifteen
 passed first time; the other seven were defects, of which two are fixed and one half fixed. **Growing the
 corpus is the cheapest way to find a defect** - one Unity build, and it does not depend on guessing.
+
+`Areas` and `Boxed` were fixed since - an inlined constructor built its objects with zeroed fields, and a cast
+whose answer is read through is an unboxing rather than a cast. `Filtered` and `Tally` remain, both blocked on
+a struct wider than sixteen bytes coming back through the pointer in `x8` rather than in a register.
 
 Of the three original failures, **none is a known defect** - `Distance` is a corpus artifact (the build
 strips `Mathf.Sqrt`, so `FSQRT` has nothing to name it back to), `Divide` is a faithful transcription of a

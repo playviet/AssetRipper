@@ -48,7 +48,7 @@ public static class BitfieldMove
     /// False where either immediate is not one - nothing can be said about the widths then, and the caller's
     /// own translation stands.
     /// </remarks>
-    public static bool Apply(Arm64Instruction instruction, object destination, object source, Action<OpCode, object[]> emit)
+    public static bool Apply(Arm64Instruction instruction, object destination, object source, Func<OpCode, object[], Instruction?> emit)
     {
         if (instruction.Op2Kind != Arm64OperandKind.Immediate || instruction.Op3Kind != Arm64OperandKind.Immediate
             || instruction.Op0Kind != Arm64OperandKind.Register)
@@ -69,6 +69,9 @@ public static class BitfieldMove
 
             if (immr == 0)
                 emit(OpCode.Move, [destination, source]);
+            else if (instruction.Mnemonic == Arm64Mnemonic.UBFM)
+                //Unsigned: the bits above what is kept are zeroes, not copies of the sign.
+                Cpp2IL.Core.Analysis.LogicalShift.Mark(emit(OpCode.ShiftRight, [destination, source, immr]));
             else
                 emit(OpCode.ShiftRight, [destination, source, immr]);
 

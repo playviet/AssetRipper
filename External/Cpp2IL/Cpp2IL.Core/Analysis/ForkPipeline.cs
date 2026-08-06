@@ -146,6 +146,12 @@ public static class ForkPipeline
         // itself - so the read cannot be written down, and the statement holding it is lost.
         EmptyArrayRecovery.Run(method);
 
+        // A constructor small enough to inline leaves its field writes at the allocation, and those fields are
+        // the callee's own and often readonly - so no accessor can stand for them and the pass below cannot
+        // help. First, so that the writes are still writes when this reads them, and after the state machine's
+        // own recovery, whose allocation already carries its argument and is left alone here.
+        InlinedConstructorRecovery.Run(method);
+
         // A property accessor of another assembly is inlined into its caller, leaving a direct access to the
         // private field behind it - true, but not something the project can write down.
         InaccessibleFieldRecovery.Run(method);
@@ -153,6 +159,11 @@ public static class ForkPipeline
         // A cast is a call into the runtime reached through a thunk no method table names, so it stayed an
         // address - and every statement built on it went with it.
         CastHelperRecovery.Run(method);
+
+        // Directly after it, because it reads what that pass named: a cast helper whose answer is only ever
+        // read through at offset zero was never a cast, it was a box being opened, and only what is done with
+        // the answer says which.
+        UnboxRecovery.Run(method);
 
         // And the same question where it was not a call at all: asking whether an object is of a type is
         // small enough that il2cpp inlines it into a walk of the class hierarchy. Directly after the pass
@@ -210,11 +221,30 @@ public static class ForkPipeline
         // is written out as an object - which makes the bounds check a comparison between unrelated things,
         // and takes the loop and everything in it along with it.
         LocalVariables.ResolveTypesAndFields(method);
+
+        // And again the fields that resolved only just now. A field is named by its property only where it
+        // is known to be a field at all, and the pass that does so ran long before the line above - so a
+        // field reached through something a later pass recovered was still being written by its private
+        // name. `shape.Name()` becoming a real call is what makes `text._stringLength` a field reference,
+        // and by then the chance to call it `Length` had gone: the statement did not compile and was lost.
+        InaccessibleFieldRecovery.Run(method);
     }
 
     /// <summary>Runs last of all, on the copies the passes before it leave behind.</summary>
     public static void AfterUnusedLocalsAreDropped(MethodAnalysisContext method)
     {
+        // Answering the class-prepared bit leaves a branch on `1 != 0` whose other arm holds il2cpp's
+        // initialisation call, and reachability alone cannot see that the arm is unreachable - a conditional
+        // jump points at both of them. Directly above the collection, which is what then takes the arm away,
+        // and far above ConditionSinking, which folds a condition into its branch and would leave this
+        // nothing to read.
+        ConstantBranchFolding.Run(method);
+
+        // Recovering an indexed access leaves the length its bounds check read feeding nothing, and dead code
+        // elimination will not take a call. After the access recovery that orphans it, and above the
+        // collection below, which is what then finds the array read it went through dead too.
+        UnusedLengthRead.Run(method);
+
         // A call recovered out of the walk il2cpp inlined to find it leaves that walk reaching nothing, and a
         // walk is a loop - so its two blocks are each other's predecessor and neither is ever left without
         // one. Nothing that counts predecessors will take them, and while they stand the comparison that ends

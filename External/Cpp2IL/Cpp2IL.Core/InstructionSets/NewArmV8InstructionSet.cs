@@ -903,6 +903,11 @@ public partial class NewArmV8InstructionSet : Cpp2IlInstructionSet
                 break;
 
             case Arm64Mnemonic.LSRV:
+                //Logical: zeroes come in at the top, which is `ulong >> n` rather than `long >> n`.
+                Cpp2IL.Core.Analysis.LogicalShift.Mark(
+                    Add(address, OpCode.ShiftRight, ConvertOperand(instruction, 0), ConvertOperand(instruction, 1), ConvertOperand(instruction, 2)));
+                break;
+
             case Arm64Mnemonic.ASRV:
                 Add(address, OpCode.ShiftRight, ConvertOperand(instruction, 0), ConvertOperand(instruction, 1), ConvertOperand(instruction, 2));
                 break;
