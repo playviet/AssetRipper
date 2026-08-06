@@ -79,7 +79,23 @@ public static class ArrayStoreCheckRemover
     /// </summary>
     private static Instruction? Check(Block block, Dictionary<LocalVariable, Instruction> definitions)
     {
-        foreach (var instruction in block.Instructions)
+        if (Check(block, block, definitions) is { } asked)
+            return asked;
+
+        //A call ends a block, so the question and the branch that reads its answer are usually two blocks and
+        //not one: the call sits alone in the block before. Looking only in the block that branches missed
+        //every check whose store came after a call - which is every `new`-and-store, and is why an array of a
+        //base class threw ArrayTypeMismatchException instead of being filled. Only a single predecessor with
+        //this block as its only successor is followed, so the call is unambiguously this branch's question.
+        if (block.Predecessors.Count == 1 && block.Predecessors[0].Successors.Count == 1)
+            return Check(block.Predecessors[0], block, definitions);
+
+        return null;
+    }
+
+    private static Instruction? Check(Block asking, Block branching, Dictionary<LocalVariable, Instruction> definitions)
+    {
+        foreach (var instruction in asking.Instructions)
         {
             //Still an address: a call that resolved to a method is something the program does, not a check.
             if (instruction.OpCode != OpCode.Call || instruction.Operands.Count < 4 || !instruction.Operands[0].IsNumeric())
@@ -99,7 +115,7 @@ public static class ArrayStoreCheckRemover
                 continue;
 
             //The answer decides one thing only: whether to throw.
-            if (!block.Instructions.Any(other => other.OpCode is OpCode.CheckEqual or OpCode.CheckNotEqual
+            if (!branching.Instructions.Any(other => other.OpCode is OpCode.CheckEqual or OpCode.CheckNotEqual
                     && other.Operands.Count > 2 && ReferenceEquals(other.Operands[1], answer) && IsZero(other.Operands[2])))
                 continue;
 

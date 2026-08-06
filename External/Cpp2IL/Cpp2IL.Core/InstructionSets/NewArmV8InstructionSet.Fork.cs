@@ -22,6 +22,28 @@ namespace Cpp2IL.Core.InstructionSets;
 /// </summary>
 public partial class NewArmV8InstructionSet
 {
+    /// <summary>
+    /// What is known about the lanes of the vector registers in the method being lifted.
+    /// </summary>
+    /// <remarks>
+    /// One per thread, because methods are lifted in parallel and this is per-method state. Held on the
+    /// instruction set it was shared between them, and the dictionaries inside it were being written from
+    /// several methods at once - which showed up as 570 bodies failing to convert with an index outside the
+    /// bounds of an array, thrown from inside <c>Dictionary.TryInsert</c>. It is cleared where the held
+    /// comparison is, at the start of each method.
+    /// </remarks>
+    /// <summary>
+    /// The method being lifted, so that an operand can be read back off the instruction where the
+    /// disassembler's account of it is wrong. Per thread, as the lane model is and for the same reason.
+    /// </summary>
+    [ThreadStatic]
+    private static MethodAnalysisContext? currentMethod;
+
+    [ThreadStatic]
+    private static VectorLanes? threadVectorLanes;
+
+    private static VectorLanes vectorLanes => threadVectorLanes ??= new VectorLanes();
+
 
     /// <summary>
     /// How far apart the two halves of a load or store pair are.
@@ -88,21 +110,27 @@ public partial class NewArmV8InstructionSet
     /// </remarks>
     private object[]? MathCallOperands(MethodAnalysisContext context, Arm64Instruction instruction)
     {
+        //The architecture has a single-precision and a double-precision form of each of these, told apart by
+        //the register the result goes to. Which library method was inlined follows from that and nothing else.
+        var isDouble = instruction.Op0Reg is >= Arm64Register.D0 and <= Arm64Register.D31;
+
         //Both names are offered where the two libraries spell one method differently.
-        //`FRINTM`/`FRINTP` are deliberately absent: routed here they recovered 32 calls and cost 33 of the
-        //decisions the measured methods still make, the same trade `CINC` was reverted for.
         var (names, parameters) = instruction.Mnemonic switch
         {
             Arm64Mnemonic.FABS => (new[] { "Abs" }, 1),
             Arm64Mnemonic.FSQRT => (new[] { "Sqrt" }, 1),
             Arm64Mnemonic.FMAXNM => (new[] { "Max" }, 2),
             Arm64Mnemonic.FMINNM => (new[] { "Min" }, 2),
+            Arm64Mnemonic.FRINTM => (new[] { "Floor" }, 1),
+            Arm64Mnemonic.FRINTP => (new[] { "Ceil", "Ceiling" }, 1),
             _ => (null!, 0),
         };
 
-        //The architecture has a single-precision and a double-precision form of each of these, told apart by
-        //the register the result goes to. Which library method was inlined follows from that and nothing else.
-        var isDouble = instruction.Op0Reg is >= Arm64Register.D0 and <= Arm64Register.D31;
+        //Only where the instruction works on one value. A rounding over a vector arrangement rounds every lane,
+        //and a single call claiming the register would say the low lane is the whole of it - which is the shape
+        //`VectorLanes` exists to take apart, not one to paper over here.
+        if (instruction.Op0Arrangement != Arm64ArrangementSpecifier.None)
+            return null;
 
         if (names == null || MathIntrinsics.Resolve(context.AppContext, names, parameters, isDouble) is not { } method)
             return null;
@@ -113,6 +141,284 @@ public partial class NewArmV8InstructionSet
             operands.Add(ConvertOperand(instruction, argument));
 
         return operands.ToArray();
+    }
+
+    /// <summary>
+    /// The rounding half of <c>fcvtms</c> and <c>fcvtps</c>, which round and then convert in one instruction.
+    /// </summary>
+    /// <remarks>
+    /// <c>fcvtzs</c> truncates, which is what a cast to an integer does, so it needs nothing but the
+    /// conversion. These two round down and up first - <c>Mathf.FloorToInt</c> and <c>Mathf.CeilToInt</c> -
+    /// and lifting them as though they truncated would be a wrong value in every one of them. Which width the
+    /// library method takes follows from the register being read, not the one being written: the result is an
+    /// integer either way.
+    /// </remarks>
+    private object[]? RoundingConversionOperands(MethodAnalysisContext context, Arm64Instruction instruction, Register rounded)
+    {
+        var names = instruction.Mnemonic switch
+        {
+            Arm64Mnemonic.FCVTMS => new[] { "Floor" },
+            Arm64Mnemonic.FCVTPS => ["Ceil", "Ceiling"],
+            _ => null,
+        };
+
+        var isDouble = instruction.Op1Reg is >= Arm64Register.D0 and <= Arm64Register.D31;
+
+        return names is null || MathIntrinsics.Resolve(context.AppContext, names, 1, isDouble) is not { } method
+            ? null
+            : [method, rounded, ConvertOperand(instruction, 1)];
+    }
+
+    /// <summary>
+    /// The type an arm64 conversion produces, as the operand the move carries to say so.
+    /// </summary>
+    /// <remarks>
+    /// Which of the two widths it is follows from the register the result goes to, exactly as it does for the
+    /// inlined library calls: <c>d</c> and <c>x</c> are the wide ones. The signed and unsigned forms produce
+    /// the same managed type here because ISIL has no unsigned - what the sign changes is the value, and the
+    /// value is what the emitted conversion computes.
+    /// </remarks>
+    private static object[] ConvertedTo(MethodAnalysisContext context, Arm64Instruction instruction)
+    {
+        var wide = instruction.Op0Reg is >= Arm64Register.X0 and <= Arm64Register.X31
+            or >= Arm64Register.D0 and <= Arm64Register.D31;
+
+        var types = context.AppContext.SystemTypes;
+
+        TypeAnalysisContext? produced = instruction.Mnemonic switch
+        {
+            Arm64Mnemonic.SCVTF or Arm64Mnemonic.UCVTF or Arm64Mnemonic.FCVT
+                => wide ? types.SystemDoubleType : types.SystemSingleType,
+
+            //A sign or zero extension has to say the *narrow* type, not the word it is extended into. Saying
+            //the word emits conv.i4, which for a value already in a 32-bit register does nothing, and
+            //`sxtb w0, w1` then kept the whole of w1. conv.i1 narrows and still leaves an int on the stack,
+            //which is what the instruction does.
+            Arm64Mnemonic.SXTB => types.SystemSByteType,
+            Arm64Mnemonic.UXTB => types.SystemByteType,
+            Arm64Mnemonic.SXTH => types.SystemInt16Type,
+            Arm64Mnemonic.UXTH => types.SystemUInt16Type,
+
+            Arm64Mnemonic.FCVTZS or Arm64Mnemonic.FCVTZU
+                or Arm64Mnemonic.FCVTMS or Arm64Mnemonic.FCVTPS
+                => wide ? types.SystemInt64Type : types.SystemInt32Type,
+
+            _ => null,
+        };
+
+        return produced is null ? [] : [new ConversionTarget(produced)];
+    }
+
+    /// <summary>
+    /// What a conditional select does to the arm it takes when the condition does not hold, for the three
+    /// forms that do something to it rather than taking it as it is.
+    /// </summary>
+    /// <remarks>
+    /// The architecture folds a small adjustment into the select so that `c ? n : n + 1`, `c ? n : ~n` and
+    /// `c ? n : -n` are one instruction each. Undoing the fold is a single operation in front of the select,
+    /// which is why all three lift through the same case.
+    /// </remarks>
+    private static (OpCode OpCode, object[] Operands)? NotTakenArm(Arm64Mnemonic mnemonic) => mnemonic switch
+    {
+        Arm64Mnemonic.CSINC or Arm64Mnemonic.CINC => (OpCode.Add, [(object)1]),
+        Arm64Mnemonic.CSINV or Arm64Mnemonic.CINV => (OpCode.Not, []),
+        Arm64Mnemonic.CSNEG or Arm64Mnemonic.CNEG => (OpCode.Negate, []),
+        _ => null,
+    };
+
+    /// <summary>
+    /// The number an eight bit floating point immediate stands for.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <c>fmov s1, #-1.0</c> does not carry the bits of the float; it carries eight bits that expand into one
+    /// - a sign, an exponent built out of a single bit, and six of mantissa. The disassembler hands those
+    /// eight bits over as though they were the value, so <c>#-1.0</c> arrives as <c>-1</c> and <c>#1.0</c> as
+    /// <c>0</c>. 644 of them in this game's own assembly, every one a constant the recovered source states
+    /// wrongly - and it compiles, because a number is a number.
+    /// </para>
+    /// <para>
+    /// The expansion is the architecture's <c>VFPExpandImm</c>, and it is exact: eight bits name one of 256
+    /// values and nothing is approximated.
+    /// </para>
+    /// </remarks>
+    private static object? FloatImmediate(MethodAnalysisContext context, Arm64Instruction instruction)
+    {
+        if (VectorLanes.Word(context, instruction.Address) is not { } word)
+            return null;
+
+        //Floating point immediate, scalar: 00011110 type 1 imm8 100 00000 Rd.
+        if (word >> 24 != 0b00011110 || (word >> 21 & 1) != 1 || (word >> 10 & 0x1F) != 0b10000)
+            return null;
+
+        var immediate = (int)(word >> 13 & 0xFF);
+
+        return (word >> 22 & 3) switch
+        {
+            0 => Expanded(immediate),
+            1 => ExpandedWide(immediate),
+            _ => null,
+        };
+    }
+
+    /// <summary>The single precision value eight bits expand into.</summary>
+    internal static float Expanded(int immediate)
+    {
+        var exponentIsSmall = (immediate >> 6 & 1) == 1;
+
+        var bits = (uint)(immediate >> 7 & 1) << 31
+            | (exponentIsSmall ? 0u : 1u) << 30
+            | (exponentIsSmall ? 0x1Fu : 0u) << 25
+            | (uint)(immediate & 0x3F) << 19;
+
+        return BitConverter.Int32BitsToSingle(unchecked((int)bits));
+    }
+
+    internal static double ExpandedWide(int immediate)
+    {
+        var exponentIsSmall = (immediate >> 6 & 1) == 1;
+
+        var bits = (ulong)(immediate >> 7 & 1) << 63
+            | (exponentIsSmall ? 0ul : 1ul) << 62
+            | (exponentIsSmall ? 0xFFul : 0ul) << 54
+            | (ulong)(immediate & 0x3F) << 48;
+
+        return BitConverter.Int64BitsToDouble(unchecked((long)bits));
+    }
+
+    /// <summary>
+    /// How far a load or store moves its base register <i>after</i> using it, where it is one that does.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Post-indexed addressing reads or writes at the base and then advances it, which is how a loop over an
+    /// array is compiled once the index has been turned into a walking pointer:
+    /// <c>ldr w11, [x8], #4</c>. The pre-indexed form, which advances first, is already handled; this one was
+    /// not, so the access was taken for a plain offset - <c>[x8 + 4]</c>, the element after the one meant -
+    /// and the pointer never moved at all. `Corpus.CountOf` counts how many cells equal a colour and came
+    /// back reading <c>cells[1]</c> every time round.
+    /// </para>
+    /// <para>
+    /// The disassembler reports the offset but nothing that tells the two forms apart, so the two bits that
+    /// do are read off the instruction: 01 after the base register means post-indexed, 11 means pre.
+    /// </para>
+    /// </remarks>
+    private static long? WritebackAfterUse(MethodAnalysisContext context, Arm64Instruction instruction)
+    {
+        if (VectorLanes.Word(context, instruction.Address) is not { } word)
+            return null;
+
+        //size 111 V 00 opc 0 imm9 01 Rn Rt
+        if ((word >> 27 & 0x7) != 0b111 || (word >> 24 & 3) != 0b00
+            || (word >> 21 & 1) != 0 || (word >> 10 & 3) != 0b01)
+            return null;
+
+        var immediate = (int)(word >> 12 & 0x1FF);
+
+        return immediate >= 0x100 ? immediate - 0x200 : immediate;
+    }
+
+    /// <summary>
+    /// How far a register-held index is scaled, read off the instruction.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// An index held in a register is scaled by the width the instruction accesses, but only when the
+    /// instruction says so - one bit decides it. The disassembler drops that bit on the extended forms, so
+    /// <c>ldr x0, [x8, w1, uxtw #3]</c> arrives saying the index is scaled by one. Over the binary it is wrong
+    /// 1295 times and right 4566, and what it costs is not a placeholder: an index scaled by one where the
+    /// elements are eight bytes apart is a different element, quietly.
+    /// </para>
+    /// <para>
+    /// The width is the access width, which for a vector register is not the size field alone - a 128 bit
+    /// access is written with the size field at zero and the opcode saying the rest.
+    /// </para>
+    /// </remarks>
+    private static int? IndexShift(Arm64Instruction instruction)
+    {
+        if (currentMethod is not { } method || VectorLanes.Word(method, instruction.Address) is not { } word)
+            return null;
+
+        //Register offset: size 111 V 00 opc 1 Rm option S 10 Rn Rt.
+        if ((word >> 27 & 7) != 0b111 || (word >> 24 & 3) != 0b00
+            || (word >> 21 & 1) != 1 || (word >> 10 & 3) != 0b10)
+            return null;
+
+        if ((word >> 12 & 1) == 0)
+            return 0;
+
+        var size = (int)(word >> 30 & 3);
+
+        return (word >> 26 & 1) == 1 && size == 0 && (word >> 22 & 3) >= 2 ? 4 : size;
+    }
+
+    /// <summary>
+    /// The offset a load or store really has, for the one width the disassembler does not scale.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The immediate of a load or store is in units of the width it accesses, and the disassembler multiplies
+    /// it back out - for a byte, a half, a word, a double word and a <c>d</c> register. For a <b>128 bit</b>
+    /// one it does not, so every <c>ldr q</c> and <c>str q</c> arrives with an offset sixteen times too small.
+    /// </para>
+    /// <para>
+    /// What that looks like in the output is a field read at an offset that belongs to no field. The static
+    /// constructor of <c>CFramework.ColorExtension</c> fills an array from its hundred and forty static
+    /// <c>Color</c> fields, each sixteen bytes apart, and every one of them was read at an offset of one, two,
+    /// three - inside the first field rather than at the next - so a hundred and seven reads resolved to
+    /// nothing. It is not a vector problem; it is every 128 bit access in the game.
+    /// </para>
+    /// </remarks>
+    private static long Scaled(Arm64Instruction instruction, long offset)
+    {
+        //Only the scaled immediate form. `ldur`/`stur` carry a byte offset already, an offset held in a
+        //register is not scaled at all, and a pre- or post-indexed one is a byte count too.
+        if (instruction.Mnemonic is not (Arm64Mnemonic.LDR or Arm64Mnemonic.STR)
+            || instruction.MemAddendReg != Arm64Register.INVALID
+            || instruction.MemIsPreIndexed
+            || instruction.Op0Reg is not (>= Arm64Register.V0 and <= Arm64Register.V31))
+            return offset;
+
+        return offset * 16;
+    }
+
+    /// <summary>
+    /// The call half of <c>fabd</c>, which is <c>Math.Abs</c> over a difference the caller works out first.
+    /// </summary>
+    /// <remarks>
+    /// It is the same inlining <see cref="MathCallOperands"/> undoes, one step further along: the compiler
+    /// folded the subtraction into the call as well, so both have to be given back for the statement to
+    /// stand. Which of the two libraries' <c>Abs</c> it was follows from the width of the result, exactly as
+    /// it does there.
+    /// </remarks>
+    private object[]? AbsoluteDifferenceOperands(MethodAnalysisContext context, Arm64Instruction instruction, Register difference)
+    {
+        var isDouble = instruction.Op0Reg is >= Arm64Register.D0 and <= Arm64Register.D31;
+
+        return MathIntrinsics.Resolve(context.AppContext, ["Abs"], 1, isDouble) is not { } method
+            ? null
+            : [method, ConvertOperand(instruction, 0), difference];
+    }
+
+    /// <summary>
+    /// The register <c>fabd</c> subtracts, which has to be read off the instruction because the disassembler
+    /// reports it as the register being subtracted from.
+    /// </summary>
+    /// <remarks>
+    /// <c>fabd s0, s8, s10</c> comes back as <c>FABD S0, S8, S8</c>, so taking the operands as given makes the
+    /// difference between a value and itself - zero, and it compiles, and it is wrong everywhere the
+    /// instruction appears. The second source is bits 20 to 16 of the word.
+    /// </remarks>
+    private static object? SubtractedOperand(MethodAnalysisContext context, Arm64Instruction instruction)
+    {
+        if (VectorLanes.Word(context, instruction.Address) is not { } word)
+            return null;
+
+        var register = (int)(word >> 16 & 0x1F);
+
+        return RegisterFor((instruction.Op0Reg is >= Arm64Register.D0 and <= Arm64Register.D31
+            ? Arm64Register.D0
+            : Arm64Register.S0) + register);
     }
 
     /// <summary>
@@ -151,7 +457,7 @@ public partial class NewArmV8InstructionSet
     /// their signed counterparts is the existing inaccuracy rather than a new one. Conditions that test
     /// the overflow flag have no relational meaning and are refused.
     /// </summary>
-    private static bool TryGetRelationalOpCode(Arm64ConditionCode condition, out OpCode opCode)
+    internal static bool TryGetRelationalOpCode(Arm64ConditionCode condition, out OpCode opCode)
     {
         opCode = condition switch
         {
@@ -200,20 +506,43 @@ public partial class NewArmV8InstructionSet
     }
 
     /// <summary>
-    /// Which 16 bit field of the register a move-keep writes, as a mask, given the value it writes. Only the
-    /// four aligned positions exist, and the lowest one the value fits in is the one it came from.
+    /// The value a move-keep writes and the 16 bit field of the register it writes it into.
     /// </summary>
-    private static long? FieldMaskOf(long value)
+    /// <remarks>
+    /// <para>
+    /// Both are read off the instruction, because the disassembler shifts the immediate with a <b>32 bit</b>
+    /// shift count: <c>movk x8, #0xcccd, lsl #32</c> comes back as <c>0xcccd</c> (the count wrapping to zero)
+    /// and <c>movk x8, #0x3f4c, lsl #48</c> as <c>0x3f4c0000</c> (wrapping to sixteen). Every field above the
+    /// low half therefore arrived in the wrong place.
+    /// </para>
+    /// <para>
+    /// What stood here inferred the position back from the value, taking the lowest aligned field it fitted
+    /// in. That is right for the half of the constant that ends up in the low word and wrong for the rest, so
+    /// a constant built from more than two fields came out as its own top half - <c>0x3F4CCCCD0000000C</c>,
+    /// which is <c>12</c> and <c>0.8f</c> side by side, as <c>0x3F4CCCCD</c>. The two fields it was about to
+    /// be stored into then got one wrong number between them.
+    /// </para>
+    /// </remarks>
+    private static (long Value, long Mask) MoveKeepField(MethodAnalysisContext context, Arm64Instruction instruction)
     {
-        for (var shift = 0; shift < 64; shift += 16)
+        if (VectorLanes.Word(context, instruction.Address) is { } word)
         {
-            var field = (long)((ulong)value >> shift);
+            var shift = (int)(word >> 21 & 3) * 16;
 
-            if ((field & ~0xFFFFL) == 0 && field << shift == value)
-                return 0xFFFFL << shift;
+            return ((long)(word >> 5 & 0xFFFF) << shift, 0xFFFFL << shift);
         }
 
-        return null;
+        //Nothing to read the instruction back from, so the disassembler's value is all there is: put it in the
+        //lowest aligned field it fits in, which is where it belongs whenever it is one of the low two.
+        for (var shift = 0; shift < 64; shift += 16)
+        {
+            var field = (long)((ulong)instruction.Op1Imm >> shift);
+
+            if ((field & ~0xFFFFL) == 0 && field << shift == instruction.Op1Imm)
+                return (instruction.Op1Imm, 0xFFFFL << shift);
+        }
+
+        return (instruction.Op1Imm, ~0L);
     }
 
     /// <summary>
@@ -343,6 +672,31 @@ public partial class NewArmV8InstructionSet
         return LogicalImmediate(context, instruction) ?? given;
     }
 
+    /// <summary>
+    /// The narrow type an extended-register operand is taken as, where it is one.
+    /// </summary>
+    /// <remarks>
+    /// arm64 folds a narrowing conversion into the operand rather than spending an instruction on it:
+    /// <c>add w8, w8, w0, uxtb</c> adds the low byte of w0, not the whole word. Read as a plain register the
+    /// addition is of the wrong value and nothing says so - `(byte)v + (short)v` came back as `v + v`.
+    /// Only the four that actually narrow are taken. <c>uxtw</c> and <c>sxtw</c> are left alone because they
+    /// are how an index is widened in an address, and that path is recovered elsewhere; <c>uxtx</c> and
+    /// <c>sxtx</c> narrow nothing.
+    /// </remarks>
+    internal static TypeAnalysisContext? ExtendedTo(MethodAnalysisContext context, Arm64Instruction instruction)
+    {
+        var types = context.AppContext.SystemTypes;
+
+        return instruction.FinalOpExtendType switch
+        {
+            Arm64ExtendType.UXTB => types.SystemByteType,
+            Arm64ExtendType.SXTB => types.SystemSByteType,
+            Arm64ExtendType.UXTH => types.SystemUInt16Type,
+            Arm64ExtendType.SXTH => types.SystemInt16Type,
+            _ => null,
+        };
+    }
+
     private static OpCode? ShiftDirection(MethodAnalysisContext context, Arm64Instruction instruction)
     {
         if (instruction.FinalOpShiftType != Arm64ShiftType.NONE)
@@ -396,10 +750,12 @@ public partial class NewArmV8InstructionSet
     /// </remarks>
     private static MemoryOperand MemoryOperandFor(Arm64Instruction instruction, Arm64Register baseRegister, long offset)
     {
+        offset = Scaled(instruction, offset);
+
         if (instruction.MemAddendReg == Arm64Register.INVALID)
             return new MemoryOperand(RegisterFor(baseRegister), addend: offset);
 
-        var amount = instruction.MemExtendOrShiftAmount;
+        var amount = IndexShift(instruction) ?? instruction.MemExtendOrShiftAmount;
 
         return new MemoryOperand(
             RegisterFor(baseRegister),

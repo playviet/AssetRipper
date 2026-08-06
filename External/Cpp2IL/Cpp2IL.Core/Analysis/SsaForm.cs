@@ -161,17 +161,24 @@ public partial class SsaForm
         // Resolve the phi operands of successors that correspond to this block's outgoing edge.
         foreach (var successor in block.Successors)
         {
-            var predIndex = successor.Predecessors.IndexOf(block);
-            if (predIndex < 0)
-                continue;
-
             foreach (var phi in successor.Instructions)
             {
                 if (phi.OpCode != OpCode.Phi)
                     continue;
 
                 var regNumber = ((Register)phi.Operands[0]).Number;
-                phi.Operands[1 + predIndex] = CurrentVersion(regNumber);
+                var version = CurrentVersion(regNumber);
+
+                // Both arms of a branch can land on the same block, and then this block appears in that
+                // block's predecessor list more than once - so it owns more than one operand slot. Taking
+                // only the first left the others holding the skeleton placeholder, which destroys back into
+                // a copy from a register nothing ever wrote, clobbering the value the edge really carried.
+                // The version reaching along either edge is the same one, since both leave from here.
+                for (var predIndex = 0; predIndex < successor.Predecessors.Count; predIndex++)
+                {
+                    if (successor.Predecessors[predIndex] == block && 1 + predIndex < phi.Operands.Count)
+                        phi.Operands[1 + predIndex] = version;
+                }
             }
         }
 

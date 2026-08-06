@@ -23,6 +23,7 @@ public static partial class SsaSimplifier
                 if (instruction.OpCode == OpCode.Move
                     && instruction.Operands[0] is LocalVariable dest
                     && !parameterLocals.Contains(dest)
+                    && !ConversionTarget.CannotBeForwarded(instruction)
                     && IsForwardable(instruction.Operands[1]))
                     forwarded[dest] = instruction.Operands[1];
 

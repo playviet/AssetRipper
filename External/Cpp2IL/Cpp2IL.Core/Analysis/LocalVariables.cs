@@ -210,6 +210,9 @@ public static partial class LocalVariables
         PropagateFromReturn(method);
         PropagateFromParameters(method);
         SeedRuntimeClassTypes(method);
+        SeedDereferencedClasses(method);
+        SeedArrayAllocations(method);
+        ArrayWalkerTyping.Run(method);
         SeedNewobjResults(method);
         SeedMethodInfoTypes(method);
         SeedOwnMethodInfoParameter(method);
@@ -430,6 +433,11 @@ public static partial class LocalVariables
     {
         var destination = move.Operands[0];
         var source = move.Operands[1];
+
+        // A conversion is a move that carries the type it produces, and it is the one move a type must not
+        // travel across in either direction - see ConversionTarget.cs.
+        if (ConversionTarget.Of(move) is { } produced)
+            return destination is LocalVariable converted && SetTypeIfUnknown(converted, produced);
 
         // Move local, local: copy a known type in whichever direction is missing it.
         if (destination is LocalVariable destLocal && source is LocalVariable sourceLocal)

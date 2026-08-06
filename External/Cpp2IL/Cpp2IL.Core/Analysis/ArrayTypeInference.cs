@@ -151,8 +151,33 @@ public static class ArrayTypeInference
             "System.Int16" or "System.UInt16" or "System.Char" => 2,
             "System.Int32" or "System.UInt32" or "System.Single" => 4,
             "System.Int64" or "System.UInt64" or "System.Double" or "System.IntPtr" or "System.UIntPtr" => 8,
-            _ => null,
+            _ => Contents(type, pointerSize),
         };
+    }
+
+    /// <summary>How much of itself a struct takes up, which is what one element of an array of them is.</summary>
+    /// <remarks>
+    /// The runtime records what an instance occupies <i>boxed</i>, so the object header comes off:
+    /// <c>UnityEngine.Vector3</c> is <c>0x1C</c> boxed and twelve bytes of floats. Without this, an array of
+    /// any struct the list above does not name had no width at all, so nothing about an access into one could
+    /// be worked out and every one of them stayed a read of unmanaged memory - and twelve is exactly the width
+    /// that cannot be a shift, so those arrays never had an index register to be recognised by either.
+    /// </remarks>
+    private static int? Contents(TypeAnalysisContext type, int pointerSize)
+    {
+        var header = 2 * pointerSize;
+
+        try
+        {
+            if (type.Definition?.RawSizes.instance_size is { } boxed && boxed > header)
+                return (int)boxed - header;
+        }
+        catch
+        {
+            //A generic parameter, or anything else with no definition of its own to be sized.
+        }
+
+        return null;
     }
 
     private static int? Shift(object operand)

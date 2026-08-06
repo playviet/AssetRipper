@@ -43,7 +43,9 @@ public static partial class MetadataResolver
                 || instruction.Operands[1] is not MemoryOperand { Base: null, Index: null, Scale: 0 } memory)
                 continue;
 
-            var address = (ulong)memory.Addend;
+            //Position-independent code names a global through a slot in the global offset table, so the
+            //usage is at what the slot holds rather than at the slot. See MetadataResolver.Fork.
+            var address = ThroughGlobalOffsetTable(method, (ulong)memory.Addend);
 
             // String literal.
             var stringLiteral = libContext.GetLiteralByAddress(address);

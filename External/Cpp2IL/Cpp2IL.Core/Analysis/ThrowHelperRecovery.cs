@@ -41,18 +41,25 @@ public static partial class ThrowHelperRecovery
         if (appContext.ThrowHelperNamesByAddress.TryGetValue(address, out var cached))
             return cached;
 
-        if (address == 0 || depth >= MaxDepth)
+        //Whether this search may go ahead, and the bookkeeping that decides whether its answer is worth
+        //keeping, are the fork's - see ThrowHelperRecovery.Fork.cs.
+        if (address == 0 || !BeginResolving(address, depth))
             return null;
 
-        // Insert before recursing so a cycle terminates
-        appContext.ThrowHelperNamesByAddress[address] = null;
+        try
+        {
+            var name = appContext.Binary.InstructionSetId == DefaultInstructionSets.ARM_V8
+                ? ResolveNameArm64(appContext, address, depth)
+                : ResolveNameX86(appContext, address, depth);
 
-        var name = appContext.Binary.InstructionSetId == DefaultInstructionSets.ARM_V8
-            ? ResolveNameArm64(appContext, address, depth)
-            : ResolveNameX86(appContext, address, depth);
+            Remember(appContext, address, name);
 
-        appContext.ThrowHelperNamesByAddress[address] = name;
-        return name;
+            return name;
+        }
+        finally
+        {
+            EndResolving(address);
+        }
     }
 
     private static string? FindExceptionName(ApplicationAnalysisContext appContext, InstructionList body)

@@ -253,4 +253,86 @@ public static partial class LocalVariables
 
         return changed;
     }
+
+    /// <summary>
+    /// The class a metadata slot points at, which is one read past the slot itself.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A type constant names the <b>slot</b> the runtime keeps the class in, not the class - so a body that
+    /// wants the class reads through it once. That read produced a local with no type of its own, and
+    /// everything past it went the same way: the class-initialised flag, the static field storage at
+    /// <c>0xB8</c>, the runtime generic context at <c>0xC0</c> are all read at offsets that mean nothing
+    /// unless what they are read through is known to be a class.
+    /// </para>
+    /// <para>
+    /// Seeded before <see cref="SeedNewobjResults"/> deliberately, so that where a register holds the class
+    /// only until an allocation puts the new object in it, the allocation still wins - the object is what the
+    /// rest of the body does something with, and it is the later of the two.
+    /// </para>
+    /// </remarks>
+    private static void SeedDereferencedClasses(MethodAnalysisContext method)
+    {
+        foreach (var instruction in method.ControlFlowGraph!.Instructions)
+        {
+            if (instruction.OpCode != OpCode.Move || instruction.Operands.Count < 2
+                || instruction.Operands[0] is not LocalVariable destination
+                || instruction.Operands[1] is not MemoryOperand { Index: null, Scale: 0, Addend: 0, Base: LocalVariable slot }
+                || slot.Type is not RuntimeClassTypeAnalysisContext held)
+                continue;
+
+            destination.Type = held;
+        }
+    }
+
+    /// <summary>The array-allocating helpers, which say what they are allocating.</summary>
+    private static readonly string[] ArrayAllocators =
+    [
+        "SzArrayNew", "il2cpp_array_new_specific", "il2cpp_vm_array_new_specific",
+    ];
+
+    /// <summary>
+    /// The array an allocation produced, which the allocation names.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <c>Call "SzArrayNew", v70, typeof(System.Int32[]), 3</c> - the type is the call's own first argument and
+    /// is not in any doubt, but the local it wrote had none, so everything read through the new array went
+    /// unresolved: its length at <c>0x18</c>, its elements at <c>0x20</c>. A static constructor that fills a
+    /// jagged array literal does that once per row.
+    /// </para>
+    /// <para>
+    /// Seeded beside the other allocations rather than left to inference, which cannot reach it: nothing about
+    /// a length read through an untyped base says the base was an array, so the fact has to come from the one
+    /// place that states it.
+    /// </para>
+    /// </remarks>
+    internal static void SeedArrayAllocations(MethodAnalysisContext method)
+    {
+        foreach (var instruction in method.ControlFlowGraph!.Instructions)
+        {
+            if (instruction.OpCode != OpCode.Call || instruction.Operands.Count < 3
+                || instruction.Operands[0] is not string name
+                || System.Array.IndexOf(ArrayAllocators, name) < 0
+                || instruction.Operands[1] is not LocalVariable allocated
+                || Allocated(instruction.Operands[2]) is not { } array)
+                continue;
+
+            allocated.Type = array;
+        }
+    }
+
+    /// <summary>The array type an allocation was asked for, however the type reached the call.</summary>
+    private static TypeAnalysisContext? Allocated(object operand)
+    {
+        var type = operand switch
+        {
+            LocalVariable { Type: RuntimeClassTypeAnalysisContext runtimeClass } => runtimeClass.RepresentedType,
+            RuntimeClassTypeAnalysisContext runtimeClass => runtimeClass.RepresentedType,
+            TypeAnalysisContext named => named,
+            _ => null,
+        };
+
+        return type is SzArrayTypeAnalysisContext or ArrayTypeAnalysisContext ? type : null;
+    }
 }

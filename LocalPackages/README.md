@@ -839,6 +839,558 @@ that read was matching. Before adding a mnemonic, find out which statement consu
       allocation genuinely computes with, so the quick answer of replacing these reads with a constant would
       have compiled and been wrong.
 
+128. The `is` that a walk of the class hierarchy was compiled from. Asking whether an object is of a type is
+      small enough that il2cpp inlines it rather than calling the runtime, and what it inlines is a lookup in
+      the chain of base classes every class carries: is this class deep enough, step along its hierarchy by the
+      depth of the type being asked about, and is the class found there that type. Nothing in it names a test,
+      so all four reads came out as unmanaged memory - and because the answer feeds a branch, so did everything
+      that branch guarded. Named through the layout computed from Unity's own header, the comparison becomes
+      the call an un-inlined cast already leaves behind, and the generator writes a real `isinst`:
+
+          UnityEngine.Object obj = (UnityEngine.Object)((o is UnityEngine.Object) ? o : default(UnityEngine.Object));
+
+      Unresolved memory reads fell from 2405 to 2369, and the hierarchy-depth reads with them from 22 to 11.
+      The eleven that remain are not sites it missed: they are the `is it deep enough` guard in front of each
+      test, which reads the field twice and feeds a branch, so it cannot go dead when the comparison after it
+      becomes a call. Three guesses at why "the rest" did not match were all wrong before the lifted code was
+      dumped and showed the shape identical and every site already claimed. This
+      shape could not have been recognised before the structure was named rather than guessed at: the two
+      fields it turns on, `typeHierarchy` and `typeHierarchyDepth`, are among those the older offset table does
+      not carry.
+
+  * **1.0.208 - the branchless `&&`, and `fabd`.** `ccmp`/`ccmn`/`fccmp` make their comparison only when an
+      earlier one came out a particular way, and assert a flag immediate when it did not - which is exactly
+      `a < b && c < d` with no branch in it. What a condition code makes of constant flags is itself constant,
+      so the fold is exact: `&&` where the immediate does not satisfy the reader, `||` where it does. There are
+      exactly three readers of a held comparison, and missing one produces the unguarded condition silently.
+      `fabd` is `Math.Abs(a - b)` in one instruction. 46 markers gone, `cfscore` full 274 -> 275.
+  * **1.0.214 - a lane is a register.** Every instruction the disassembler package cannot decode in this game
+      is Advanced SIMD, and none of it is code anyone wrote as SIMD: it is scalar arithmetic clang noticed it
+      could do two or four at a time. `VectorLanes.cs` lifts each lane as a register of its own - lane zero
+      keeps the register's own name, so nothing that already worked changes - and decodes the copy, single-lane
+      load/store, three-same and two-register-miscellaneous encodings from the raw instruction word, the
+      disassembler having refused all of them. A `str d` over two four-byte lanes becomes the two field writes
+      it always was. A word the disassembler cannot place at all arrives with **no address**, so the address is
+      carried forward four bytes at a time, and the offset a vector load carries is scaled by the width it
+      loads, so that too is read off the word rather than taken as reported.
+
+      Comparisons, narrowing, the across-lane reduction and the lane permutations follow, which together are a
+      vectorised `||` of four range checks - `IntersectLineSegments2D` gets all four of its comparisons back.
+      They are only taken over lanes known to hold an answer rather than a number, because as numbers none of
+      those steps means what it does as an answer.
+
+      Two things this uncovered, both of which were producing wrong values rather than markers. The
+      disassembler reports `fabd`'s **second source as its first**, so `fabd s0, s8, s10` lifted as the
+      difference between a value and itself - zero, compiling, and wrong in all twenty places it appears; the
+      register is now read off the word. And methods are lifted **in parallel**, so one shared lane model was
+      being written from several at once: it surfaced as 570 bodies failing to convert from inside
+      `Dictionary.TryInsert`, and any measurement taken before it was found is worth nothing.
+
+      Markers the lifter writes, game-wide: **306 -> 172**. Decisions surviving in the measured methods
+      92.2% -> **93.2%**, and the methods keeping every decision 123 -> 124. `cfscore` full is flat at 274 and
+      `compare2`, the source-free oracle and the execution oracle are all flat. The four whole methods a
+      mid-round build showed were measured on the racing build and did not survive fixing it.
+  * **1.0.219 - two reverts that were the wrong diagnosis.** `FRINTM`/`FRINTP` and `CINC` had each been
+      lifted before, measured worse, and reverted - three reverts between them, all recorded as "naming an
+      instruction costs branches". Neither was that.
+
+      **`FRINT` cost 33 decisions, and all 33 were in one method.** `BoardController.BuildInitialBoard`
+      collapsed from 33 to 0 while everything else stayed exactly where it was. The cause is
+      `Math.Floor(double)`: a conversion lifts as a move, so a value carries the type of what it was converted
+      *from*, and putting a correctly typed call into an expression the lifting believes is integral does not
+      make it wrong, it makes it uncompilable - and the decompiler then writes the whole body out as comments.
+      Single precision has no such conflict. Restricted to it, and to the scalar form (a rounding over a vector
+      arrangement rounds every lane, so one call claiming the register would say the low lane is the whole of
+      it): **31 markers gone, every scorer unchanged.** The vector form is done properly in `VectorLanes`, one
+      call per lane.
+
+      **`CINC` was an operand-count bug.** The alias has two operands where `csinc` has three, so lifting it
+      through that case read a third that was not there, and it adjusts the arm the condition *takes* rather
+      than the one it does not. Both are wrong values, and a wrong value costs the method rather than the
+      statement - which is exactly the 100 -> 225 unwritable statements the revert recorded. Given its own case:
+      `cfscore` full 275 -> **278**, statements written out as comments 688 -> **667**, decisions 93.2% ->
+      **93.4%**, methods keeping every decision 124 -> **125**.
+
+      With `adr`, `csinv` and `csneg` in the same round, markers the lifter writes fell **172 -> 118** and the
+      files with nothing left to fix went 52 -> **53**.
+
+      **A revert is a measurement, not a diagnosis.** Both of these were reverted on a number without anyone
+      finding out which method the number came from. `decisions.py` names them; one `diff` of its output
+      against the previous build was the whole investigation.
+  * **1.0.222 - a conversion is not a move.** ISIL carries no width, so `scvtf`, `fcvt`, `fcvtzs`, `sxtb` and
+      the rest were all lifted as plain moves. That is right about where the value goes and wrong about what
+      it is: a move says the two sides are the same thing, and the whole point of a conversion is that they
+      are not. So a value carried the type of what it was converted *from*, and three defects followed - a
+      float divided by an int count written as an int division, `Expected F4, but got I4` wherever the two
+      disagreed, and any correctly typed call put into such an expression making the body uncompilable.
+
+      `ISIL/ConversionTarget.cs` carries the type the conversion produces as a third operand of the move.
+      **Marked rather than given an opcode of its own**: an opcode would be one line in the enum and fifty
+      places that match `OpCode.Move` silently not matching any more, while an extra operand is ignored by
+      everything that reads a move's destination and source. Four places ask: the type propagation pins the
+      destination instead of copying across it, the two simplifiers refuse to forward it, and the generator now
+      emits the `conv.*` the instruction actually performs instead of reinterpreting the bits.
+
+      `Expected F4, but got I4` **24 -> 1**. Statements written out as comments 667 -> **660**. It also
+      unblocked the double-precision `frintm`/`frintp`, which had been refused for exactly this reason and now
+      cost nothing: markers **118 -> 89**, `compare2` full 2222 -> **2229**, decisions steady at 93.4%.
+  * **1.0.223 - the float constants nothing had typed.** A floating point constant does not survive
+      compilation as one: it is a word materialised into a general register and moved into a vector one, so
+      recovery gets an integer. Where it goes straight into a float field or argument the type it is going to
+      says so; where it is computed with first, nothing did, and it came out as its own bit pattern - `360f`
+      as `1135869952`, `100f` as `1120403456`, `1000f` as `1148846080`. Each compiles, so nothing complains,
+      and each is a wrong number.
+
+      **The evidence has to be a type, not the value.** `1431655766` is `0x55555556`, the multiplier a
+      division by three compiles to, and as a float it is a perfectly ordinary-looking 1.5e13. So a constant is
+      reinterpreted only where something *else* in the same expression is known to be floating point - a typed
+      local, a typed field, the destination, or a constant already recovered as one. The existing rule that a
+      subnormal decode is a mislabelled integer covers the other direction, keeping a small count like `4` as
+      itself inside an expression that really is float.
+
+      This only became possible once a conversion stopped being an ordinary move (1.0.222): until arithmetic
+      over a converted value was typed at all, there was rarely anything in these expressions to take the
+      evidence from. Every scorer unchanged; the wrong constants are gone.
+  * **1.0.226 - two fields written by one store, and the constant that hid it.** `Spinner()` sets an `int` and
+      the `float` four bytes after it, and the compiler does both in one eight byte store. Field recovery
+      resolved the offset to the first of the two and assigned it the whole sixty-four bit value, so the `int`
+      got `1061997773` - which is the *other* field's `0.8f` read as an integer - and the field really being
+      set did not appear at all. It compiles, and the decompiler says only `Expected I4, but got I8`.
+
+      Three things had to be right for that to come apart. **`movk`'s immediate was in the wrong place**: the
+      disassembler shifts it with a *32 bit* shift count, so `lsl #32` wrapped to zero and `lsl #48` to
+      sixteen, and the fork had been inferring the position back from the value - right for the low half and
+      wrong for the rest. **The chain was never folded in ISIL**, only by the decompiler at the very end, so no
+      pass could read the number; `ConstantFolding.cs` folds it, carrying constants along the block itself
+      rather than depending on which propagation runs next. Then `WideFieldStore.cs` splits the store, and the
+      float half is recovered as a float by the pass that already knew how.
+
+      `Spinner()` now recovers `FrameCount = 12; SpinDuration = 0.8f;`. `cfscore` full 278 -> **279**, partial
+      130 -> 129, decisions steady at 93.4%, 0 errors.
+
+      Measured against **1.0.203, the last committed build**, re-exported the same day: whole methods 274 ->
+      **279**, decisions 92.2% -> **93.4%**, methods keeping every decision 123 -> **125**, files with nothing
+      left 52 -> **53**, markers the lifter writes **299 -> 89**, statements commented out 690 -> **661**,
+      `Expected F4, but got I4` 21 -> **1**, `compare2` whole bodies 2219 -> **2228**.
+  * **1.0.227 - the commonest missing instruction was not a vector one.** Instrumenting the lane model to
+      report *why* it refuses, rather than guessing, put `fcvt s0, d0` at the top by a wide margin: **387 of
+      them**, 24 in the game's own assembly. The switch has handled `FCVT` all along and never saw one, because
+      the disassembler reports it as `INVALID` and the mnemonic never arrives. `UndecodedScalar.cs` decodes the
+      one-source floating point space from the word - the precision changes, `fmov`, `fneg`, and the `fabs`,
+      `fsqrt`, `frintm`, `frintp` that are library methods - and a precision change is lifted as a *conversion*,
+      so it carries the width it produces instead of quietly reinterpreting.
+
+      Markers the lifter writes **89 -> 69**, everything else steady, 0 errors.
+  * **1.0.230 - what the architecture already zeroed.** With the disassembler's own gaps closed, the lane
+      model's remaining refusals were measured rather than guessed: a probe mode records every word it would
+      not take together with what it knew about the registers at the time. Two causes came out of it.
+
+      **A vector immediate establishes lanes, and nothing said so.** `movi v0.2s, #0x3f, lsl #24` is
+      `[0.5f, 0.5f]`; the disassembler decodes it, so it never appeared among the refusals, and the ordinary
+      lifting takes it for one value - which left the model no choice but to forget the register. Almost every
+      chain ending in a refused `fmul` begins at one of these.
+
+      **A register is very often not unknown above what last wrote it: it is zero.** Writing `s2` zeroes the
+      twelve bytes above it, writing `d2` the eight above, and an instruction over a 64 bit arrangement does
+      the same to the top half. A pair computed in `.2s` and then compared in `.4s` - which is what a
+      vectorised pair of range checks is - reads two lanes that were computed and two that are zero, and
+      without the second pair the comparison cannot be emitted at all. One watermark per register replaces the
+      ad-hoc tracking, and one gate makes a known-zero lane real where something asks for it.
+
+      The watermark has to be earned. Claiming it after an instruction the model only *partly* followed says
+      lanes that hold a result are zero - which cleared nineteen more markers and put seven statements into
+      comments, because the next instruction along believed it. Recorded only where every lane was followed.
+
+      Markers the lifter writes **69 -> 60**, statements commented out 661 -> **658**, everything else steady,
+      0 errors.
+  * **1.0.231 - a `Vector2` spilled to the stack.** The lane model read a whole-register load only in its
+      *scaled* form. A `Vector2` written to the stack and read back uses the unscaled one - `ldur d9, [sp,
+      #0x14]` - and everything downstream of it was refused, because the register it loaded was forgotten at
+      the first instruction. Both forms are decoded now, and the offset is read off the word either way: one is
+      in units of the width it loads and the other is in bytes and signed.
+
+      A lane of a spilled vector also has to be *named* the way the rest of the lifting names one. Register 31
+      as a base is the stack pointer, and a stack slot is modelled as a variable rather than as an address -
+      emitting a memory operand for it instead would have been a load from somewhere nothing can say anything
+      about, which is the very thing that loses the statement.
+
+      Whole methods **279 -> 284**, partial 129 -> 124, markers the lifter writes 60 -> **36**, unresolved
+      memory reads 280 -> **270**, statements commented out 658 -> **651**, decisions steady at 93.4%,
+      0 errors. Every measure moved the right way.
+  * **1.0.233 - the integer half, and what a call really does.** The three-register integer instructions -
+      arithmetic, the comparisons, and the bitwise family - complete the lane model's vocabulary. The bitwise
+      ones are written over byte arrangements whatever they are really operating on, so the width has to come
+      from what the model already knows the register holds; and `bsl`, `bit` and `bif` are a *select*, one
+      register choosing lane by lane between two others, which is only a select if the register choosing holds
+      answers rather than numbers.
+
+      Two things about forgetting, both found by reading the trace rather than the code. **A call clobbers the
+      first eight vector registers and preserves the rest** - which is exactly why an accumulator lives in one -
+      and the model knew neither half. And the conservative rule added earlier, that a word whose register
+      cannot be named has its low five bits forgotten, was firing on *every branch*: a register chosen out of a
+      branch offset, forgotten on each `bl`, `b` and `cbz` in the method. Narrowed to the sentinels it was
+      written for.
+
+      Markers **36 -> 32**, `notimpl` inside the measured files 24 -> **19**, decisions 93.4% -> **93.5%**,
+      whole methods steady at 284, 0 errors.
+  * **1.0.234 - six thousand memory offsets that were sixteen times too small.** The immediate of a load or
+      store is in units of the width it accesses, and the disassembler multiplies it back out for a byte, a
+      half, a word, a double word and a `d` register. **For a 128 bit one it does not.** Counted over the whole
+      binary: of the 6212 `ldr q`/`str q` instructions carrying a non-zero immediate, **every single one** was
+      reported sixteen times too small, and none was reported correctly. The pair forms are all right (35417 of
+      them), so the bug is exactly one addressing form.
+
+      What it looked like in the output was a field read at an offset belonging to no field. The static
+      constructor of `CFramework.ColorExtension` fills an array from its 140 static `Color` fields, sixteen
+      bytes apart, and read every one of them at an offset of one, two, three - inside the first field rather
+      than at the next. Those 107 reads now name their fields.
+
+      Unresolved memory reads game-wide **2400 -> 2291**; `compare2` full 2235 -> 2236; `cfscore` and decisions
+      unchanged, because the type it shows up in most is not one of the 96 measured. The source-free oracle's
+      field count moved 74.7% -> 74.4%, which is the one number that went the wrong way - kept anyway, because
+      the fix is not a judgement call: it was checked against the instruction word for every such instruction
+      in the game.
+  * **1.0.235 - the index scale on an extended register.** An index held in a register is scaled by the width
+      the instruction accesses, and one bit decides whether it is. The disassembler drops that bit on the
+      extended forms: `ldr x0, [x8, w1, uxtw #3]` arrives saying the index is scaled by one. Counted over the
+      binary, wrong **1295** times and right 4566 - and confirmed against the toolchain's own disassembler,
+      which prints the shift the other does not report.
+
+      What it costs is not a placeholder. An index scaled by one where the elements are eight bytes apart is a
+      *different element*, quietly. `TrainEngine::OnJunction` now reads
+      `[Connection[] + 0x20 + index * 8]` where it read `index * 1` before.
+
+      No counter moved: the instructions carrying it are mostly outside the 96 measured files, and a wrong
+      element is exactly the kind of defect no counter sees. Kept for the same reason the 128 bit offset was -
+      it was checked against the instruction word for every such instruction in the game.
+  * **1.0.237 - the float constants that were never floats.** `fmov s1, #-1.0` does not carry the bits of the
+      float; it carries **eight bits** that expand into one - a sign, an exponent built out of a single bit,
+      six of mantissa. The disassembler hands those eight bits over as though they were the value, so `#-1.0`
+      arrives as `-1` and `#1.0` as `0`. **644 of them in the game's own assembly**, every one a constant the
+      recovered source states wrongly - and it compiles, because a number is a number. Worse, the integer then
+      reached the float-literal pass, which reinterpreted *its* bits: `-1` became a NaN.
+
+      Found by a differential test rather than by reading code. `probe ... alltext` dumps what the disassembler
+      makes of every instruction in the game's own assembly; `scratchpad/disdiff.py` compares that against the
+      toolchain's own disassembler **by the numbers each reports**, since the two write the same instruction
+      differently but cannot disagree about an immediate. Nearly everything it flags is an alias (`movz`/`mov`,
+      `ands`/`tst`, `ubfm`/`lsr`) or a convention (`adrp` relative against absolute); what is left is the bugs.
+
+      Both forms are decoded, the scalar one and the vector one, which encode their eight bits in different
+      places. Markers inside the measured files 19 -> **15**; the rest steady. The 644 corrected constants
+      appear in no counter at all, which is the point of the ones that follow.
+  * **1.0.238 - the page address that was a distance.** `adrp` names a page, and the disassembler reports the
+      *distance* to it rather than the page itself. The fold that turns `adrp`+`ldr` into an absolute address
+      had always corrected for that, so literal recovery worked - but the move that puts the value in the
+      register did not, so wherever the fold did not apply the register held a number that is not an address,
+      and negative wherever the page lies behind the instruction. Nine of them were written into the output as
+      things like `_ = -23261184L`. Now the register holds the page.
+
+      No counter moved; the reads through such a register still need the address interpreted, which is a
+      different problem. Kept because a register holding a signed distance labelled as an address is simply
+      wrong.
+
+      Also measured and **not** done: 580 calls in the game resolve to no managed method, and 224 of them are
+      calls into the C library through the procedure linkage table - `memcpy` 80, `memset` 42, and 79 that are
+      `Mathf`/`Math` methods compiled to a real call rather than inlined (`powf`, `atan2f`, `sinf`, `modf`).
+      Naming them means resolving a linkage-table slot through its relocation to a symbol, which LibCpp2IL does
+      not expose. **Inside the 96 measured files it is 11 calls, 6 of them cleanly nameable** - too little to
+      justify the ELF work. The rest of the 580 are thunks and runtime helpers, and following a thunk was
+      measured and reverted before.
+  * **1.0.244 - four attempts at the untyped bases, all reverted.** A read through a base with no type cannot
+      resolve to a field and there are 2508 of them, which looks like the last large tractable family. Grouping
+      them by *what defined the base* says otherwise: 739 are the stack pointer, 377 are calls whose target is
+      not a managed method, and the remaining 1158 are cascades of those. Naming a stacked lane as a stack slot
+      cost eleven decisions; not splitting stack stores cost exactly the same; narrowing a 64 bit value into a
+      32 bit place did nothing when the source was typed and cost three whole methods when it was not. All four
+      reverted, and the tree measures exactly as it did before them.
+
+      Two avenues closed with it. **Thunk following** - of the 377 unresolved call targets only 13 are a single
+      unconditional branch and *none* lands on a managed method, which is why it was catastrophic when it was
+      tried before. And the **`Expected I4, but got I8` comments are not blockers**: 646 of them coexist with
+      methods that count as whole, being diagnostics ILSpy writes beside code it emitted anyway.
+
+      Recorded rather than retried. The roots are internal il2cpp helpers whose addresses lie past the last
+      export, so nothing in the binary names them.
+  * **1.0.245 - the load that moves its base afterwards.** Post-indexed addressing reads at the base and
+      *then* advances it, which is what a loop over an array becomes once the index has been turned into a
+      walking pointer: `ldr w11, [x8], #4`. The pre-indexed form was handled; this one was taken for a plain
+      offset, so the access read `[x8 + 4]` - the element after the one meant - and the pointer never moved.
+      `Corpus.CountOf` counts the cells equal to a colour and came back reading `cells[1]` every time round,
+      returning six where the answer was one.
+
+      The disassembler reports the offset but nothing that separates the two forms, so the two bits that do are
+      read off the instruction. Both the load and the store side.
+
+      In the game's own assembly it is 29 sites - the other 3467 post-indexed accesses are frame pops - and
+      every game measure is unchanged. The corpus method now walks the pointer faithfully and fails visibly
+      instead of returning a wrong number quietly, which is the trade this project takes. What it needs to
+      pass is a pass that turns a walking pointer back into an indexed access; that does not exist yet.
+  * **1.0.249 - the answers a switch was compiled into a table of.** A `switch` whose cases are dense and
+      whose arms are constants does not become branches: the compiler puts the answers in the binary's own data
+      and indexes them. That read resolves to nothing, so the method answered with its default for every input
+      - `Corpus.Weight` returned zero for all five colours. Everything needed is present by the time the
+      constant folding has run: the table address is a constant, the count is in the comparison that guards the
+      read, and the width is the scale of the index.
+
+      The arms become a chain of choices, since ISIL has no switch. **The fallback is nothing rather than the
+      last arm**, because the guard is an *unsigned* comparison and ISIL lifts it as a signed one - so the
+      block is entered for a negative index the original excluded, and answering with the last arm would be
+      answering confidently with the wrong case.
+
+      Corpus **15 -> 16 of 25** methods behaving identically. In this game it claims one read of 43: its
+      indexed reads are mostly array accesses whose header offset has been folded into the base, which is a
+      different problem. Every game measure unchanged, 0 errors.
+  * **1.0.251 - the array header folded into the subscript.** An element is at `array + 0x20 + i * stride`,
+      and the pass knew two ways the compiler writes that. There is a third: put the header *in the index*.
+      `mov w22, #4` and `ldr x20, [x8, x22, lsl #3]` reads `array + 4*8`, which is element zero - and the
+      element actually wanted is four less, a difference the compiler keeps in a register of its own because it
+      is what the bounds check compares against. So the subscript is already a local and nothing has to be
+      computed; it only had to be recognised.
+
+      Whole methods **284 -> 288**, partial 124 -> 120, unresolved memory reads **273 -> 242**, statements
+      commented out 663 -> 657, decisions steady at 93.5%, 0 errors. The best single change in this stretch,
+      and it was found by reading the disassembly of one unresolved read rather than by reasoning about the
+      pass.
+  * **1.0.252-255 - the field initialisers that come out of the binary as one block.** Four `float` fields with
+      four different defaults are not four instructions. The compiler puts the sixteen bytes in the constant
+      pool and moves them in one go - `ldr q0, [x8, #0x930]` then `stur q0, [x19, #0x48]` - and the read, being
+      from the binary rather than from anything managed, resolved to nothing. The store then resolved to the
+      *first* of the four fields and assigned it that nothing, so `CF.BoardController` reported
+      `HammerWindUpDuration = 0f` where the source says `0.2f`. A value, not a failure, which is why no counter
+      had ever shown it.
+
+      Three things were wrong at once. The **address** was sixteen times too small: the ADRP fold computes it
+      from the raw immediate and never passes through the one place a 128 bit offset is scaled, so 144 of the
+      224 such reads were not even at a sixteen byte boundary and none could have been right. The **width** was
+      lost, ISIL having no way to say how many bytes a move moved, so it is now taken where the address becomes
+      a constant and both are known. And where eight bytes came back in a `d` register the lifter called them a
+      `double`, because at that point it knows the register and not the destination - `HammerShakeAngle`, whose
+      value is `4`, was recovered as `3.1664965E-10`, which is `4f` and the `0.12f` beside it read together.
+      That last one needs no address at all: **a four byte field cannot be assigned an eight byte number**, so
+      the constant is its own evidence, the same reasoning `WideFieldStore` uses one width down.
+
+      Answered only where the data cannot change - `.rodata`, never `.data`, and not `.data.rel.ro` either,
+      whose bytes in the file are relocations rather than values - and only where the fields tile the load
+      exactly. **17 float fields gained a correct default** that had none, 6 of the 8 garbage constants went,
+      unresolved reads game-wide 2260 -> 2253, `compare2` **2236 -> 2238**. Whole methods, decisions and the
+      corpus all held exactly, which is the expected shape: this fixes what methods *say*, not whether they
+      compile, and only the enumeration can show it.
+  * **1.0.256-257 - and the same sixteen bytes when they are a struct.** A `Color` is four floats, which is the
+      same blob and the same one instruction. `CFramework.ColorExtension` declares a hundred and forty of them,
+      the compiler folded every `new Color32(240, 248, 255, 255)` into the four floats it comes out as, and what
+      was recovered said `AliceBlue = (Color)0`.
+
+      A struct cannot simply be assigned bytes - ISIL has no way to say "these bytes are that value". What it
+      has is an allocation followed by a constructor call, which the IL generator fuses back into one `newobj`,
+      so the blob is given back as **the constructor the source must have started from**: `AliceBlue = new
+      Color(0.9411765f, 0.972549f, 1f, 1f)`, which is `Color32(240, 248, 255, 255)` exactly. Only where the
+      struct is entirely `float`, its fields tile the load from zero with no padding, and it declares one
+      `float` per field - anything else keeps the placeholder, because a blob spread over the wrong arguments
+      is a wrong colour stated confidently.
+
+      Unresolved reads game-wide **2253 -> 2110**, of which the reads with no base at all went **223 -> 80**;
+      **156 struct constructions** recovered. Spot-checked against the original: `Chocolate` 210/255 ->
+      `0.8235294f`, `DarkOrchid` 153/255 -> `0.6f`, `Tomato` 99/255 -> `33f/85f`. Whole methods, `compare2`,
+      decisions and the corpus all held - `ColorExtension` is not one of the 96, which is how a
+      hundred-and-forty-read family stays invisible to the primary scorer.
+  * **1.0.258 - a left shift lifted as a right shift.** `UBFM` is the encoding behind `lsr`, `lsl`, `ubfx` and
+      `ubfiz`, and it means two different things: an extract when `imms >= immr`, an *insert* when it is not.
+      Only the extract was translated, and with the wrong number of bits. So `h * 31`, which the compiler
+      writes as `(h << 5) - h`, came back as `((h >> 27) & 0x3FFFFFF) - h` - which compiles, runs, and answers
+      something else entirely.
+
+      **38 of the 112 `UBFM` in this game's assembly are the left shift**, and the mask is too wide on most of
+      the rest; where `imms` reaches 31 it was computed by shifting a 32 bit `1` that far, which is not the
+      number intended either. It survived because the disassembler resolves the `lsl` alias itself 661 times
+      against these 112 - the common case was right, and the rare one looked like ordinary noise. The mask is
+      now dropped wherever it cannot change the answer, so an ordinary shift comes out as one operation
+      instead of an expression: left shifts recovered 120 -> **137**, wrong extract-and-mask shapes 2 -> **0**.
+
+  * **1.0.259 - say `Length`, not `_stringLength`.** The pass that names a private field by its property knew
+      one convention - Unity's, where `m_OnClick` is `onClick`. The class libraries use the other: the property
+      capitalises, and it drops the word the field carried to say what it was *inside* the type.
+      `System.String._stringLength` is `Length`, and `get_length` matches nothing, so every string length in
+      the game stayed an unwritable field and commented out the statement that used it - and, in a loop, every
+      statement after it.
+
+      Each casing and each camelCase word-suffix is now tried, still requiring the property's type to match
+      the field's, which is what stops a shorter name matching something unrelated. `_stringLength` **36 ->
+      0**, inaccessible fields game-wide 273 -> **237**, and on the ground-truth corpus - where every method
+      has known source and is *run* against the original - **16 of 25 correct -> 17**. `Hash` was the one that
+      changed, and it needed both of this pair: the shift to compute `h * 31`, and the property to be allowed
+      to say so.
+  * **1.0.260 - the out parameter read straight into the answer.** Coming out of single assignment form, a copy
+      is written on each edge into a join. The fork refuses copies where the two ends cannot be the same value -
+      a register being reused rather than a value moving - and judges that by type. But the local standing for
+      an out parameter is typed as the *address* it was handed over as, `System.Int32&`, while the join is typed
+      as what the callee wrote there. Different names, one of them a value type, so the copy was refused and the
+      edge carried nothing.
+
+      Where that edge is the one the answer comes back on, the answer is simply gone. `ParseOrDefault` returned
+      its fallback for input it had just successfully parsed - `int.TryParse(raw, out var _)`, the value thrown
+      away - and there is no marker for it, because the code that remains is well formed and compiles.
+
+      Two types that differ by nothing but the `&` are the value moving. `compare2` **2238 -> 2253**, decisions
+      93.5% -> **93.6%**, and on the corpus **17 of 25 -> 18**. This and 1.0.258-259 together took the corpus
+      from 16 to 18: three separate faults, none of which any marker counted, all found by asking why a method
+      that compiled gave a different answer than the source it came from.
+  * **1.0.280 - the answer depended on who asked first.** Whether an address is a throw helper is worked out
+      once and shared across the whole application. To stop a cycle, a `null` went into that cache *before* the
+      search ran - and nothing told that placeholder, or a search that stopped at the depth limit, apart from a
+      settled "this is not a throw helper". So whichever call site reached an address first, with whatever
+      depth it had left, fixed the answer for every other one.
+
+      It surfaced as two hosts disagreeing about the same binary: analysing a single method, an address
+      resolved to nothing; analysing the whole assembly it resolved to `OutOfMemoryException` - **9 names found
+      against 25**. Every call that failed to resolve stayed a call to a bare address, and a later pass, seeing
+      an unresolved call carrying a type argument, read those as casts - **`isinst` that were really `throw`**.
+
+      A name is a name however it was reached; a nothing is only kept when the search that produced it ran to
+      the end. Whole methods **288 -> 289**, statements commented out **656 -> 600**, unresolved memory reads
+      **242 -> 219**, mangled names 72 -> 69, unresolved call targets 52 -> 46, indirect calls 9 -> 6,
+      `compare2` **2253 -> 2259**. Every marker moved the right way at once, which is the shape of a defect that
+      was quietly costing a little everywhere rather than a lot in one place.
+
+      The source-free oracle reads lower (calls kept 78.0% -> 77.4%) and that is the transformation working:
+      a call that becomes a `throw` is one fewer call for it to find. Decisions 93.6% -> 93.5%, for the same
+      reason - a block that throws has no branch to keep.
+  * **1.0.284 - one field of one element of an array of structs.** A `Vector3` is twelve bytes, which is the
+      one width that cannot be a shift, so an index into an array of them is a multiply the compiler folds away
+      wherever the subscript is constant. What is left is a single offset: `cornersBuf[2].y` is thirty-one bytes
+      past the header and nothing about that looks like an array access at all.
+
+      Two things were missing. **A struct had no width** - the table knew the primitives and enums and answered
+      `null` for everything else, so an array of any other struct could not be reasoned about at all; the
+      runtime records what an instance takes up boxed, so the object header comes off and `UnityEngine.Vector3`
+      is `0x1C - 0x10 = 12`. And **a field of an element was not expressible**: the fold gives an offset that is
+      not a whole number of elements, which is one element plus one field, and reaching it is `ldelema` then
+      `ldfld` - the same two steps the compiler folded into one.
+
+      Unresolved memory reads in the measured files **219 -> 204**, game-wide **1835 -> 1810**. Whole methods,
+      `compare2`, decisions and the corpus all held. The recovered accesses are the `Vector3[]` corner buffers
+      Unity's `GetWorldCorners` fills - `cornersBuf[2].y`, `overlayCorners2[2].y` - which is what the source
+      must have said.
+  * **1.0.285 - the class a slot points at.** A type constant names the **slot** the runtime keeps a class in,
+      not the class, so a body that wants the class reads through it once. That read produced a local with no
+      type of its own - or worse, one inherited from whatever the register went on to hold - and everything past
+      it went the same way: the class-initialised flag, the static field storage at `0xB8`, the runtime generic
+      context at `0xC0` are read at offsets that mean nothing unless what they are read through is known to be
+      a class.
+
+      Seeded deliberately *before* the allocation results, so where a register holds a class only until an
+      allocation puts a new object in it, the object still wins - it is the later of the two and what the rest
+      of the body works on.
+
+      Unresolved memory reads in the measured files **204 -> 160**, game-wide **1810 -> 1766**; unresolved call
+      targets 2 -> **0**. Whole methods, `compare2`, decisions, the source-free oracle and the corpus all held
+      exactly. Statements commented out 600 -> 605, which is the trade: a local that used to be claimed as a
+      `List<CatData>` through a bogus cast is now honestly an `IntPtr`, and one or two statements that leaned on
+      the wrong claim go with it.
+  * **1.0.286-288 - the loop that kept no subscript.** A loop over an array does not have to keep one: the
+      compiler can start a pointer at the first element and step it by the width of one, counting down
+      separately. `Add p, this._boardData, 32` is `&array[0]`, and `Add p2, p, 8` is the next.
+
+      Two things go with the subscript, and fixing only the first is worth nothing. The element read through the
+      pointer has **no type**, so the fields read out of it resolve to nothing - sixteen unresolved reads in
+      `BoardController.HasAnyActiveCell` alone. And the walk itself **cannot be written down**: `_boardData +
+      32L` is not something C# will say, so even once the fields are known the statements holding them are
+      commented out anyway. Typing alone measured unresolved reads -4 and `commented` **+3**.
+
+      So the subscript is counted back - nought where the walk starts, one more wherever it steps - and put into
+      the read, which becomes an ordinary indexed access. Then the arithmetic goes, which it will not do on its
+      own: the walk is a *cycle*, the step written from the pointer and the pointer written back from the step,
+      so every part of it is read by another part and dead-code elimination keeps all of it.
+
+      Whole methods **289 -> 291**, partial 119 -> 117, statements commented out **605 -> 574**, unresolved
+      reads 160 -> 156, `compare2` **2259 -> 2263**, decisions 93.5% -> **93.6%**. The source-free oracle is
+      byte-identical and the corpus held. `HasAnyActiveCell` comes back with **no marker at all**, reading like
+      the `foreach` it was.
+
+      The earlier note that this game has "only 29 pointer walks" counted only *post-indexed* ones; this shape
+      steps with an ordinary `Add` and was never in that number.
+  * **1.0.289-290 - the same walk, stepped and indexed.** The other half of the pointer walk turned out to be
+      already lifted: `ldr w, [p], #4` becomes an explicit `Add p2, p, 4`, which the pass from 1.0.288 saw. What
+      it got wrong was **order**. The step writes a *new* pointer while the read goes through the *old* one, and
+      the subscript was one mutable counter shared by the whole walk - so it was stepped before the read that
+      should have seen it unstepped. `CountOf` came back reading `cells[1]` first and running off the end: a
+      wrong answer, shipped in 1.0.288 and caught only by running the recovered code.
+
+      Each pointer now carries its own subscript, mirroring the pointer's own dataflow - a copy copies it, a
+      step adds one - which is right whatever the order.
+
+      Then two shapes a jagged array needs. A walk can **start from an array element**, not only from a local:
+      the inner loop of `rows[r]` begins at `rows[r] + 0x20`, and what it walks is one step further in than the
+      outer array. And a walker can be **read with an index** rather than stepped, because the pointer it
+      indexes from is set afresh for every row - so the element is the pointer's own subscript plus that index.
+
+      On the ground-truth corpus, where recovered code is *run* against the original: **18 of 25 correct -> 20**
+      (`CountOf`, then `SumJagged`). Whole methods 291, unresolved reads 156, `compare2` 2263 and decisions
+      93.6% all held exactly, with `commented` 574 -> 576 for the extra subscripts.
+  * **1.0.291-294 - a struct where a number belongs.** A struct in a field lies where it is rather than being
+      pointed at, so reading one of its members is a read at a fixed distance from the outer field. Where that
+      distance is not nought the offset matches nothing at the outer level and the resolver walks in to find it
+      - which is how `n.A.Y` comes back right. Where it *is* nought the offset matches the outer field exactly,
+      the resolver stops, and `n.A.X` comes back as `n.A`:
+
+          Add v9, n.A (Pair), n.A.Y (System.Single)     ; a Pair plus a float
+
+      Arithmetic is done on numbers, so an operand that resolved to a struct is a read of what lies at the front
+      of it. Two things had to be got right. **Where** - the operands are still plain locals at field-resolution
+      time, and only become `n.A` once the pass that names a struct-of-floats' registers has run, so this has to
+      follow that. And **how narrowly**: `Add` is also how an address is worked out, and a struct is an ordinary
+      thing to compute one from. Applied to every addition it cost **three whole methods** in the game to gain
+      one in the corpus; narrowed to an operand sitting beside a plain number, and iterated - because an
+      addition of two floats gives a float, and that is what tells the *next* addition it is arithmetic at all -
+      it gains both.
+
+      On the ground-truth corpus **20 of 25 correct -> 21** (`NestedSum`). Whole methods 291 and unresolved reads
+      156 held, statements commented out **576 -> 572**, `compare2` **2263 -> 2264**, the source-free oracle's
+      whole bodies 1193 -> **1194**, decisions 93.6%. Every measure improved or held.
+
+      Of the corpus's remaining four, `Distance` and `Divide` are recorded as not defects; only `Diagonal`
+      (rank-2 arrays) and `SumSteps` (an iterator chain) are real.
+  * **1.0.295-296 - two dimensions, one distance.** An array of two dimensions is stored flat, so `grid[i, j]`
+      is a single distance into it, worked out from the lengths the array carries: a bounds pointer at `0x10`,
+      and a length per dimension `0x10` apart within that. By the time the fork sees the read it is already
+      shaped like an array access - base, header, index, scale - and only the *rank* stops it being written,
+      because `ldelem` takes one index and this one is flattened.
+
+      The multiply says which index is which: the one multiplied by a dimension's length is the outer, the one
+      added to it the inner. Recognising that length **by where it was read from** - through the array's own
+      bounds pointer - is what makes it safe rather than a guess about any multiply that happens to be nearby.
+      An array of more than one dimension is indexed through methods rather than an instruction, and Cpp2IL does
+      not model those, so the reference is built from the array's own signature - which is what the language
+      does too.
+
+      Then the bounds reads themselves, as `Array.GetLength`. Without them the loop bound was zero, so
+      `Diagonal` never entered its loop and threw instead of answering - the access having been recovered
+      perfectly and the method still being wrong.
+
+      On the ground-truth corpus **21 of 25 correct -> 22**. The game is **byte-identical on every measure**,
+      which is the expected result and was known before the work started: Assembly-CSharp has *no* arrays of
+      rank greater than one, and across every assembly there are only ten, all in engine code or generic stubs.
+      This buys a corpus method and a stronger oracle, not a game method.
+
+      Of the three corpus failures left, `Distance` and `Divide` are recorded as not defects. **`SumSteps` - an
+      iterator chain - is the only real one.**
+  * **1.0.301-302 - the array an allocation just made.** `Call "SzArrayNew", v70, typeof(System.Int32[]), 3` -
+      the type is the call's own first argument and is not in any doubt, but the local it wrote had none. So
+      everything read through the new array went unresolved: its length at `0x18`, its elements at `0x20`. A
+      static constructor filling a jagged array literal does that once per row, and `BoardController`'s does it
+      seventeen times.
+
+      Seeded from the allocation, which is the one place that states the fact - nothing about a length read
+      through an untyped base says the base was an array. It has to be said **twice**: once during type
+      resolution, and again immediately before `ArrayAccessRecovery`, because the first does not survive to
+      there. That was found by tracing rather than reasoning - the type reads back correctly at the end of the
+      pipeline, and is null at the point that needs it.
+
+      Unresolved memory reads in the 96 measured files **209 -> 183**, game-wide **1758 -> 1645**; statements
+      commented out 572 -> **568**. Whole methods 291, decisions 93.6% and the corpus 22/25 all held, and the
+      source-free oracle's whole bodies 1193 -> **1194**. `compare2` reads 2265 -> 2264, which is the ±1 it
+      varies by on identical input.
+
 Measured on an arm64 Android game, against the original Unity project the build came from. Over the game's own
 assembly, counted on the graph the IL is generated from: instructions the lifter could not translate fell from 4702
 to 474, calls left unresolved from 6097 to 2029, and unresolvable memory operands from 29680 to 12070 - while the

@@ -1,0 +1,161 @@
+using System.Collections.Generic;
+using Cpp2IL.Core.ISIL;
+using Cpp2IL.Core.Model.Contexts;
+using LibCpp2IL.BinaryStructures;
+
+namespace Cpp2IL.Core.Analysis;
+
+/// <summary>
+/// Follows a struct field down to the member the arithmetic was actually reading.
+/// </summary>
+/// <remarks>
+/// <para>
+/// A struct in a field lies where it is rather than being pointed at, so reading one of its members is a read
+/// at a fixed distance from the outer field. Where that distance is not nought the offset matches nothing at
+/// the outer level and the resolver walks into the struct to find it - which is how <c>n.A.Y</c> comes back
+/// correctly. Where it <i>is</i> nought the offset matches the outer field exactly, the resolver stops there,
+/// and <c>n.A.X</c> comes back as <c>n.A</c>:
+/// </para>
+/// <code>
+/// Add v9, n.A (Pair), n.A.Y (System.Single)     ; a Pair plus a float
+/// </code>
+/// <para>
+/// The disambiguation is in the instruction. <b>Arithmetic is done on numbers</b> - ISIL has no addition of one
+/// struct to another, and no such thing was compiled - so an operand that has resolved to a struct is a read of
+/// what lies at the front of it. Following that down, repeatedly, gives the member that was read, and the
+/// expression becomes writable again: <c>NestedSum</c> was four reads of which two were wrong, and the whole
+/// method was commented out for it.
+/// </para>
+/// <para>
+/// Only operands that are read, never the one being written. A struct field on the left of a store is a whole
+/// struct being assigned, which is an ordinary thing to do and means what it says.
+/// </para>
+/// </remarks>
+public static class StructInArithmetic
+{
+    public static void Run(MethodAnalysisContext method)
+    {
+        if (method.ControlFlowGraph is not { } graph)
+            return;
+
+        //Round again whenever something is learnt: adding two floats gives a float, and that answer is what
+        //tells the *next* addition it is arithmetic rather than an address. `n.A.X + n.A.Y + n.B.X + n.B.Y`
+        //is three additions of which only the first has a number on both sides to begin with.
+        var learnt = true;
+
+        while (learnt)
+        {
+            learnt = false;
+            learnt |= Once(graph);
+        }
+    }
+
+    private static bool Once(Graphs.ISILControlFlowGraph graph)
+    {
+        var changed = false;
+
+        foreach (var instruction in graph.Instructions)
+        {
+            if (!ReadsNumbers(instruction.OpCode))
+                continue;
+
+            //Only where something beside it is a plain number. `Add` is also how an address is worked out,
+            //and a struct is an ordinary thing to compute an address from - narrowing to the shape that has
+            //a number on the other side is what tells the two apart. Left broad, this cost three whole
+            //methods in the game to gain one in the corpus.
+            if (!BesideANumber(instruction))
+                continue;
+
+            //From one, because operand nought is what the instruction writes.
+            for (var operand = 1; operand < instruction.Operands.Count; operand++)
+            {
+                if (instruction.Operands[operand] is not FieldReference read || Inside(read) is not { } member)
+                    continue;
+
+                instruction.Operands[operand] = member;
+                changed = true;
+
+                //What an addition of numbers produces is a number, and saying so is what lets the addition
+                //after it be recognised at all.
+                if (instruction.Operands[0] is LocalVariable produced && produced.Type is null)
+                    produced.Type = member.Field.FieldType;
+            }
+        }
+
+        return changed;
+    }
+
+    /// <summary>Whether one of the values this instruction reads is a plain number.</summary>
+    private static bool BesideANumber(Instruction instruction)
+    {
+        for (var operand = 1; operand < instruction.Operands.Count; operand++)
+        {
+            var type = instruction.Operands[operand] switch
+            {
+                FieldReference field => field.Field.FieldType,
+                LocalVariable local => local.Type,
+                _ => null,
+            };
+
+            if (type is not null && IsNumber(type))
+                return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>The member at the front of a struct-typed field, however many structs deep it goes.</summary>
+    private static NestedFieldReference? Inside(FieldReference reference)
+    {
+        List<FieldAnalysisContext> path = reference is NestedFieldReference nested
+            ? [.. nested.Path]
+            : [reference.Field];
+
+        var went = false;
+
+        while (Front(path[^1].FieldType) is { } inner)
+        {
+            path.Add(inner);
+            went = true;
+        }
+
+        return went ? new NestedFieldReference([.. path], reference.Local, reference.Offset) : null;
+    }
+
+    /// <summary>
+    /// The instance field a struct keeps at its own offset nought, where the type is a struct at all.
+    /// </summary>
+    /// <remarks>
+    /// A number is not descended into: an <c>int</c> has a single field standing for its value, and following
+    /// that would turn every read of one into a read of <c>Int32.m_value</c>, which is the same value said
+    /// worse. An enum is a number for this purpose too.
+    /// </remarks>
+    private static FieldAnalysisContext? Front(TypeAnalysisContext type)
+    {
+        if (!type.IsValueType || IsNumber(type) || type.BaseType?.FullName == "System.Enum")
+            return null;
+
+        foreach (var candidate in type.Fields)
+        {
+            if (!candidate.IsStatic && candidate.Offset == 0)
+                return candidate;
+        }
+
+        return null;
+    }
+
+    private static bool IsNumber(TypeAnalysisContext type) => type.Type is
+        Il2CppTypeEnum.IL2CPP_TYPE_BOOLEAN or Il2CppTypeEnum.IL2CPP_TYPE_CHAR
+        or Il2CppTypeEnum.IL2CPP_TYPE_I1 or Il2CppTypeEnum.IL2CPP_TYPE_U1
+        or Il2CppTypeEnum.IL2CPP_TYPE_I2 or Il2CppTypeEnum.IL2CPP_TYPE_U2
+        or Il2CppTypeEnum.IL2CPP_TYPE_I4 or Il2CppTypeEnum.IL2CPP_TYPE_U4
+        or Il2CppTypeEnum.IL2CPP_TYPE_I8 or Il2CppTypeEnum.IL2CPP_TYPE_U8
+        or Il2CppTypeEnum.IL2CPP_TYPE_R4 or Il2CppTypeEnum.IL2CPP_TYPE_R8
+        or Il2CppTypeEnum.IL2CPP_TYPE_I or Il2CppTypeEnum.IL2CPP_TYPE_U;
+
+    private static bool ReadsNumbers(OpCode opCode) => opCode is
+        OpCode.Add or OpCode.Subtract or OpCode.Multiply or OpCode.Divide
+        or OpCode.ShiftLeft or OpCode.ShiftRight or OpCode.And or OpCode.Or or OpCode.Xor
+        or OpCode.Not or OpCode.Negate
+        or (>= OpCode.CheckEqual and <= OpCode.CheckLessOrEqual);
+}

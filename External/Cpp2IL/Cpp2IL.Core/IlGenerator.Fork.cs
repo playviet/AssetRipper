@@ -41,7 +41,7 @@ public static partial class IlGenerator
     /// instruction it was: nothing else can be written down, because the fields of an array header have no
     /// names a C# file may use.
     /// </summary>
-    private static (object Array, object? Index, TypeAnalysisContext Element)? ArrayElement(MemoryOperand memory, MethodAnalysisContext context)
+    private static (object Array, object? Index, TypeAnalysisContext Element, FieldAnalysisContext? Inside)? ArrayElement(MemoryOperand memory, MethodAnalysisContext context)
     {
         var pointerSize = context.AppContext.Binary.is32Bit ? 4 : 8;
         var elements = context.AppContext.Binary.is32Bit ? 0x10 : 0x20;
@@ -69,17 +69,81 @@ public static partial class IlGenerator
             return null;
 
         if (memory.Addend == elements)
-            return (array, memory.Index, element);
+            return (array, memory.Index, element, null);
 
         //A constant subscript is folded into the one offset the load already had, so there is no index
-        //register left to read it from - the distance past the first element is the subscript, provided
-        //it is a whole number of them. Which it is, or the compiler was not indexing this array.
+        //register left to read it from - the distance past the first element is the subscript.
         if (memory.Index != null || memory.Addend < elements
-            || ArrayTypeInference.Width(element, pointerSize) is not { } width || width == 0
-            || (memory.Addend - elements) % width != 0)
+            || ArrayTypeInference.Width(element, pointerSize) is not { } width || width == 0)
             return null;
 
-        return (array, (int)((memory.Addend - elements) / width), element);
+        var past = memory.Addend - elements;
+        var subscript = (int)(past / width);
+        var within = (int)(past % width);
+
+        if (within == 0)
+            return (array, subscript, element, null);
+
+        //Not a whole number of elements past the start, which for an array of a struct is not a mistake: it
+        //is one field of one element. `Vector3` is twelve bytes, so `positions[2].y` is thirty-one bytes past
+        //the header and nothing about that is expressible as an element on its own. Reading the element and
+        //then the field is, and it is the same two steps the compiler folded into one offset.
+        if (!element.IsValueType || FieldAt(element, within) is not { } inside)
+            return null;
+
+        return (array, subscript, element, inside);
+    }
+
+    /// <summary>The instance field of a struct that begins at an offset, if one does.</summary>
+    private static FieldAnalysisContext? FieldAt(TypeAnalysisContext type, int offset)
+    {
+        foreach (var candidate in type.Fields)
+        {
+            if (!candidate.IsStatic && candidate.Offset == offset)
+                return candidate;
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Reads one element of an array of more than one dimension, by the indices rather than by a distance.
+    /// </summary>
+    /// <remarks>
+    /// Such an array is indexed through methods the runtime gives it rather than by <c>ldelem</c> - there is no
+    /// instruction that takes more than one index. They are not declared anywhere to be found, so the reference
+    /// is built here from the array's own signature, which is what the language does too.
+    /// </remarks>
+    private static void LoadMultiDimensionalElement(MultiDimensionalElement element, MethodDefinition method,
+        Dictionary<LocalVariable, CilLocalVariable> locals)
+    {
+        var module = method.DeclaringModule!;
+        var instructions = method.CilMethodBody!.Instructions;
+
+        LoadArray(element.Array, method, locals);
+
+        foreach (var index in element.Indices)
+            LoadIndex(index, method, locals);
+
+        instructions.Add(CilOpCodes.Call, Accessor(element, module, "Get"));
+    }
+
+    /// <summary>The <c>Get</c> or <c>Set</c> an array of this shape is indexed through.</summary>
+    private static IMethodDescriptor Accessor(MultiDimensionalElement element, ModuleDefinition module, string name)
+    {
+        var array = element.ArrayType.ToTypeSignature(module);
+        var value = element.ArrayType.ElementType.ToTypeSignature(module);
+        var integer = module.CorLibTypeFactory.Int32;
+        var indices = new TypeSignature[element.Indices.Length];
+
+        for (var index = 0; index < indices.Length; index++)
+            indices[index] = integer;
+
+        var signature = name == "Get"
+            ? MethodSignature.CreateInstance(value, indices)
+            : MethodSignature.CreateInstance(module.CorLibTypeFactory.Void, [.. indices, value]);
+
+        return array.ToTypeDefOrRef().CreateMemberReference(name, signature).ImportWith(module.DefaultImporter);
     }
 
     private static bool TryLoadArrayElement(MemoryOperand memory, MethodDefinition method,
@@ -92,6 +156,15 @@ public static partial class IlGenerator
 
         LoadArray(element.Array, method, locals);
         LoadIndex(element.Index, method, locals);
+
+        //A field of an element is reached through the element's address, which is what `ldelema` is for.
+        if (element.Inside is { } inside)
+        {
+            instructions.Add(CilOpCodes.Ldelema, method.DeclaringModule!.DefaultImporter.ImportType(element.Element.ToTypeSignature(method.DeclaringModule!).ToTypeDefOrRef()));
+            instructions.Add(CilOpCodes.Ldfld, inside.ToFieldDescriptor(method.DeclaringModule!));
+            return true;
+        }
+
         instructions.Add(CilOpCodes.Ldelem, method.DeclaringModule!.DefaultImporter.ImportType(element.Element.ToTypeSignature(method.DeclaringModule!).ToTypeDefOrRef()));
         return true;
     }
@@ -105,13 +178,25 @@ public static partial class IlGenerator
         var module = method.DeclaringModule!;
         var instructions = method.CilMethodBody!.Instructions;
 
-        //stelem wants the array and the index underneath the value, and the value is already on the stack.
-        var scratch = new CilLocalVariable(element.Element.ToTypeSignature(module));
+        //Both forms want the array and the index underneath the value, and the value is already on the stack.
+        var scratch = new CilLocalVariable(element.Inside is { } stored
+            ? stored.FieldType.ToTypeSignature(module)
+            : element.Element.ToTypeSignature(module));
+
         method.CilMethodBody!.LocalVariables.Add(scratch);
 
         instructions.Add(CilOpCodes.Stloc, scratch);
         LoadArray(element.Array, method, locals);
         LoadIndex(element.Index, method, locals);
+
+        if (element.Inside is { } inside)
+        {
+            instructions.Add(CilOpCodes.Ldelema, module.DefaultImporter.ImportType(element.Element.ToTypeSignature(module).ToTypeDefOrRef()));
+            instructions.Add(CilOpCodes.Ldloc, scratch);
+            instructions.Add(CilOpCodes.Stfld, inside.ToFieldDescriptor(module));
+            return true;
+        }
+
         instructions.Add(CilOpCodes.Ldloc, scratch);
         instructions.Add(CilOpCodes.Stelem, module.DefaultImporter.ImportType(element.Element.ToTypeSignature(module).ToTypeDefOrRef()));
         return true;
@@ -681,6 +766,14 @@ public static partial class IlGenerator
                 if (length is null || elementType is null)
                     return false;
 
+                //An array's length is an int, but il2cpp hands it over in a 64-bit register, so a constant one
+                //arrived as a long and the array was written `new int[8L]`. That compiles, and it is also not
+                //the shape ILSpy's array-initialiser transform matches - so `int[] t = { 11, 22, 33 }` could
+                //not be folded back and stayed a bare call to InitializeArray with a token it then refused to
+                //print. Only a constant is narrowed; a computed length is left exactly as it was.
+                if (length is long wide and >= 0 and <= int.MaxValue)
+                    length = (int)wide;
+
                 LoadOperand(length, method, locals, writeLine, stringCtor);
                 instructions.Add(CilOpCodes.Newarr, importer.ImportType(elementType.ToTypeSignature(module).ToTypeDefOrRef()));
                 StoreResult(instruction, method, locals, writeLine);
@@ -756,9 +849,26 @@ public static partial class IlGenerator
     /// out, and with it every later statement that used the local. `BoardController::ComputeHighlights` lost 847 of
     /// its 849 lines to four such declarations.
     /// </remarks>
-    private static void LoadOperandInto(object destination, object value, MethodDefinition method,
-        Dictionary<LocalVariable, CilLocalVariable> locals, MemberReference writeLine, MemberReference stringCtor)
+    /// <summary>Names a field rather than reading it - the handle InitializeArray copies an array through.</summary>
+    private static void LoadFieldToken(FieldToken token, CilInstructionCollection instructions, ModuleDefinition module)
     {
+        instructions.Add(CilOpCodes.Ldtoken, token.Field.ToFieldDescriptor(module));
+    }
+
+    private static void LoadOperandInto(object destination, object value, MethodDefinition method,
+        Dictionary<LocalVariable, CilLocalVariable> locals, MemberReference writeLine, MemberReference stringCtor,
+        TypeAnalysisContext? convertTo = null)
+    {
+        //An arm64 conversion instruction, which until now was lifted as though it were a plain move and so
+        //silently reinterpreted the bits instead of converting them. The instruction says exactly what it
+        //produces, so the conversion is emitted rather than inferred - see ConversionTarget.cs.
+        if (convertTo is not null)
+        {
+            LoadOperand(value, method, locals, writeLine, stringCtor);
+            Convert(method.CilMethodBody!.Instructions, convertTo);
+            return;
+        }
+
         var type = TypeOfOperand(destination);
 
         //Zero is what a cleared register holds, and in a struct it means an empty one - `(Dictionary<int,
@@ -776,6 +886,45 @@ public static partial class IlGenerator
         //move is the one place that is wrong: a register the analysis typed as a reference and that in fact
         //holds a number is common enough that doing so loses more bodies than it saves.
         LoadOperand(value, method, locals, writeLine, stringCtor, type is { IsValueType: true } ? type : null);
+    }
+
+    /// <summary>Turns what is on the stack into the type an arm64 conversion instruction produces.</summary>
+    private static void Convert(CilInstructionCollection instructions, TypeAnalysisContext type)
+    {
+        switch (type.Type)
+        {
+            case Il2CppTypeEnum.IL2CPP_TYPE_R4:
+                instructions.Add(CilOpCodes.Conv_R4);
+                break;
+            case Il2CppTypeEnum.IL2CPP_TYPE_R8:
+                instructions.Add(CilOpCodes.Conv_R8);
+                break;
+            case Il2CppTypeEnum.IL2CPP_TYPE_I8:
+                instructions.Add(CilOpCodes.Conv_I8);
+                break;
+            case Il2CppTypeEnum.IL2CPP_TYPE_U8:
+                instructions.Add(CilOpCodes.Conv_U8);
+                break;
+            //The narrowing conversions. Without these every extension fell to conv.i4, which for a value
+            //already in a 32-bit register does nothing at all - so `(byte)v` kept the whole of v and the
+            //answer was quietly wrong. conv.i1 and friends both narrow and leave an int on the stack, which
+            //is exactly what sxtb/uxtb/sxth/uxth do.
+            case Il2CppTypeEnum.IL2CPP_TYPE_I1:
+                instructions.Add(CilOpCodes.Conv_I1);
+                break;
+            case Il2CppTypeEnum.IL2CPP_TYPE_U1:
+                instructions.Add(CilOpCodes.Conv_U1);
+                break;
+            case Il2CppTypeEnum.IL2CPP_TYPE_I2:
+                instructions.Add(CilOpCodes.Conv_I2);
+                break;
+            case Il2CppTypeEnum.IL2CPP_TYPE_U2:
+                instructions.Add(CilOpCodes.Conv_U2);
+                break;
+            default:
+                instructions.Add(CilOpCodes.Conv_I4);
+                break;
+        }
     }
 
     // What a value is, where that is known. A field says what it holds just as directly as a typed local.

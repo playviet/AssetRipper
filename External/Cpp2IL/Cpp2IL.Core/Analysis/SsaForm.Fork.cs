@@ -54,6 +54,14 @@ public partial class SsaForm
         if (held.FullName == given.FullName)
             return false;
 
+        //Reading a slot gives what is in the slot. The local standing for an out parameter is typed as the
+        //address it was handed over as - `System.Int32&` - so where the callee's answer is read straight into
+        //the register the result leaves in, the two ends of the edge differ by nothing but the `&`. That is
+        //the value moving. Dropped as a reuse, `ParseOrDefault` returned its fallback for input it had just
+        //parsed: `int.TryParse(raw, out var _)`, with the answer thrown away and no marker anywhere.
+        if (Pointee(held) == Pointee(given))
+            return false;
+
         //A number is never a reference, and one kind of number is never another.
         if (held.IsValueType || given.IsValueType)
             return true;
@@ -61,6 +69,9 @@ public partial class SsaForm
         //The structures the runtime keeps to itself are never anything the program holds.
         return IsRuntimeStructure(held) != IsRuntimeStructure(given);
     }
+
+    /// <summary>The type without the marks that say it is being reached through an address.</summary>
+    private static string Pointee(TypeAnalysisContext type) => type.FullName?.TrimEnd('&', '*') ?? "";
 
     /// <summary>Whether the type stands for something the runtime keeps rather than for a value the program has.</summary>
     private static bool IsRuntimeStructure(TypeAnalysisContext type)

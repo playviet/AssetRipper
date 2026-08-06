@@ -425,6 +425,7 @@ public class MethodAnalysisContext : HasGenericParameters, IMethodInfoProvider
         Simplifier.Simplify(this);
 
         // Fix float literals
+        ForkPipeline.BeforeFloatLiteralsAreFixed(this);
         FloatLiteralRecovery.Run(this);
 
         ForkPipeline.BeforeUnusedLocalsAreDropped(this);

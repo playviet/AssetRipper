@@ -9,7 +9,7 @@ using LibCpp2IL.PE;
 
 namespace LibCpp2IL.Elf;
 
-public sealed class ElfFile : Il2CppBinary
+public sealed partial class ElfFile : Il2CppBinary
 {
     private byte[] _raw;
     private List<IElfProgramHeaderEntry> _elfProgramHeaderEntries;

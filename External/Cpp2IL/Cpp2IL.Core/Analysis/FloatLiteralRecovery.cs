@@ -9,7 +9,7 @@ namespace Cpp2IL.Core.Analysis;
 /// Recovers literals which are being put into float fields/used as float constants,
 /// converting them from their uint bit patterns into actual float/double literals.
 /// </summary>
-public static class FloatLiteralRecovery
+public static partial class FloatLiteralRecovery
 {
     public static void Run(MethodAnalysisContext method)
     {
@@ -19,6 +19,9 @@ public static class FloatLiteralRecovery
                 TryConvert(instruction, 1, field.Field.FieldType);
             else if (instruction.IsCall && instruction.Operands is [MethodAnalysisContext target, ..])
                 ConvertArguments(instruction, target);
+            else
+                //A constant computed with rather than stored or passed, which nothing here typed. FloatLiteralRecovery.Fork.cs.
+                ConvertComputedLiterals(method, instruction);
         }
     }
 

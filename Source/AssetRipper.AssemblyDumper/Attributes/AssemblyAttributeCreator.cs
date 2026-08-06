@@ -5,7 +5,7 @@ using System.Runtime.Versioning;
 
 namespace AssetRipper.AssemblyDumper.Attributes;
 
-public static class AssemblyAttributeCreator
+public static class AssemblyAttributeCreatorconcon
 {
 	/// <summary>
 	/// <see cref="AssemblyCompanyAttribute"/>

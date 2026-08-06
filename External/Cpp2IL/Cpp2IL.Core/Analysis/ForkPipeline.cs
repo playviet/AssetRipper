@@ -33,6 +33,12 @@ public static class ForkPipeline
         // arm64 build tests a different byte - this is the pass that actually removes the guard.
         MetadataInitGuardRemover.Run(method);
 
+        // Here because the array-initialiser handle is a metadata usage that upstream's resolver has no branch
+        // for, so it is still an unresolved global read at this point - and because the local it lands in has
+        // just been typed, which is what has to be corrected when the read becomes a token rather than a
+        // pointer. Later would be too late: the read is dead by the time unused locals are dropped.
+        ArrayInitialiserHandle.Run(method);
+
         // Where the compiler stopped passing a receiver the callee never reads, the null check it left behind
         // is the only remaining trace of which object the call was on - so this has to come first.
         CallReceiverRecovery.Run(method);
@@ -58,6 +64,34 @@ public static class ForkPipeline
     }
 
     /// <summary>Runs on the shape the rest of the pipeline settled on, before unused locals are dropped.</summary>
+    /// <summary>
+    /// Runs once the constants have reached the instructions that use them, and before those constants are
+    /// read as the floats they may be.
+    /// </summary>
+    public static void BeforeFloatLiteralsAreFixed(MethodAnalysisContext method)
+    {
+        // A constant too wide for one instruction arrives as a chain of masks and ors over immediates, which
+        // the decompiler folds at the end - so the output never looked wrong, but no pass in between could
+        // read the number. This is what lets the one below read it.
+        ConstantFolding.Run(method);
+
+        // A switch whose arms are constants becomes a table in the binary's own data, which resolves to
+        // nothing and leaves the method answering with its default. Needs the folding above: the address is
+        // only a constant once the page and the offset have been put together.
+        SwitchTableRecovery.Run(method);
+
+        // Two adjacent fields set by one wide store resolve to the first of them, which is then assigned the
+        // whole of what was written - a wrong value in a field, and the other field missing entirely. It has
+        // to be here: not before copy propagation, which is what carries the constant to the store, and not
+        // after the float literals are fixed, because the half that belongs to a float field is one of them.
+        WideFieldStore.Run(method);
+
+        //After field recovery, which is what turns the store into the first of the fields it covers, and
+        //beside WideFieldStore because it is the same defect one width up: a store that wrote more than the
+        //field it resolved to. Before anything reads the constants, so the folding below sees real numbers.
+        ConstantBlobStore.Run(method);
+    }
+
     public static void BeforeUnusedLocalsAreDropped(MethodAnalysisContext method)
     {
         // An argument kept somewhere that survives a call is read back once per branch, and a local written in
@@ -71,6 +105,12 @@ public static class ForkPipeline
         // type fixpoint at the end of this method, so that a field's type travels through the arithmetic it
         // takes part in.
         HomogeneousFloatParameters.Run(method);
+
+        // And directly after it, because it is what names these: the first register of a struct of floats is
+        // named as the whole struct while the ones after it are named as the fields they hold, so an addition
+        // comes out adding a `Pair` to a `float`. Nothing else here produces that shape, and it has to be
+        // after the naming rather than after field resolution, where the operands are still plain locals.
+        StructInArithmetic.Run(method);
 
         // Which instantiation a shared body was called as is read off the object it was called on, and until
         // the copies are gone that object is a local typed by the very call being asked about - so this only
@@ -114,6 +154,12 @@ public static class ForkPipeline
         // address - and every statement built on it went with it.
         CastHelperRecovery.Run(method);
 
+        // And the same question where it was not a call at all: asking whether an object is of a type is
+        // small enough that il2cpp inlines it into a walk of the class hierarchy. Directly after the pass
+        // above, because both end in the call it already knows how to write, and while the class the walk
+        // compares against still carries its type.
+        InlinedTypeTestRecovery.Run(method);
+
         // A call on an interface is compiled as a walk of the class's interface table rather than a call to a
         // helper that walks it, so nothing in it names a method. The interface it looks for, the slot it adds
         // and the object it read the class from are all right there in the walk.
@@ -136,7 +182,17 @@ public static class ForkPipeline
 
         // An array's length is a load at a fixed offset, so the condition of every loop over one was a read
         // of unmanaged memory.
+        // Again here, because the seeding done during type resolution does not survive to this point - and
+        // an array's length is read through the local the allocation wrote, so the pass below can only see it
+        // as an array if it has been said so by now.
+        LocalVariables.SeedArrayAllocations(method);
+
         ArrayAccessRecovery.Run(method);
+
+        // And the same access where the array has more than one dimension: the read is already shaped like an
+        // array access by now, and only its index is wrong - flattened, because the storage is. Beside the
+        // pass above because it is the same question one rank up.
+        RankTwoArrayAccess.Run(method);
 
         // Count, Add and Clear are small enough that il2cpp inlines them, leaving reads and writes of fields
         // the runtime library keeps to itself - which a game assembly cannot name at all.

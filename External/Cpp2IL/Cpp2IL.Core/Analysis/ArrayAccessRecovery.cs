@@ -93,12 +93,30 @@ public static class ArrayAccessRecovery
                 //works out the elements pointer once outside the loop and lets `ldr w11, [x10, x9, lsl #2]`
                 //do the rest. There is nothing to take apart there - the base is already the elements - so
                 //only the array it was reached through has to be put back.
+                //Whether the elements pointer carries the array's own type or none decides nothing: what
+                //makes it the elements is that it was worked out by adding the header to an array, which
+                //`ElementsOf` is what proves. Requiring it to be untyped meant every such access whose type
+                //had propagated across the addition - which is most of them, since it is an addition - was
+                //left as a read through a pointer, and the subscript with it.
                 if (instruction.Operands[i] is MemoryOperand { Index: not null, Base: LocalVariable indexed } addressed
-                    && !IsArray(indexed.Type)
                     && definitions.GetValueOrDefault(indexed) is { OpCode: OpCode.Add, Operands.Count: 3 } offsetting
                     && ElementsOf(offsetting, elements) is { } indexedArray)
                 {
                     instruction.Operands[i] = new MemoryOperand(indexedArray, addressed.Index, elements, addressed.Scale);
+                    changed = true;
+                    continue;
+                }
+
+                //The header can be folded into the subscript instead of into the base: `mov w22, #4` and
+                //`ldr x20, [x8, x22, lsl #3]` reads `array + 4*8`, which is element zero, and the element
+                //really wanted is four less. The compiler keeps that difference in a register of its own for
+                //the bounds check, so it is already a local here and nothing has to be computed.
+                if (instruction.Operands[i] is MemoryOperand { Index: LocalVariable folded, Addend: 0, Base: LocalVariable holder } scaled
+                    && IsArray(holder.Type)
+                    && scaled.Scale > 0 && elements % scaled.Scale == 0
+                    && Subscript(definitions, folded, elements / scaled.Scale) is { } subscript)
+                {
+                    instruction.Operands[i] = new MemoryOperand(holder, subscript, elements, scaled.Scale);
                     changed = true;
                     continue;
                 }
@@ -129,6 +147,38 @@ public static class ArrayAccessRecovery
     /// The array, out of <c>array + elements</c> - the pointer to the first element, which is what the
     /// compiler works out once before a loop and then indexes.
     /// </summary>
+    /// <summary>
+    /// The local holding <paramref name="offset"/> less than this one, where the method already computes it.
+    /// </summary>
+    /// <remarks>
+    /// Only a local it already has. Working the difference out here would mean inserting an instruction into a
+    /// pass that runs to a fixpoint over a flattened view of the graph, and the compiler has no reason not to
+    /// have kept it: the same value is what it compares against the length.
+    /// </remarks>
+    private static LocalVariable? Subscript(Dictionary<LocalVariable, Instruction> definitions, LocalVariable folded, int offset)
+    {
+        foreach (var (local, definition) in definitions)
+        {
+            if (definition.OpCode != OpCode.Subtract || definition.Operands.Count != 3
+                || definition.Operands[1] is not LocalVariable from || !ReferenceEquals(from, folded))
+                continue;
+
+            var taken = definition.Operands[2] switch
+            {
+                int i => i,
+                long l => l,
+                uint u => u,
+                ulong ul => (long)ul,
+                _ => (long?)null,
+            };
+
+            if (taken == offset)
+                return local;
+        }
+
+        return null;
+    }
+
     private static object? ElementsOf(Instruction sum, int elements)
     {
         for (var side = 1; side <= 2; side++)

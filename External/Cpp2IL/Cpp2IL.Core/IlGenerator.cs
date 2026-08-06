@@ -278,7 +278,7 @@ public static partial class IlGenerator
                     break;
                 }
 
-                LoadOperandInto(instruction.Operands[0], instruction.Operands[1], method, locals, writeLine, stringCtor);
+                LoadOperandInto(instruction.Operands[0], instruction.Operands[1], method, locals, writeLine, stringCtor, ConversionTarget.Of(instruction));
                 StoreToOperand(instruction.Operands[0], method, locals, writeLine);
                 break;
 
@@ -740,6 +740,12 @@ public static partial class IlGenerator
                 break;
             case LocalVariable local:
                 LoadLocal(local, method, locals);
+                break;
+            case MultiDimensionalElement multi:
+                LoadMultiDimensionalElement(multi, method, locals);
+                break;
+            case FieldToken token:
+                LoadFieldToken(token, instructions, module);
                 break;
             case NestedFieldReference nested:
                 LoadNestedField(nested, method, locals, module);

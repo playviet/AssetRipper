@@ -56,7 +56,8 @@ public static partial class Simplifier
                 var instruction = block.Instructions[i];
 
                 // If it's move and it moves something to local, replace and remove it
-                if (instruction.OpCode == OpCode.Move && instruction.Operands[0] is LocalVariable local)
+                if (instruction.OpCode == OpCode.Move && instruction.Operands[0] is LocalVariable local
+                    && !ConversionTarget.CannotBeForwarded(instruction))
                 {
                     if (IsLocalUsedAfterInstruction(block, i + 1, local, out var usedByMemory))
                     {
@@ -114,7 +115,8 @@ public static partial class Simplifier
                 var instruction = block.Instructions[i];
 
                 // If it's move and it moves local to local, replace and remove it
-                if (instruction.OpCode == OpCode.Move && instruction.Operands[0] is LocalVariable local && instruction.Operands[1] is LocalVariable source)
+                if (instruction.OpCode == OpCode.Move && instruction.Operands[0] is LocalVariable local && instruction.Operands[1] is LocalVariable source
+                    && !ConversionTarget.CannotBeForwarded(instruction))
                 {
                     // A local with several definitions is not in SSA form, so its value at a join
                     // depends on the path taken; don't carry this definition across that join.

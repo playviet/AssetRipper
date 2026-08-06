@@ -75,6 +75,8 @@ public partial class NewArmV8InstructionSet : Cpp2IlInstructionSet
             adrpOffsets.Clear();
 
         haveComparison = false;
+        ConditionalCompare.Reset();
+        vectorLanes.Reset();
 
         var instructions = new List<Instruction>();
         var addresses = new List<ulong>();
@@ -112,6 +114,7 @@ public partial class NewArmV8InstructionSet : Cpp2IlInstructionSet
     private void ConvertInstructionStatement(Arm64Instruction instruction, List<Instruction> instructions, List<ulong> addresses, MethodAnalysisContext context)
     {
         var address = instruction.Address;
+        currentMethod = context;
 
         Instruction Add(ulong address, OpCode opCode, params object[] operands)
         {
@@ -128,6 +131,7 @@ public partial class NewArmV8InstructionSet : Cpp2IlInstructionSet
             Add(address, OpCode.Move, new Register(null, ComparisonLeft), left);
             Add(address, OpCode.Move, new Register(null, ComparisonRight), right);
             haveComparison = true;
+            ConditionalCompare.Clear();
         }
 
         //The last register operand of a data processing instruction can carry a shift - `bic w1, w20, w20, asr
@@ -137,6 +141,20 @@ public partial class NewArmV8InstructionSet : Cpp2IlInstructionSet
         object ShiftedOperand(int operand)
         {
             var value = ConvertOperand(instruction, operand);
+
+            //A narrowing conversion the architecture folds into the operand - see ExtendedTo in the fork. It
+            //narrows what goes in and then widens straight back, because the instruction's *result* is a full
+            //word: leaving the operand at the narrow type made the whole sum that type, and a hash
+            //accumulated in `ushort` truncates to nothing.
+            if (ExtendedTo(context, instruction) is { } narrowed)
+            {
+                var extended = new Register(null, "EXTENDED");
+                Add(address, OpCode.Move, extended, value, new ConversionTarget(narrowed));
+
+                var widened = new Register(null, "EXTENDED");
+                Add(address, OpCode.Move, widened, extended, new ConversionTarget(context.AppContext.SystemTypes.SystemInt32Type));
+                value = widened;
+            }
 
             //Disarm reports how far the operand is shifted but not which way, so the two bits the architecture
             //keeps that in are read off the instruction itself.
@@ -176,8 +194,21 @@ public partial class NewArmV8InstructionSet : Cpp2IlInstructionSet
             }
         }
 
+        //Several values in one register - see VectorLanes.cs. What it takes apart entirely it says so for;
+        //where it only adds the lanes above the first, the ordinary lifting below still handles that first.
+        if (vectorLanes.TryConvert(context, instruction, (opCode, operands) => Add(address, opCode, operands)))
+            return;
+
         switch (instruction.Mnemonic)
         {
+            case Arm64Mnemonic.FMOV when instruction.Op1Kind == Arm64OperandKind.Immediate:
+                //Eight bits that expand into a float rather than eight bits of one - see FloatImmediate.
+                if (FloatImmediate(context, instruction) is not { } expanded)
+                    goto default;
+
+                Add(address, OpCode.Move, ConvertOperand(instruction, 0), expanded);
+                break;
+
             case Arm64Mnemonic.MOV:
             case Arm64Mnemonic.MOVZ:
             case Arm64Mnemonic.FMOV:
@@ -216,13 +247,29 @@ public partial class NewArmV8InstructionSet : Cpp2IlInstructionSet
                     }
                 }
 
+                //The other way round: use the base, then move it. See WritebackAfterUse.
+                if (instruction.Op1Kind == Arm64OperandKind.Memory
+                    && ConvertOperand(instruction, 1) is MemoryOperand { Base: Register walked }
+                    && WritebackAfterUse(context, instruction) is { } step)
+                {
+                    if (instruction.Op0Kind == Arm64OperandKind.Register)
+                        adrpOffsets.Remove(instruction.Op0Reg);
+
+                    Add(address, OpCode.Move, ConvertOperand(instruction, 0), new MemoryOperand(walked));
+                    Add(address, OpCode.Add, walked, walked, step);
+                    break;
+                }
+
                 if (instruction.Op1Kind == Arm64OperandKind.Memory && adrpOffsets.TryGetValue(instruction.MemBase, out var page) && instruction.MemOffset != 0 && instruction.MemAddendReg == Arm64Register.INVALID)
                 {
                     //Maybe this is a bit hacky? But I really don't want to write paged load handling into ISIL itself, it's an Arm64 quirk
                     //LDR X0, [X1, #0x1000], where X1 was previously loaded with a page address via an ADRP instruction
                     //We just return the final address, it makes ISIL happier.
                     //TODO check if this is correct
-                    var offset = instruction.MemOffset + (long)page;
+                    //Scaled, because the immediate of a 128 bit access counts sixteen byte units and the
+                    //disassembler does not multiply it back out. This fold never reaches MemoryOperandFor,
+                    //where that is done for every other addressing form, so it has to be done here too.
+                    var offset = Scaled(instruction, instruction.MemOffset) + (long)page;
 
                     //We're also trashing any possible ADRP offsets in the dest here, so let's clear that now we've possibly grabbed the value if we need it (it's common to store the page and final address in the same register)
                     if (instruction.Op0Kind == Arm64OperandKind.Register)
@@ -238,7 +285,7 @@ public partial class NewArmV8InstructionSet : Cpp2IlInstructionSet
                         break;
                     }
 
-                    Add(address, OpCode.Move, ConvertOperand(instruction, 0), new MemoryOperand(addend: offset));
+                    Add(address, OpCode.Move, ConvertOperand(instruction, 0), Analysis.ConstantBlobStore.Note(instruction, offset));
                     break;
                 }
 
@@ -301,6 +348,16 @@ public partial class NewArmV8InstructionSet : Cpp2IlInstructionSet
                     break;
                 }
 
+                //And the form that writes at the base and moves it afterwards - see WritebackAfterUse.
+                if (instruction.Op1Kind == Arm64OperandKind.Memory
+                    && ConvertOperand(instruction, 1) is MemoryOperand { Base: Register stepped }
+                    && WritebackAfterUse(context, instruction) is { } stride)
+                {
+                    Add(address, OpCode.Move, new MemoryOperand(stepped), ConvertStoredValue(instruction, 0));
+                    Add(address, OpCode.Add, stepped, stepped, stride);
+                    break;
+                }
+
                 //A store through a register an ADRP put a page address in is a store to a fixed address, the same as
                 //the load case below. It has to be recognised as one, because a store to a fixed address is how il2cpp
                 //records that a method's metadata has been initialised, and the step that removes that guard looks for
@@ -350,11 +407,22 @@ public partial class NewArmV8InstructionSet : Cpp2IlInstructionSet
                     }
                 }
                 break;
+            case Arm64Mnemonic.ADR:
+                //The address of something a fixed distance from this instruction, which unlike `adrp` is
+                //exact rather than a page. Nothing else has to be done with it: it is the address.
+                Add(address, OpCode.Move, ConvertOperand(instruction, 0), (long)(address + (ulong)instruction.Op1Imm));
+                break;
+
             case Arm64Mnemonic.ADRP:
-                //Just handle as a move
-                Add(address, OpCode.Move, ConvertOperand(instruction, 0), ConvertOperand(instruction, 1));
+                //The address of a page, which the disassembler reports as the distance to it rather than as
+                //the page - so the register was being given a number that is not an address at all, and
+                //negative wherever the page is behind the instruction. It only ever showed where the fold
+                //below did not apply, because that reads the table rather than the moved value.
                 var pageAddress = address & ~0xFFFUL;
-                adrpOffsets[instruction.Op0Reg] = (ulong)((long)pageAddress + instruction.Op1Imm);
+                var addressed = (ulong)((long)pageAddress + instruction.Op1Imm);
+
+                Add(address, OpCode.Move, ConvertOperand(instruction, 0), (long)addressed);
+                adrpOffsets[instruction.Op0Reg] = addressed;
                 break;
             case Arm64Mnemonic.LDP when instruction.Op2Kind == Arm64OperandKind.Memory:
                 //LDP (dest1, dest2, [mem]) - basically just treat as two loads, with the second offset by the length of the first
@@ -437,6 +505,10 @@ public partial class NewArmV8InstructionSet : Cpp2IlInstructionSet
                         //branch can be given the comparison it actually makes rather than an expression over
                         //modelled flags. The compare's own flag arithmetic is then dead and gets collected.
                         Add(address, relational, condition, new Register(null, ComparisonLeft), new Register(null, ComparisonRight));
+
+                        if (!ConditionalCompare.Apply(instruction.MnemonicConditionCode, condition, (opCode, operands) => Add(address, opCode, operands)))
+                            goto default;
+
                         Add(address, OpCode.ConditionalJump, conditionalTarget, condition);
                         break;
                     }
@@ -567,6 +639,11 @@ public partial class NewArmV8InstructionSet : Cpp2IlInstructionSet
                 }
                 break;
             case Arm64Mnemonic.UBFM:
+                //A bitfield move is a shift in whichever direction its two immediates put it - see
+                //BitfieldMove.cs. The translation below is only the extract half, and masks the wrong width.
+                if (BitfieldMove.Apply(instruction, ConvertOperand(instruction, 0), ConvertOperand(instruction, 1), (opCode, operands) => Add(address, opCode, operands)))
+                    break;
+
                 // UBFM dest, src, #<immr>, #<imms>
                 // dest = (src >> #<immr>) & ((1 << #<imms>) - 1)
                 {
@@ -642,12 +719,23 @@ public partial class NewArmV8InstructionSet : Cpp2IlInstructionSet
                     _ => OpCode.Invalid
                 };
 
+                //`subs w8, w8, #1` compares the values going in and then overwrites the register it just
+                //compared, so a comparison recorded afterwards has a left side already one too small: `len < 1`
+                //came out as `len - 1 < 1`, an off-by-one in every loop bound written this way. Where the
+                //destination is the left operand, the comparison has to be taken before the subtraction.
+                var aliased = instruction.Mnemonic == Arm64Mnemonic.SUBS && instruction.Op0Reg == instruction.Op1Reg;
+
+                if (aliased)
+                    RecordComparison(src1, src2);
+
                 Add(address, opCode, dest, src1, src2);
                 Add(address, OpCode.CheckEqual, new Register(null, "Z"), dest, 0);
 
                 //subs is a compare that also keeps the difference, and is what the compiler emits when the
                 //result is wanted too. adds and ands set the flags against zero, not against each other.
-                if (instruction.Mnemonic == Arm64Mnemonic.SUBS)
+                if (aliased)
+                    { }
+                else if (instruction.Mnemonic == Arm64Mnemonic.SUBS)
                     RecordComparison(src1, src2);
                 else
                     RecordComparison(dest, 0);
@@ -672,16 +760,17 @@ public partial class NewArmV8InstructionSet : Cpp2IlInstructionSet
 
             case Arm64Mnemonic.MOVK:
                 //Move-keep writes one 16 bit field of a register and leaves the rest alone, which is how a
-                //constant too wide for one instruction is built - most often the bit pattern of a float. The
-                //disassembler hands the value over already shifted into place, so where in the register it goes
-                //is read back off it.
-                if (instruction.Op1Kind == Arm64OperandKind.Immediate && FieldMaskOf(instruction.Op1Imm) is { } mask)
+                //constant too wide for one instruction is built - most often the bit pattern of a float. Which
+                //field it writes is read off the instruction, because the disassembler does not shift it
+                //correctly - see MoveKeepField.
+                if (instruction.Op1Kind == Arm64OperandKind.Immediate
+                    && MoveKeepField(context, instruction) is var (written, mask))
                 {
                     var kept = new Register(null, "TEMP");
                     var destination = ConvertOperand(instruction, 0);
 
                     Add(address, OpCode.And, kept, destination, ~mask);
-                    Add(address, OpCode.Or, destination, kept, instruction.Op1Imm);
+                    Add(address, OpCode.Or, destination, kept, written);
                     break;
                 }
 
@@ -723,7 +812,10 @@ public partial class NewArmV8InstructionSet : Cpp2IlInstructionSet
             case Arm64Mnemonic.SXTH:
             case Arm64Mnemonic.UXTB:
             case Arm64Mnemonic.UXTH:
-                Add(address, OpCode.Move, ConvertOperand(instruction, 0), ConvertOperand(instruction, 1));
+                //Carrying the type it produces, because a move otherwise says the two sides are the same
+                //thing and the whole point of a conversion is that they are not. ConversionTarget.cs.
+                Add(address, OpCode.Move,
+                    [ConvertOperand(instruction, 0), ConvertOperand(instruction, 1), .. ConvertedTo(context, instruction)]);
                 break;
 
             case Arm64Mnemonic.FDIV:
@@ -743,10 +835,58 @@ public partial class NewArmV8InstructionSet : Cpp2IlInstructionSet
             case Arm64Mnemonic.FSQRT:
             case Arm64Mnemonic.FMAXNM:
             case Arm64Mnemonic.FMINNM:
+            case Arm64Mnemonic.FRINTM:
+            case Arm64Mnemonic.FRINTP:
                 if (MathCallOperands(context, instruction) is not { } mathCall)
                     goto default;
 
                 Add(address, OpCode.Call, mathCall);
+                break;
+
+            case Arm64Mnemonic.CCMP:
+            case Arm64Mnemonic.CCMN:
+            case Arm64Mnemonic.FCCMP:
+                //A comparison the architecture only makes when an earlier one came out a particular way,
+                //which is what `&&` and `||` between two comparisons compile to when neither side branches.
+                //ConditionalCompare.cs works out the guard and folds it into whatever reads the flags next.
+                if (!haveComparison
+                    || ConditionalCompare.Guard(instruction, new Register(null, ComparisonLeft), new Register(null, ComparisonRight),
+                        ConvertOperand(instruction, 0), ConvertOperand(instruction, 1),
+                        (opCode, operands) => Add(address, opCode, operands)) is not var (guardedLeft, guardedRight))
+                    goto default;
+
+                RecordComparison(guardedLeft, guardedRight);
+                ConditionalCompare.Pend(instruction);
+                break;
+
+            case Arm64Mnemonic.FABD:
+                //`Math.Abs(a - b)`, which the architecture has one instruction for - a tolerance test, and
+                //the whole statement went with it.
+                {
+                    var difference = new Register(null, "TEMP");
+
+                    if (AbsoluteDifferenceOperands(context, instruction, difference) is not { } absoluteCall
+                        || SubtractedOperand(context, instruction) is not { } subtracted)
+                        goto default;
+
+                    Add(address, OpCode.Subtract, difference, ConvertOperand(instruction, 1), subtracted);
+                    Add(address, OpCode.Call, absoluteCall);
+                }
+                break;
+
+            case Arm64Mnemonic.FCVTMS:
+            case Arm64Mnemonic.FCVTPS:
+                //Round, then convert - the architecture does both in one instruction, and doing only the
+                //second of them would be a wrong value rather than a missing one.
+                {
+                    var rounded = new Register(null, "TEMP");
+
+                    if (RoundingConversionOperands(context, instruction, rounded) is not { } roundingCall)
+                        goto default;
+
+                    Add(address, OpCode.Call, roundingCall);
+                    Add(address, OpCode.Move, [ConvertOperand(instruction, 0), rounded, .. ConvertedTo(context, instruction)]);
+                }
                 break;
 
             case Arm64Mnemonic.FNMUL:
@@ -819,6 +959,9 @@ public partial class NewArmV8InstructionSet : Cpp2IlInstructionSet
                     if (haveComparison && TryGetRelationalOpCode(instruction.FinalOpConditionCode, out var setRelational))
                     {
                         Add(address, setRelational, destination, new Register(null, ComparisonLeft), new Register(null, ComparisonRight));
+
+                        if (!ConditionalCompare.Apply(instruction.FinalOpConditionCode, destination, (opCode, operands) => Add(address, opCode, operands)))
+                            goto default;
                     }
                     else if (instruction.FinalOpConditionCode == Arm64ConditionCode.EQ)
                     {
@@ -835,14 +978,44 @@ public partial class NewArmV8InstructionSet : Cpp2IlInstructionSet
                 }
                 break;
 
+            case Arm64Mnemonic.CINC:
+            case Arm64Mnemonic.CINV:
+            case Arm64Mnemonic.CNEG:
+                //The same select written the short way, where both arms are the one register: `cinc wd, wn, c`
+                //is `c ? n + 1 : n`. Twice before this was lifted by adding it to the `csinc` case below, and
+                //twice it was worse - in the file it appears in most it took the statements that could not be
+                //written from 100 to 225 - which was put down to the condition being trusted rather than
+                //proven. It was not that. **The alias has two operands where `csinc` has three**, so reading a
+                //third read whatever was left in it, and the arm it adjusts is the one the condition takes
+                //rather than the one it does not. Both of those are wrong values, and a wrong value costs the
+                //method rather than the statement.
+                if (!haveComparison || !TryGetRelationalOpCode(instruction.FinalOpConditionCode, out var shortRelational))
+                    goto default;
+                {
+                    var shortCondition = new Register(null, "Z");
+                    Add(address, shortRelational, shortCondition, new Register(null, ComparisonLeft), new Register(null, ComparisonRight));
+
+                    if (!ConditionalCompare.Apply(instruction.FinalOpConditionCode, shortCondition, (opCode, operands) => Add(address, opCode, operands)))
+                        goto default;
+
+                    var unchanged = ConvertOperand(instruction, 1);
+                    var adjusted = new Register(null, "TEMP");
+
+                    Add(address, NotTakenArm(instruction.Mnemonic)!.Value.OpCode,
+                        [adjusted, unchanged, .. NotTakenArm(instruction.Mnemonic)!.Value.Operands]);
+
+                    Add(address, OpCode.Select, ConvertOperand(instruction, 0), shortCondition, adjusted, unchanged);
+                }
+                break;
+
             case Arm64Mnemonic.CSEL:
             case Arm64Mnemonic.FCSEL:
-            //CINC is `csinc wd, wn, wn, c` and lifts through here with one line changed - and doing so was
-            //measured twice, in two different sessions, and was worse both times: in the file it appears in
-            //most it took the statements that could not be written from 100 to 225. The condition comes from
-            //whatever comparison last ran, which is trusted rather than proven, and a select is only right if
-            //that guess is. Left untranslated it costs its own statement; lifted wrongly it costs the method.
             case Arm64Mnemonic.CSINC:
+            //The same select with the other two things the architecture can do to the arm not taken: invert it
+            //or negate it. `csinv wd, wn, wzr, c` is `c ? n : -1`, which is how a search that found nothing
+            //returns its answer, and `csneg wd, wn, wn, c` is `c ? n : -n`, which is an absolute value.
+            case Arm64Mnemonic.CSINV:
+            case Arm64Mnemonic.CSNEG:
                 //Conditional select: the branchless form of a conditional expression, which is what the
                 //compiler turns `x = c ? a : b` into whenever both arms are cheap.
                 if (haveComparison && TryGetRelationalOpCode(instruction.FinalOpConditionCode, out var selectRelational))
@@ -850,14 +1023,17 @@ public partial class NewArmV8InstructionSet : Cpp2IlInstructionSet
                     var selectCondition = new Register(null, "Z");
                     Add(address, selectRelational, selectCondition, new Register(null, ComparisonLeft), new Register(null, ComparisonRight));
 
+                    if (!ConditionalCompare.Apply(instruction.FinalOpConditionCode, selectCondition, (opCode, operands) => Add(address, opCode, operands)))
+                        goto default;
+
                     var ifFalse = ConvertOperand(instruction, 2);
 
-                    //csinc adds one to the value taken when the condition does not hold.
-                    if (instruction.Mnemonic == Arm64Mnemonic.CSINC)
+                    //Each of these does one thing to the value taken when the condition does not hold.
+                    if (NotTakenArm(instruction.Mnemonic) is { } notTaken)
                     {
-                        var incremented = new Register(null, "TEMP");
-                        Add(address, OpCode.Add, incremented, ifFalse, 1);
-                        ifFalse = incremented;
+                        var adjusted = new Register(null, "TEMP");
+                        Add(address, notTaken.OpCode, [adjusted, ifFalse, .. notTaken.Operands]);
+                        ifFalse = adjusted;
                     }
 
                     Add(address, OpCode.Select, ConvertOperand(instruction, 0), selectCondition, ConvertOperand(instruction, 1), ifFalse);

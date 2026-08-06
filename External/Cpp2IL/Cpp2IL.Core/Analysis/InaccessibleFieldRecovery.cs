@@ -67,12 +67,54 @@ public static class InaccessibleFieldRecovery
         if (field.DeclaringType is not { } declaring || Named(field.Name) is not { } name)
             return null;
 
-        var wanted = (written ? "set_" : "get_") + name;
+        foreach (var candidate in Names(name))
+        {
+            var wanted = (written ? "set_" : "get_") + candidate;
 
-        return declaring.Methods.FirstOrDefault(m => !m.IsStatic && m.Name == wanted
-            && (written
-                ? m.Parameters.Count == 1 && m.Parameters[0].ParameterType.FullName == field.FieldType.FullName
-                : m.Parameters.Count == 0 && m.ReturnType.FullName == field.FieldType.FullName));
+            if (declaring.Methods.FirstOrDefault(m => !m.IsStatic && m.Name == wanted
+                    && (written
+                        ? m.Parameters.Count == 1 && m.Parameters[0].ParameterType.FullName == field.FieldType.FullName
+                        : m.Parameters.Count == 0 && m.ReturnType.FullName == field.FieldType.FullName)) is { } accessor)
+                return accessor;
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// The names a property standing for this field could go by, best first.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Two conventions, and the runtime uses one while Unity uses the other. Unity names the property exactly
+    /// as the field without its prefix and keeps the leading letter small - <c>m_OnClick</c> is
+    /// <c>onClick</c> - so that is tried first and everything that worked before still does. The class
+    /// libraries capitalise, which is why <c>System.String</c> was still being named by
+    /// <c>_stringLength</c>: the property is <c>Length</c>, and <c>get_length</c> matches nothing.
+    /// </para>
+    /// <para>
+    /// And the field often carries a word the property does not, because a field says what it is inside the
+    /// type while a property says what it is to a caller - <c>_stringLength</c> against <c>Length</c>. So each
+    /// camelCase word-suffix is tried too. Only at a word boundary, so <c>Length</c> is a candidate for
+    /// <c>_stringLength</c> and <c>ength</c> is not; and the type of the property still has to match the type
+    /// of the field, which is what keeps a shorter name from matching something unrelated.
+    /// </para>
+    /// </remarks>
+    private static IEnumerable<string> Names(string bare)
+    {
+        yield return char.ToLowerInvariant(bare[0]) + bare[1..];
+
+        if (char.IsLower(bare[0]))
+            yield return char.ToUpperInvariant(bare[0]) + bare[1..];
+
+        for (var i = 1; i < bare.Length; i++)
+        {
+            if (!char.IsUpper(bare[i]) || char.IsUpper(bare[i - 1]))
+                continue;
+
+            yield return bare[i..];
+            yield return char.ToLowerInvariant(bare[i]) + bare[(i + 1)..];
+        }
     }
 
     /// <summary>The property name a backing field's name is made from, or null if it is not one.</summary>
@@ -85,7 +127,7 @@ public static class InaccessibleFieldRecovery
         //by its own accessors; this is the hand-written convention.
         var bare = field.StartsWith("m_") ? field[2..] : field.StartsWith('_') ? field[1..] : null;
 
-        return string.IsNullOrEmpty(bare) ? null : char.ToLowerInvariant(bare[0]) + bare[1..];
+        return string.IsNullOrEmpty(bare) ? null : bare;
     }
 
     private static bool IsVisible(FieldAnalysisContext field, MethodAnalysisContext method)

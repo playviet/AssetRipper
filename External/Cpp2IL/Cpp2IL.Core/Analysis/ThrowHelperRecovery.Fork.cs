@@ -127,4 +127,66 @@ public static partial class ThrowHelperRecovery
 
         return null;
     }
+
+    /// <summary>The addresses this thread is part-way through, which is how a cycle ends.</summary>
+    /// <remarks>
+    /// Per thread, because methods are analysed in parallel: one thread being part-way through an address says
+    /// nothing to another. The <i>answer</i> is shared; being busy is not.
+    /// </remarks>
+    [ThreadStatic]
+    private static HashSet<ulong>? resolving;
+
+    /// <summary>Whether this search gave up anywhere - past the depth it will go, or back on itself.</summary>
+    [ThreadStatic]
+    private static bool gaveUp;
+
+    /// <summary>Whether a search of this address may go ahead, and marks it as under way if so.</summary>
+    private static bool BeginResolving(ulong address, int depth)
+    {
+        if (depth == 0)
+            gaveUp = false;
+
+        if (depth >= MaxDepth)
+        {
+            gaveUp = true;
+            return false;
+        }
+
+        if ((resolving ??= []).Add(address))
+            return true;
+
+        gaveUp = true;
+        return false;
+    }
+
+    private static void EndResolving(ulong address) => resolving?.Remove(address);
+
+    /// <summary>
+    /// Writes down what an address turned out to be, where that is actually known.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The answer is shared across the whole application, and it used to depend on <b>who asked first</b>. A
+    /// <c>null</c> went into the cache before recursing, to stop a cycle - and nothing told that placeholder,
+    /// or a search that stopped at <see cref="MaxDepth"/>, apart from a settled "this is not a throw helper".
+    /// So whichever call site reached an address first, with whatever depth it had left, fixed the answer for
+    /// every other one.
+    /// </para>
+    /// <para>
+    /// It showed as two hosts disagreeing about the same binary. Analysing one method, an address resolved to
+    /// nothing; analysing the whole assembly it resolved to <c>OutOfMemoryException</c> - nine names found
+    /// against twenty-five. The calls that did not resolve stayed calls to an address, and a later pass, seeing
+    /// an unresolved call carrying a type, read them as casts: five <c>isinst</c> that were really
+    /// <c>throw</c>.
+    /// </para>
+    /// <para>
+    /// A name is a name however it was reached. A nothing is only worth keeping when the search that produced
+    /// it ran to the end - otherwise it is this address's turn to be remembered wrongly.
+    /// </para>
+    /// </remarks>
+    private static void Remember(ApplicationAnalysisContext appContext, ulong address, string? name)
+    {
+        if (name != null || !gaveUp)
+            appContext.ThrowHelperNamesByAddress[address] = name;
+    }
 }

@@ -5,7 +5,7 @@ compile and run. This file is the handover: what the state is, how it is measure
 what is left. `CLAUDE.md` is the working rules; `External/Cpp2IL/FORK.md` is how the vendored fork stays
 mergeable; `LocalPackages/README.md` is the fix-by-fix changelog.
 
-## The state, at 1.0.203
+## The state, at 1.0.314
 
 Measured against the original Unity project the build came from (96 files, `Assets/AAA/CF`), and against the
 binary itself.
@@ -15,13 +15,14 @@ binary itself.
 | method bodies discarded as unreadable | **0** (was 907) |
 | `error CS` in the exported project | **0** |
 | Unity 6000.0.78f1 batch import | **0 errors, 0 shader errors**, 533 files |
-| decisions surviving (`if`, loops, `switch`, `?:`, `&&`) | **92.2%**, and 123 of 141 methods keep every one |
-| whole methods, against the original | **274** of 415 measured |
+| decisions surviving (`if`, loops, `switch`, `?:`, `&&`) | **93.6%**, and 125 of 141 methods keep every one |
+| whole methods, against the original | **291** of 415 measured |
 | whole bodies, game-wide | ~2290 of 2946 |
 | operations surviving, judged from the binary alone | calls **78.6%**, fields 74.4%, literals 82.8% |
-| unresolved memory reads, game-wide | **2405** (2582 before the generic work) |
+| unresolved memory reads, game-wide | **2291** (2582 before the generic work) |
+| arm64 instructions the lifter cannot translate, game-wide | **32** (306 before the vector work), of which 84 are the lane model refusing rather than an encoding it cannot read |
 | calls still made through an unnamed pointer | **121** (155 before) |
-| pure functions that execute identically to the original | 14 of 24 in the corpus, 6 of 10 in the game |
+| pure functions that execute identically to the original | **34 of 43** in the corpus, 6 of 10 in the game |
 
 ## How anything here is judged
 
@@ -40,9 +41,29 @@ four of the five could not see.
 that can tell a method that is right from one that merely looks right — it found nine methods rated *full* by
 every other scorer of which only two actually worked.
 
-There is also a **ground-truth corpus**: `scratchpad/corpus/`, a Unity project written to be recovered and
-built to arm64 IL2CPP on purpose, so every method has known source on shapes chosen rather than found.
-`autodiff.py` runs the whole of it without being told what to test.
+There are also **two ground-truth corpora**: `scratchpad/corpus/` and `scratchpad/corpus6/`, the same Unity
+project written to be recovered and built to arm64 IL2CPP on purpose, so every method has known source on
+shapes chosen rather than found. `autodiff.py` runs the whole of either without being told what to test.
+
+The corpus was grown from 29 methods to 43 once it stopped failing, across eight families it had no shape for
+- lambdas, StringBuilder and string splitting, dictionary and list mutation, switch on a string, shifts and
+masks, boxing, checked arithmetic, try/finally, and virtual dispatch through a base class. Seven of the fifteen
+passed first time; the other seven were defects, of which two are fixed and one half fixed. **Growing the
+corpus is the cheapest way to find a defect** - one Unity build, and it does not depend on guessing.
+
+Of the three original failures, **none is a known defect** - `Distance` is a corpus artifact (the build
+strips `Mathf.Sqrt`, so `FSQRT` has nothing to name it back to), `Divide` is a faithful transcription of a
+handler clang deleted, and `SumSteps` sits behind a deliberately-chosen rule. A new failure there is a
+regression by definition.
+
+They are built on **different Unity versions** — 2022.3.62f2 and 6000.0.78f1 — and that is the point. The game
+itself is Unity 6, so for a long time the only corpus was on the *older* editor and nothing said so. Building
+the second one found two wrong-value bugs that had nothing to do with the version
+(`subs` recording its comparison after overwriting the register it compared; a phi slot left unfilled where
+both arms of a branch land on the same block) and **nothing** to do with the `Il2CppClass` offsets, which were
+the predicted risk — all three binaries report metadata version 31. Both corpora now score **22 of 25 and fail
+on exactly the same three methods**, which is the strongest evidence the fork has that it is recovering
+il2cpp rather than recovering this build.
 
 ```sh
 scratchpad/bump.sh <old> <new>          # version must change; NuGet caches by version
@@ -66,6 +87,23 @@ marker count.
 of one source differ in 424 of 533 files — and `compare2`'s game-wide count moves with that while `cfscore`
 and `decisions` do not. A real win was nearly discarded against a number from several builds earlier.
 
+**The disassembler is not an oracle either.** `Disarm` reports `fabd`'s second source as its first, so
+lifting its operands as given made the difference between a value and itself - zero, compiling, wrong
+everywhere. It reports an instruction it cannot place at all with **no address**. It reports a vector load's
+offset unscaled. Every one of those was found by disassembling the same word with the toolchain's own
+disassembler and comparing; `scratchpad/neon.py` does that over every distinct word in the game and is the
+reason the fork's own decoders can be trusted.
+
+**Methods are lifted in parallel.** Per-method state on the instruction set is shared between them. One
+dictionary written from several methods at once cost 570 bodies and looked like an unrelated crash - and every
+measurement taken while it was live was noise. `[ThreadStatic]`.
+
+**A revert is a measurement, not a diagnosis.** Three of the reverts recorded here as "naming an instruction
+costs branches" were nothing of the kind. `FRINT` cost 33 decisions and *all 33 were in one method*, which
+`Math.Floor(double)` made uncompilable; `CINC` was reverted twice for an operand-count bug in how it was
+lifted. Both are now in, and both moved every scorer up. Before reverting on a number, `diff` the per-method
+output of the scorer that moved and find out which method it came from.
+
 **A pass that finds nothing is usually in the wrong place, not wrong.** Where a pass runs in
 `Analysis/ForkPipeline.cs` is as load-bearing as what it does; the reason for each position is written beside
 it.
@@ -74,11 +112,14 @@ it.
 
 | family | size | what it needs |
 |---|---|---|
-| **generic sharing** | ~470 placeholders left: 133 rgctx reads, 121 indirect calls, 274 interface-dispatch | An open shared body has no instantiation. Two of the three ways in are now taken — a type parameter standing for itself (−155 reads) and the invoker entry point (−14 calls) — and what remains is the interface walk, where the interface being searched for is itself an rgctx entry. |
-| **Disarm decode coverage** | 158 occurrences, 80 methods | `INVALID`/`UNIMPLEMENTED` sentinels from the disassembler package. Needs decoding in the fork, as was done for the logical-immediate bug, or an upstream fix. |
-| **the inlined cast** | 22 reads of `typeHierarchyDepth`, plus the `typeHierarchy` chain behind them | `klass->typeHierarchy[depth - 1] == target` is how `isinst` compiles inline. Both fields are named now, so this is a defined pass rather than a guess. |
+| **reads through a base with no type** | 2508 game-wide | **Measured and closed for now.** 739 are the stack pointer, 377 are calls to runtime helpers no symbol names, and 1158 are cascades of those. Four fixes were tried and every one measured worse or did nothing - see `il2cpp-untyped-bases-are-downstream` in memory before trying a fifth. Thunk following is dead too: of the 377 targets only 13 are a single branch and none reaches a managed method. |
+| **generic sharing** | ~470 placeholders left | Two ways in are taken — a type parameter standing for itself (−155 reads) and the invoker entry point (−14 calls). What blocks the rest is now **proved**: a shared body whose result is a type parameter takes a hidden return buffer in x0, so every argument is one register out and nothing its context holds resolves. The mechanism is not in doubt; what is missing is a way to tell, from metadata alone, whether the body at an address is the shared one or a specialisation. Assuming every generic-returning method has the buffer makes it far worse. |
+| **vector lanes the model refuses** | most of the 32 markers | `Analysis`-free: `InstructionSets/VectorLanes.cs` decodes the Advanced SIMD encodings the disassembler package refuses and lifts each lane as a register of its own. What is left is mostly **refusal rather than ignorance** - the model will not emit half a vectorised expression, so one lane it cannot follow costs the whole instruction. Closing them means following the dataflow further, not decoding more. `frintm`/`frintp` in that set are deliberate. |
+| the depth pre-check an `is` leaves behind | 11 reads | `Analysis/InlinedTypeTestRecovery.cs` claims every one of these tests; what is left is the `typeHierarchyDepth >= depth` guard in front of it, which the `isinst` subsumes but which still feeds a branch. Removing it means removing control flow, so it is a deliberate decision rather than an oversight. |
 | width, I4 against I8 | 15 sites | `SXTW`/`SMULL` lift to a plain move because ISIL carries no width. Needs a new opcode; small payoff. |
 | rank-2 arrays, non-float structs, `String._stringLength` | one corpus method each | each described in memory |
+| calls into the C library | 224 game-wide, **11 in the 96** | 580 calls resolve to no managed method; 224 go through the procedure linkage table, of which 79 are `Mathf`/`Math` compiled to a real call. Naming one means resolving its linkage-table slot through a relocation to a symbol, which LibCpp2IL does not expose. Measured and left: six cleanly nameable calls inside the measured files does not pay for the ELF work. |
+
 
 ## Things that are **not** defects — do not "fix" these
 
@@ -121,4 +162,4 @@ there and a build, an export and a disassembly session to rediscover. The ones t
 * `il2cpp-ground-truth-corpus` — the corpus and how to rebuild it
 * `il2cpp-what-the-agents-found` — the ranked map of everything still broken
 * `il2cpp-naming-an-instruction-costs-branches`, `il2cpp-remeasure-the-baseline` — the two traps
-* `il2cpp-struct-layouts`, `aapcs64-argument-registers` — the runtime facts worth not rediscovering
+* `il2cpp-struct-layouts`, `il2cpp-read-the-header-unity-ships`, `aapcs64-argument-registers` — the runtime facts worth not rediscovering

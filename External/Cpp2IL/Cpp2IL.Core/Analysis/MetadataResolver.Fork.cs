@@ -22,6 +22,45 @@ namespace Cpp2IL.Core.Analysis;
 public static partial class MetadataResolver
 {
     /// <summary>
+    /// The address a metadata usage really lives at, given the address a load names.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Position-independent code does not name a global directly. It loads the global's address out of a slot
+    /// in the global offset table and reads through that, so the address in <c>Move local, [addr]</c> is the
+    /// <i>slot</i> and the usage is at whatever the slot holds. Nothing was ever found at the slot, so every
+    /// one of these came out as an unmanaged load of a bare address - and with it went the string, type,
+    /// method or field it named.
+    /// </para>
+    /// <para>
+    /// The relocation that fills the slot is <c>R_AARCH64_RELATIVE</c>, which LibCpp2IL already applies when
+    /// it loads the image, so the pointer is simply there to be read.
+    /// </para>
+    /// <para>
+    /// Following it is safe because the answer is only used when it lands exactly on a known usage: an
+    /// address that is not a slot either fails to map or holds something no usage is registered at, and is
+    /// handed back unchanged.
+    /// </para>
+    /// </remarks>
+    internal static ulong ThroughGlobalOffsetTable(MethodAnalysisContext method, ulong address)
+    {
+        var context = method.AppContext.LibCpp2IlContext;
+
+        //The ordinary, un-indirected form: the load names the usage itself and there is nothing to follow.
+        if (context.GetAnyGlobalByAddress(address) != null)
+            return address;
+
+        var binary = method.AppContext.Binary;
+
+        if (!binary.TryMapVirtualAddressToRaw(address, out _))
+            return address;
+
+        var slot = binary.ReadPointerAtVirtualAddress(address);
+
+        return slot != 0 && context.GetAnyGlobalByAddress(slot) != null ? slot : address;
+    }
+
+    /// <summary>
     /// Whether the field is somewhere rather than something.
     ///
     /// A <c>const</c> is written into the code that reads it and has no storage, but it is still recorded as
