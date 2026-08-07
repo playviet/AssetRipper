@@ -122,6 +122,26 @@ public partial class NewArmV8InstructionSet
     /// </remarks>
     private static (OpCode OpCode, object[] Operands)? ImportedCall(MethodAnalysisContext context, ulong target)
     {
+        //A jump straight back out is a thunk, not a function, and the call goes wherever it points:
+        //`0x2183F68` jumps to `il2cpp_runtime_class_init_actual` and `0x2183F70` to `il2cpp_vm_object_box`,
+        //both of which `MetadataResolver` already knows by name.
+        //
+        //**Never where the address is already a key function.** Cpp2IL's key functions *are* thunks -
+        //`il2cpp_codegen_write_barrier` is `0x2183D8C`, `raise_exception` `0x2183DC4`, `SzArrayNew`
+        //`0x2183ED8` - and the resolver matches a call target against exactly those addresses. Following
+        //them unguarded moved every one of those off its own name at once: `full` 308 -> 271, roundtrip
+        //1216 -> 897, decisions 96.6% -> 91.8%. It is the worst regression this fork has measured.
+        if (!context.AppContext.GetOrCreateKeyFunctionAddresses().IsKeyFunctionAddress(target)
+            && FollowThunks(context.AppContext.Binary, target) is var followed && followed != target)
+        {
+            var thunked = new List<object> { followed, RegisterFor(Arm64Register.X0) };
+
+            for (var argument = 0; argument < Aapcs64.RegistersPerRun; argument++)
+                thunked.Add(RegisterFor(Arm64Register.X0 + argument));
+
+            return (OpCode.Call, thunked.ToArray());
+        }
+
         if (context.AppContext.Binary is not LibCpp2IL.Elf.ElfFile binary
             || binary.ImportedFunctionAt(target) is not { } import)
             return null;
@@ -159,6 +179,42 @@ public partial class NewArmV8InstructionSet
             operands.Add(RegisterFor(Arm64Register.V0 + argument));
 
         return (OpCode.Call, operands.ToArray());
+    }
+
+    /// <summary>Where a chain of one-instruction jumps ends, or the address itself where it is not one.</summary>
+    /// <remarks>
+    /// Only an unconditional <c>b</c> as the <b>first</b> instruction of the target counts, which is what a
+    /// thunk is: nothing else could sit in front of it. Bounded, so a jump that somehow points at itself
+    /// cannot spin.
+    /// </remarks>
+    private static ulong FollowThunks(LibCpp2IL.Il2CppBinary binary, ulong target)
+    {
+        for (var step = 0; step < 4; step++)
+        {
+            uint word;
+
+            try
+            {
+                word = binary.ReadClassArrayAtVirtualAddress<uint>(target, 1)[0];
+            }
+            catch
+            {
+                return target;
+            }
+
+            //B label - the offset is signed over 26 bits and counts instructions.
+            if ((word & 0xFC00_0000) != 0x1400_0000)
+                return target;
+
+            var offset = (long)(word & 0x03FF_FFFF);
+
+            if ((offset & 0x0200_0000) != 0)
+                offset -= 0x0400_0000;
+
+            target = (ulong)((long)target + (offset << 2));
+        }
+
+        return target;
     }
 
     private static object[] IndirectCallOperands(object target)

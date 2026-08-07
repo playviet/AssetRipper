@@ -794,6 +794,23 @@ public static partial class IlGenerator
                 return true;
             }
 
+            //The runtime's own boxing entry point, which is what a thunk-followed call reaches. Same
+            //instruction, **arguments the other way round**: `il2cpp_vm_object_box(klass, value)` takes the
+            //class first, while the `il2cpp_codegen_box` shape above is built by `CastHelperRecovery` with
+            //the value first. Reading one site settled it - the class is at argument one and carries an
+            //`Il2CppClass<...>`, the value at argument two.
+            case "il2cpp_vm_object_box" when ClassArgument(Argument(instruction, 1)) is { IsValueType: true } vmBoxed:
+            {
+                var vmValue = Argument(instruction, 2);
+                if (vmValue is null)
+                    return false;
+
+                LoadOperand(vmValue, method, locals, writeLine, stringCtor, vmBoxed);
+                instructions.Add(CilOpCodes.Box, importer.ImportType(vmBoxed.ToTypeSignature(module).ToTypeDefOrRef()));
+                StoreResult(instruction, method, locals, writeLine);
+                return true;
+            }
+
             //The same helper, where what came back was read through rather than kept as an object - see
             //UnboxRecovery. `unbox.any` is the one instruction that checks the class and takes the value out,
             //which is both halves of what the helper did.
