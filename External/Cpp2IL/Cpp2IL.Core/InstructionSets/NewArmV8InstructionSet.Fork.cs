@@ -122,6 +122,7 @@ public partial class NewArmV8InstructionSet
     /// </remarks>
     private static (OpCode OpCode, object[] Operands)? ImportedCall(MethodAnalysisContext context, ulong target)
     {
+
         //A jump straight back out is a thunk, not a function, and the call goes wherever it points:
         //`0x2183F68` jumps to `il2cpp_runtime_class_init_actual` and `0x2183F70` to `il2cpp_vm_object_box`,
         //both of which `MetadataResolver` already knows by name.
@@ -141,6 +142,9 @@ public partial class NewArmV8InstructionSet
 
             return (OpCode.Call, thunked.ToArray());
         }
+
+        if (CompareExchangeOperands(context, target) is { } exchange)
+            return (OpCode.Call, exchange);
 
         if (context.AppContext.Binary is not LibCpp2IL.Elf.ElfFile binary
             || binary.ImportedFunctionAt(target) is not { } import)
@@ -179,6 +183,118 @@ public partial class NewArmV8InstructionSet
             operands.Add(RegisterFor(Arm64Register.V0 + argument));
 
         return (OpCode.Call, operands.ToArray());
+    }
+
+    /// <summary>
+    /// The operands of an atomic compare-and-exchange, where the target is the helper that does one.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Every <c>event</c> accessor in the game compiles to the same loop - combine the delegate, then
+    /// atomically install it and go round again if somebody else got there first - and the install is a call
+    /// to a runtime helper no method table names. <b>62 sites</b>, the largest unnamed target left:
+    /// </para>
+    /// <code>
+    /// Delegate obj2 = Delegate.Combine(obj, value);
+    /// _ = "Method not found @21BC67C";
+    /// bool flag = (object)obj3 != obj;
+    /// </code>
+    /// <para>
+    /// The helper is <c>Interlocked.CompareExchange</c> and its arguments are already in the right order -
+    /// <c>f(address, value, comparand)</c>. It returns the comparand where the swap took and whatever was
+    /// there otherwise, which is the same thing as returning the original value in both cases.
+    /// </para>
+    /// <para>
+    /// <b>Recognised by shape rather than by address</b>, so nothing here is pinned to this binary: the body
+    /// calls a primitive that begins with <c>casal</c> - the architecture's compare-and-swap - and carries a
+    /// <c>dmb ish</c> of its own, which is the publish barrier a managed reference needs and an ordinary
+    /// arithmetic helper does not have.
+    /// </para>
+    /// </remarks>
+    private static object[]? CompareExchangeOperands(MethodAnalysisContext context, ulong target)
+    {
+        if (!IsCompareExchange(context.AppContext.Binary, target))
+            return null;
+
+        if (context.AppContext.GetAssemblyByName("mscorlib")
+                ?.GetTypeByFullName("System.Threading.Interlocked") is not { } interlocked)
+            return null;
+
+        MethodAnalysisContext? found = null;
+
+        foreach (var candidate in interlocked.Methods)
+        {
+            if (candidate is not { IsStatic: true, Name: "CompareExchange" }
+                || candidate.Parameters.Count != 3
+                || candidate.GenericParameters.Count != 0
+                || candidate.Parameters[0].ParameterType is not ByRefTypeAnalysisContext { ElementType.IsValueType: false })
+                continue;
+
+            //Two overloads over references would be an alias, and nothing says which one was meant.
+            if (found != null)
+                return null;
+
+            found = candidate;
+        }
+
+        return found == null
+            ? null
+            : [found, RegisterFor(Arm64Register.X0), RegisterFor(Arm64Register.X0),
+                RegisterFor(Arm64Register.X1), RegisterFor(Arm64Register.X2)];
+    }
+
+    /// <summary>Whether the function at this address installs a pointer atomically and publishes it.</summary>
+    private static bool IsCompareExchange(LibCpp2IL.Il2CppBinary binary, ulong target)
+    {
+        if (Words(binary, target, 16) is not { } body)
+            return false;
+
+        var published = false;
+        var swaps = false;
+
+        for (var index = 0; index < body.Length; index++)
+        {
+            var word = body[index];
+
+            //DMB ISH - the barrier that makes the new value visible before anything reads it.
+            if (word == 0xD503_3BBF)
+                published = true;
+
+            //BL somewhere; the primitive it reaches begins with the compare-and-swap itself.
+            if ((word & 0xFC00_0000) != 0x9400_0000)
+                continue;
+
+            var offset = (long)(word & 0x03FF_FFFF);
+
+            if ((offset & 0x0200_0000) != 0)
+                offset -= 0x0400_0000;
+
+            //From the branch itself, not from the front of the function - the offset a branch carries is
+            //relative to its own address. Reading only the first instruction, as the thunk follower does,
+            //hides that: there the two are the same, and here they are 0x18 apart.
+            var called = (ulong)((long)target + index * 4 + (offset << 2));
+
+            if (Words(binary, called, 8) is { } primitive)
+                foreach (var inner in primitive)
+                    //CASAL Xs, Xt, [Xn] at sixty-four bits.
+                    if ((inner & 0xFFE0_FC00) == 0xC8E0_FC00)
+                        swaps = true;
+        }
+
+        return published && swaps;
+    }
+
+    /// <summary>The instructions at an address, or null where there are none to read.</summary>
+    private static uint[]? Words(LibCpp2IL.Il2CppBinary binary, ulong address, int count)
+    {
+        try
+        {
+            return binary.ReadClassArrayAtVirtualAddress<uint>(address, count);
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     /// <summary>Where a chain of one-instruction jumps ends, or the address itself where it is not one.</summary>
