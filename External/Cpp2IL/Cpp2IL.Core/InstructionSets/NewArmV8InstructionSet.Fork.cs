@@ -95,6 +95,72 @@ public partial class NewArmV8InstructionSet
             ? new MemoryOperand(RegisterFor(Arm64Register.X8))
             : GetReturnRegisterForContext(callee);
 
+    /// <summary>
+    /// Emits the call an imported function was, where the branch goes to a stub that jumps to one.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A call to <c>sinf</c> or <c>memcpy</c> goes to a four-instruction stub in <c>.plt</c>, which no method
+    /// table names - so it resolved to nothing and the statement was written out as
+    /// <c>Method not found @4AFA510</c>. <c>ElfFile.ImportedFunctionAt</c> follows the stub to the jump slot
+    /// and the slot's relocation to the symbol, which is exactly how the loader decides what the call
+    /// reaches.
+    /// </para>
+    /// <para>
+    /// <b>It has to be done here rather than in a later pass</b>, because the fallback for an unknown callee
+    /// hands over <c>x0</c> to <c>x7</c> and nothing else - and a floating point argument is in <c>v0</c>. By
+    /// the time the ISIL exists the argument is not among the operands at all, so no pass can put it back;
+    /// here the convention is still known and the right registers can be named outright.
+    /// </para>
+    /// <para>
+    /// Only the ones that are exactly a managed method of the same shape. <c>modf</c> and <c>sincosf</c> hand
+    /// answers back through pointers, <c>exp2f</c> has no counterpart, and <c>memcpy</c> is a struct
+    /// assignment rather than a call - each of those is a different problem and is left as it was.
+    /// <c>__stack_chk_fail</c> is dropped: it is what the guard branch calls when the stack has been
+    /// smashed, and recovered C# has no stack to smash.
+    /// </para>
+    /// </remarks>
+    private static (OpCode OpCode, object[] Operands)? ImportedCall(MethodAnalysisContext context, ulong target)
+    {
+        if (context.AppContext.Binary is not LibCpp2IL.Elf.ElfFile binary
+            || binary.ImportedFunctionAt(target) is not { } import)
+            return null;
+
+        if (import == "__stack_chk_fail")
+            return (OpCode.Nop, []);
+
+        var isDouble = !import.EndsWith("f");
+        var bare = isDouble ? import : import[..^1];
+
+        string[]? names = bare switch
+        {
+            "sin" => ["Sin"], "cos" => ["Cos"], "tan" => ["Tan"],
+            "asin" => ["Asin"], "acos" => ["Acos"], "atan" => ["Atan"],
+            "exp" => ["Exp"], "log" => ["Log"], "log10" => ["Log10"],
+            "sqrt" => ["Sqrt"], "fabs" => ["Abs"],
+            "ceil" => ["Ceil", "Ceiling"], "floor" => ["Floor"], "round" => ["Round"],
+            "pow" => ["Pow"], "atan2" => ["Atan2"], "fmin" => ["Min"], "fmax" => ["Max"],
+            _ => null,
+        };
+
+        if (names == null)
+            return null;
+
+        var parameters = bare is "pow" or "atan2" or "fmin" or "fmax" ? 2 : 1;
+
+        if (Analysis.MathIntrinsics.Resolve(context.AppContext, names, parameters, isDouble) is not { } method)
+            return null;
+
+        //Single and double precision use the same physical registers, and `RegisterFor` gives them one name -
+        //so `v0` here is the same variable a `d0` or `s0` operand elsewhere resolves to.
+        var operands = new List<object> { method, RegisterFor(Arm64Register.V0) };
+
+        for (var argument = 0; argument < parameters; argument++)
+            operands.Add(RegisterFor(Arm64Register.V0 + argument));
+
+        return (OpCode.Call, operands.ToArray());
+    }
+
     private static object[] IndirectCallOperands(object target)
     {
         var operands = new List<object> { target, RegisterFor(Arm64Register.X0) };

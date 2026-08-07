@@ -479,6 +479,10 @@ public partial class NewArmV8InstructionSet : Cpp2IlInstructionSet
                         AddUnmanagedCall(address, instruction.BranchTarget);
                     }
                 }
+                else if (ImportedCall(context, instruction.BranchTarget) is { } imported)
+                {
+                    Add(address, imported.OpCode, imported.Operands);
+                }
                 else
                 {
                     AddUnmanagedCall(address, instruction.BranchTarget);
