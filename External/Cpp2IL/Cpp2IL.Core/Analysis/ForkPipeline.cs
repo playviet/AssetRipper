@@ -112,6 +112,7 @@ public static class ForkPipeline
         // after the naming rather than after field resolution, where the operands are still plain locals.
         StructInArithmetic.Run(method);
 
+
         // The same defect where a declaration settles it rather than a neighbouring number: a struct handed to
         // a float parameter, or returned where a float is declared, is the member at the front of it.
         // `Joystick.Vertical` recovers and `Joystick.Horizontal` does not, and the only difference is that one
@@ -240,6 +241,14 @@ public static class ForkPipeline
         // is written out as an object - which makes the bounds check a comparison between unrelated things,
         // and takes the loop and everything in it along with it.
         LocalVariables.ResolveTypesAndFields(method);
+
+        // Last of all, and only what nothing else could name: what arithmetic produces is a number, whatever
+        // the destination register was called. `object obj3 = obj4 - 4L;` is not C#, and that shape begins 99
+        // commented blocks in the game. **After** the resolution above, not before it - typing these early
+        // stops the resolver ever recognising one as the base of a field or an element, which cost
+        // `unmanaged` 128 -> 163. Here there is nothing left to lose: a local still untyped at this point is
+        // one every other pass has already declined.
+        ArithmeticProducesANumber.Run(method);
 
         // And again the fields that resolved only just now. A field is named by its property only where it
         // is known to be a field at all, and the pass that does so ran long before the line above - so a
