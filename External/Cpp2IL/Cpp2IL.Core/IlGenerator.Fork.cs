@@ -882,6 +882,35 @@ public static partial class IlGenerator
     /// its 849 lines to four such declarations.
     /// </remarks>
     /// <summary>Names a field rather than reading it - the handle InitializeArray copies an array through.</summary>
+    /// <summary>
+    /// Loads a type as the handle it is, where the place it is going wants one.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <c>typeof(X)</c> is two instructions in C# - <c>ldtoken X</c> and a call to
+    /// <c>Type.GetTypeFromHandle</c> - and both survive: the analysis resolves the token and the ISIL reads
+    /// <c>Call Type.GetTypeFromHandle, v218, typeof(UnityEngine.RectTransform)</c>. The generator was the
+    /// only thing missing it, loading a type used as a value as a native-integer zero, which is where
+    /// <c>Type.GetTypeFromHandle((RuntimeTypeHandle)0)</c> came from. 43 sites in the game, every one of
+    /// them a commented statement.
+    /// </para>
+    /// <para>
+    /// <b>Only where a <c>RuntimeTypeHandle</c> is declared.</b> A type operand is far more often a class
+    /// pointer the runtime is being handed - the argument to a cast, an allocation, a boxing helper - and
+    /// those are native integers, exactly as the case this narrows says. The parameter's own type is what
+    /// tells the two apart, and it is not a guess.
+    /// </para>
+    /// </remarks>
+    private static bool TryLoadTypeToken(TypeAnalysisContext type, TypeAnalysisContext? expected,
+        CilInstructionCollection instructions, ModuleDefinition module, ReferenceImporter importer)
+    {
+        if (expected?.FullName != "System.RuntimeTypeHandle")
+            return false;
+
+        instructions.Add(CilOpCodes.Ldtoken, importer.ImportType(type.ToTypeSignature(module).ToTypeDefOrRef()));
+        return true;
+    }
+
     private static void LoadFieldToken(FieldToken token, CilInstructionCollection instructions, ModuleDefinition module)
     {
         instructions.Add(CilOpCodes.Ldtoken, token.Field.ToFieldDescriptor(module));

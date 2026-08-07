@@ -811,6 +811,8 @@ public static partial class IlGenerator
                 instructions.Add(CilOpCodes.Ldc_I4_0);
                 instructions.Add(CilOpCodes.Conv_I);
                 break;
+            case TypeAnalysisContext token2 when TryLoadTypeToken(token2, expectedType, instructions, module, importer):
+                break;
             case TypeAnalysisContext:
                 //A type used as a value is a runtime class handle, which is a native integer. Building an instance of
                 //the type instead, as this used to, says something the code never did, and does not even compile when
