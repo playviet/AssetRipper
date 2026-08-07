@@ -466,7 +466,7 @@ public partial class NewArmV8InstructionSet : Cpp2IlInstructionSet
                 {
                     if (possibleMethods.Count == 1)
                     {
-                        AddCall(context, GetReturnRegisterForContext(possibleMethods[0]), address, instruction.BranchTarget);
+                        AddCall(context, GetCallResultOperand(possibleMethods[0]), address, instruction.BranchTarget);
                     }
                     else
                     {
@@ -547,7 +547,7 @@ public partial class NewArmV8InstructionSet : Cpp2IlInstructionSet
                     //which one - so every register the convention could have used has to be handed over.
                     var returnRegister2 = GetReturnRegisterForContext(context);
                     if (context.AppContext.MethodsByAddress.TryGetValue(target, out var tailCallMethods) && tailCallMethods.Count == 1)
-                        AddCall(context, GetReturnRegisterForContext(tailCallMethods[0]), address, target);
+                        AddCall(context, GetCallResultOperand(tailCallMethods[0]), address, target);
                     else
                         AddUnmanagedCall(address, target);
 

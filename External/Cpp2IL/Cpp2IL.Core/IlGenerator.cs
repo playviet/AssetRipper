@@ -472,7 +472,11 @@ public static partial class IlGenerator
                 // way the body cannot be read afterwards and is discarded whole.
                 if (!targetMethod.IsVoid)
                 {
-                    if (instruction.OpCode == OpCode.Call && instruction.Operands.Count > 1)
+                    // A result that would have to be cast into where it is going is one the language will
+                    // refuse - see ResultFitsItsDestination in the fork. Dropping it is what happened before
+                    // the indirect return existed, and is better than losing the statements around it.
+                    if (instruction.OpCode == OpCode.Call && instruction.Operands.Count > 1
+                        && ResultFitsItsDestination(instruction.Operands[1], targetMethod, locals, module))
                         StoreToOperand(instruction.Operands[1], method, locals, writeLine);
                     else
                         instructions.Add(CilOpCodes.Pop);

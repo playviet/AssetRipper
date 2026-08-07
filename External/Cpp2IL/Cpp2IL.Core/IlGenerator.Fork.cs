@@ -1020,6 +1020,34 @@ public static partial class IlGenerator
     /// A local whose address can be handed to a by-reference parameter. Where the argument is a value the method
     /// already has a local for, that local is used, so what the callee writes lands where the code reads it.
     /// </summary>
+    /// <summary>
+    /// Whether a call's result can be stored where the call says, without a cast the language will refuse.
+    /// </summary>
+    /// <remarks>
+    /// A large struct comes back through the pointer in <c>x8</c>, so the destination is the place it was
+    /// told to write rather than a register - see <see cref="Analysis.Aapcs64.ReturnsIndirectly"/>. That is
+    /// right, and it only helps where the place has the type the callee returns. Inside a **shared generic**
+    /// it does not: the enumerator of a <c>Dictionary</c> is typed by the stand-in
+    /// <c>Dictionary&lt;int, object&gt;</c> while the call returns the real instantiation, and the store then
+    /// reads back as an explicit cast between the two:
+    /// <code>
+    /// //Dictionary&lt;int, object&gt;.Enumerator e = (Dictionary&lt;int, object&gt;.Enumerator)scratch.GetEnumerator();
+    /// </code>
+    /// which does not compile, and takes every later statement using the local with it - thirteen
+    /// self-assignments in `BoardController::ComputeHighlights`, and all fifty of its branches.
+    /// </remarks>
+    private static bool ResultFitsItsDestination(object destination, MethodAnalysisContext callee,
+        Dictionary<LocalVariable, CilLocalVariable> locals, ModuleDefinition module)
+    {
+        if (destination is not MemoryOperand { Index: null, Scale: 0, Addend: 0, Base: LocalVariable place })
+            return true;
+
+        if (!locals.TryGetValue(place, out var local) || callee.ReturnType is not { } returned)
+            return true;
+
+        return local.VariableType.FullName == returned.ToTypeSignature(module).FullName;
+    }
+
     private static CilLocalVariable ScratchLocal(object? argument, TypeSignature elementType, MethodDefinition method,
         Dictionary<LocalVariable, CilLocalVariable> locals)
     {

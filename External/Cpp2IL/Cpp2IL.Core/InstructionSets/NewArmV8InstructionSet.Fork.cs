@@ -81,6 +81,20 @@ public partial class NewArmV8InstructionSet
     /// out of them once a pass knows the signature. Naming a register the callee does not read costs nothing:
     /// an operand nothing needs is dropped with the rest of the dead code.
     /// </remarks>
+    /// <summary>
+    /// Where a call's result lands: the register it comes back in, or the place the caller told it to write.
+    /// </summary>
+    /// <remarks>
+    /// A composite of more than sixteen bytes is not returned in a register at all - the caller passes
+    /// somewhere to put it in <c>x8</c> and the callee writes through that pointer. See
+    /// <see cref="Analysis.Aapcs64.ReturnsIndirectly"/>. The generator already stores a call result into
+    /// <c>[local]</c> by writing the base local, so a memory destination is something it can express.
+    /// </remarks>
+    private object? GetCallResultOperand(MethodAnalysisContext callee)
+        => Analysis.Aapcs64.ReturnsIndirectly(callee)
+            ? new MemoryOperand(RegisterFor(Arm64Register.X8))
+            : GetReturnRegisterForContext(callee);
+
     private static object[] IndirectCallOperands(object target)
     {
         var operands = new List<object> { target, RegisterFor(Arm64Register.X0) };
