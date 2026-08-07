@@ -184,13 +184,23 @@ public static class StructInArithmetic
         if (!type.IsValueType || IsNumber(type) || type.BaseType?.FullName == "System.Enum")
             return null;
 
+        //The one that lies lowest, not the one recorded at nought. `FieldAnalysisContext.Offset` is
+        //`BackingData.FieldOffset`, which il2cpp records **as the type is boxed** - so the first field of a
+        //value type sits at the object header, 0x10 on 64-bit, and never at nought. Asking for nought found
+        //nothing for any struct whose offsets are recorded at all, which is every ordinary one:
+        //`Joystick.Horizontal` reads `input.x` and this refused to see it.
+        FieldAnalysisContext? front = null;
+
         foreach (var candidate in type.Fields)
         {
-            if (!candidate.IsStatic && candidate.Offset == 0)
-                return candidate;
+            if (candidate.IsStatic || candidate.Offset < 0)
+                continue;
+
+            if (front is null || candidate.Offset < front.Offset)
+                front = candidate;
         }
 
-        return null;
+        return front;
     }
 
     internal static bool IsNumber(TypeAnalysisContext type) => type.Type is

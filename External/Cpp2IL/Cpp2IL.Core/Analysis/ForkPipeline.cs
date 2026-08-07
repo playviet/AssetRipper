@@ -165,6 +165,12 @@ public static class ForkPipeline
         // Before the pass below, which is what then says a private field like `_current` by its property.
         StructSlotFields.Run(method);
 
+        // A member of a struct kept in another type's static storage - `Vector3.zero.z` - matches no field at
+        // the outer level and was written out as unmanaged memory. Beside the pass below because it is the
+        // same answer for statics: say the value by the public property over it. After field resolution, which
+        // is what leaves these unresolved, and before the pass below, which does the instance half.
+        StaticStructMember.Run(method);
+
         // A property accessor of another assembly is inlined into its caller, leaving a direct access to the
         // private field behind it - true, but not something the project can write down.
         InaccessibleFieldRecovery.Run(method);

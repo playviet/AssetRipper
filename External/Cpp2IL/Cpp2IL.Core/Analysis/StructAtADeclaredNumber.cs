@@ -63,6 +63,19 @@ public static class StructAtADeclaredNumber
                         changed |= Narrow(instruction, 0, method.ReturnType);
 
                     continue;
+
+                //A copy into a place that holds a number. The destination is the declaration here, and it is
+                //one that may be believed: a value-type destination is the direction
+                //`il2cpp-a-move-has-no-type-of-its-own` sanctions, because a register named as a struct may
+                //be anything while a register named as a `Single` is one. This is where the defect actually
+                //lives - `Joystick.Horizontal` reaches `SnapFloat` through
+                //`Move returnVal1 (Single), this.input (Vector2)`, and by the call itself the argument is
+                //already the plain local, so nothing at the call site can see it.
+                case OpCode.Move:
+                    if (instruction.Operands.Count == 2 && instruction.Operands[0] is LocalVariable into)
+                        changed |= Narrow(instruction, 1, into.Type);
+
+                    continue;
             }
         }
 
