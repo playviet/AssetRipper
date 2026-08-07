@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Linq;
 using Cpp2IL.Core.ISIL;
 using Cpp2IL.Core.Model.Contexts;
 using LibCpp2IL.BinaryStructures;
@@ -46,11 +47,11 @@ public static class StructInArithmetic
         while (learnt)
         {
             learnt = false;
-            learnt |= Once(graph);
+            learnt |= Once(graph, method);
         }
     }
 
-    private static bool Once(Graphs.ISILControlFlowGraph graph)
+    private static bool Once(Graphs.ISILControlFlowGraph graph, MethodAnalysisContext method)
     {
         var changed = false;
 
@@ -69,7 +70,18 @@ public static class StructInArithmetic
             //From one, because operand nought is what the instruction writes.
             for (var operand = 1; operand < instruction.Operands.Count; operand++)
             {
-                if (instruction.Operands[operand] is not FieldReference read || Inside(read) is not { } member)
+                //Two shapes. A struct that reached a field of its own is a field reference and is followed
+                //from there; one that never did is a plain local - which is what a struct arriving in
+                //registers looks like once `HomogeneousFloatParameters` has named them, and it is the shape
+                //the generator was giving up on with "Part of a struct used as a value", 52 times over.
+                var member = instruction.Operands[operand] switch
+                {
+                    FieldReference read => Inside(read),
+                    LocalVariable local => FrontOf(local, method),
+                    _ => null,
+                };
+
+                if (member is null)
                     continue;
 
                 instruction.Operands[operand] = member;
@@ -78,7 +90,7 @@ public static class StructInArithmetic
                 //What an addition of numbers produces is a number, and saying so is what lets the addition
                 //after it be recognised at all.
                 if (instruction.Operands[0] is LocalVariable produced && produced.Type is null)
-                    produced.Type = member.Field.FieldType;
+                    produced.Type = member.Path[^1].FieldType;
             }
         }
 
@@ -104,8 +116,45 @@ public static class StructInArithmetic
         return false;
     }
 
+    /// <summary>The number at the front of a struct a local holds, however many structs deep it goes.</summary>
+    /// <remarks>
+    /// The local <i>is</i> the struct, so the member is named on it at distance nought. Only where the walk
+    /// ends on a number: a struct whose front member is another struct is followed, and one that never
+    /// arrives at a number is left alone rather than half-named.
+    /// </remarks>
+    private static NestedFieldReference? FrontOf(LocalVariable local, MethodAnalysisContext method)
+    {
+        if (local.Type is not { IsValueType: true } held || IsNumber(held))
+            return null;
+
+        //Never a parameter the analysis has since retyped. `IlGenerator.LoadLocal` matches a local to a
+        //parameter **by name** and emits `ldarg`, so what lands on the stack is the parameter's declared
+        //type, not the analysis type - and naming a `Color` member on a `TMP_MeshInfo[]` parameter is written
+        //back as `((Color*)(&meshInfos))->r`, which Roslyn refuses with CS0208. Six of those got past every
+        //fast measure and were caught only by the Unity gate. The signature is the authority: where it
+        //disagrees, the analysis type is the wrong one and following it down compounds the mistake.
+        if (method.Parameters.FirstOrDefault(p => p.Name == local.Name) is { } declared
+            && declared.ParameterType.FullName != held.FullName)
+            return null;
+
+        var path = new List<FieldAnalysisContext>();
+
+        for (var type = held; path.Count < 8; )
+        {
+            if (Front(type) is not { } front)
+                break;
+
+            path.Add(front);
+            type = front.FieldType;
+        }
+
+        return path.Count > 0 && IsNumber(path[^1].FieldType)
+            ? new NestedFieldReference([.. path], local, 0)
+            : null;
+    }
+
     /// <summary>The member at the front of a struct-typed field, however many structs deep it goes.</summary>
-    private static NestedFieldReference? Inside(FieldReference reference)
+    internal static NestedFieldReference? Inside(FieldReference reference)
     {
         List<FieldAnalysisContext> path = reference is NestedFieldReference nested
             ? [.. nested.Path]
@@ -130,7 +179,7 @@ public static class StructInArithmetic
     /// that would turn every read of one into a read of <c>Int32.m_value</c>, which is the same value said
     /// worse. An enum is a number for this purpose too.
     /// </remarks>
-    private static FieldAnalysisContext? Front(TypeAnalysisContext type)
+    internal static FieldAnalysisContext? Front(TypeAnalysisContext type)
     {
         if (!type.IsValueType || IsNumber(type) || type.BaseType?.FullName == "System.Enum")
             return null;
@@ -144,7 +193,7 @@ public static class StructInArithmetic
         return null;
     }
 
-    private static bool IsNumber(TypeAnalysisContext type) => type.Type is
+    internal static bool IsNumber(TypeAnalysisContext type) => type.Type is
         Il2CppTypeEnum.IL2CPP_TYPE_BOOLEAN or Il2CppTypeEnum.IL2CPP_TYPE_CHAR
         or Il2CppTypeEnum.IL2CPP_TYPE_I1 or Il2CppTypeEnum.IL2CPP_TYPE_U1
         or Il2CppTypeEnum.IL2CPP_TYPE_I2 or Il2CppTypeEnum.IL2CPP_TYPE_U2

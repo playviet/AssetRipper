@@ -112,6 +112,13 @@ public static class ForkPipeline
         // after the naming rather than after field resolution, where the operands are still plain locals.
         StructInArithmetic.Run(method);
 
+        // The same defect where a declaration settles it rather than a neighbouring number: a struct handed to
+        // a float parameter, or returned where a float is declared, is the member at the front of it.
+        // `Joystick.Vertical` recovers and `Joystick.Horizontal` does not, and the only difference is that one
+        // reads at offset four and the other at nought. Directly after the pass above, whose narrowing it
+        // shares and whose remaining positions it covers.
+        StructAtADeclaredNumber.Run(method);
+
         // Which instantiation a shared body was called as is read off the object it was called on, and until
         // the copies are gone that object is a local typed by the very call being asked about - so this only
         // has an answer here, where the propagation out of SSA has settled them. Types are then worked out
