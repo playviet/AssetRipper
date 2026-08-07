@@ -88,7 +88,22 @@ public static class ArithmeticProducesANumber
             //multiplication, shift or bitwise operation over references, so whatever the registers were
             //called the answer is a number. Asking every source to be one first was measured and is inert:
             //in this population the *sources* are mistyped too, which is the whole shape of the defect.
-            var produced = WidestSource(instruction)
+            //Three answers, not two. A source that is *known* to be something other than a number - a struct,
+            //a reference, `this` - refuses outright: calling the answer a number then writes
+            //`long num4 = (long)Vector3.zero;`, which is no more C# than the line it replaced, and this pass
+            //produced a handful of exactly those before the distinction was drawn. A source that is merely
+            //**untyped** says nothing, and where every source says nothing the width of the arithmetic is
+            //what is left - except for an addition, which may be an address.
+            if (!SourcesAreNumbers(instruction, out var widest))
+                continue;
+
+            //Where a source says the width, that is the answer. Where none of them does, the width of the
+            //arithmetic is what is left - except for an addition, which may be an address. Dropping that
+            //fallback entirely was measured: it holds `decisions` at 1063, so the correctness half comes from
+            //the typed sources alone, but it costs `full` 308 -> 307, `compare2` 2329 -> 2325 and ninety-six
+            //more commented blocks. What made the fallback safe is refusing a **struct** source above, which
+            //is what had been turning `1.6f` into `1L`.
+            var produced = widest
                 ?? (instruction.OpCode == OpCode.Add ? null : method.AppContext.SystemTypes.SystemInt64Type);
 
             if (produced == null)
@@ -122,9 +137,9 @@ public static class ArithmeticProducesANumber
     /// this architecture is sixty-four bits. A constant says nothing about width on its own - the same
     /// <c>4</c> is a float offset and an int - so it is accepted but does not decide.
     /// </remarks>
-    private static TypeAnalysisContext? WidestSource(Instruction instruction)
+    private static bool SourcesAreNumbers(Instruction instruction, out TypeAnalysisContext? widest)
     {
-        TypeAnalysisContext? found = null;
+        widest = null;
 
         for (var operand = 1; operand < instruction.Operands.Count; operand++)
         {
@@ -136,22 +151,42 @@ public static class ArithmeticProducesANumber
                     or float or double:
                     continue;
 
-                case LocalVariable { Type: { } held } when IsNumber(held):
-                    found = Wider(found, held);
+                //Untyped, so it says nothing either way - and saying nothing is what lets the width of the
+                //arithmetic decide.
+                case LocalVariable { Type: null }:
                     continue;
 
-                case FieldReference { Field.FieldType: { } read } when IsNumber(read):
-                    found = Wider(found, read);
+                //A **struct** refuses outright. It is a value in its own right and calling the answer a
+                //number writes `long num4 = (long)Vector3.zero;`, which is no more C# than the line it
+                //replaced; what to do with a struct here is `StructInArithmetic`'s question, not this one.
+                //A **reference** does not refuse: a local the analysis called a reference and then subtracted
+                //is mistyped in exactly the way an untyped one is, and refusing those cost
+                //`SubCellVisual::ResetEyeScales` six of its eleven instructions.
+                case LocalVariable { Type: { } held }:
+                    if (held.IsValueType && !IsNumber(held))
+                        return false;
+
+                    if (IsNumber(held))
+                        widest = Wider(widest, held);
+
                     continue;
 
-                //Anything else - an untyped local, a memory operand, a method, a type, a string - is not
-                //known to be a number, and one of them is enough to say nothing about the result.
+                case FieldReference { Field.FieldType: { } read }:
+                    if (read.IsValueType && !IsNumber(read))
+                        return false;
+
+                    if (IsNumber(read))
+                        widest = Wider(widest, read);
+
+                    continue;
+
+                //Anything else - a memory operand, a method, a type, a string - is not a number.
                 default:
-                    return null;
+                    return false;
             }
         }
 
-        return found;
+        return true;
     }
 
     /// <summary>A float wins outright; between integers the widest is what the arithmetic was done at.</summary>
