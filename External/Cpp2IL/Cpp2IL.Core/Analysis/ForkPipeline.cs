@@ -237,6 +237,12 @@ public static class ForkPipeline
         // structure into the thing it stands for - an array's length, a list's count, the method an interface
         // call goes to - and each of those is a statement about a type that the inference had already finished
         // before it was made. The length is the case that shows it: until it is recognised it is a read of
+        // A field whose address the compiler worked out into a register rather than leaving the offset in the
+        // addressing mode - 499 additions of `this` and a constant. Nothing names the field then, and what
+        // comes out is `Unsafe.AddByteOffset(ref this, 48L)` beside a call given a fresh `default(T)`. Before
+        // the resolution below, so the reads it recovers are typed by it.
+        FieldAddressRecovery.Run(method);
+
         // unmanaged memory, so the index tested against it learns nothing from the test, and an untyped index
         // is written out as an object - which makes the bounds check a comparison between unrelated things,
         // and takes the loop and everything in it along with it.

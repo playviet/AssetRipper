@@ -1051,6 +1051,55 @@ public static partial class IlGenerator
         return ReferenceEquals(held, returned) || held.FullName == returned.FullName;
     }
 
+    /// <summary>
+    /// Loads the address of a field, where that is what the position wants and a field is what is there.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A value type's method is called on the address of one, and a by-reference parameter wants an address
+    /// too - and until now both answered with the address of a **local**, because that is all
+    /// <c>ReceiverLocal</c> and <c>ScratchLocal</c> can make. Where the thing in that position is a field,
+    /// the local is a copy: what the callee writes lands in the copy and the field never changes, and what
+    /// the callee reads is whatever the copy happened to be given. <c>ldflda</c> is the place itself.
+    /// </para>
+    /// <para>
+    /// <b>Only where the base can carry the field.</b> <c>LoadLocal</c> matches a local to a parameter by
+    /// name and emits <c>ldarg</c>, so what lands on the stack is the signature's type - and <c>ldflda</c> of
+    /// a field the stack type does not declare is invalid IL that Roslyn refuses outright. The declaring type
+    /// has to agree, checked by name because the two sides are built separately.
+    /// </para>
+    /// </remarks>
+    private static bool TryLoadFieldAddress(object? operand, MethodDefinition method,
+        Dictionary<LocalVariable, CilLocalVariable> locals, ModuleDefinition module)
+    {
+        if (operand is not FieldReference reference)
+            return false;
+
+        var instructions = method.CilMethodBody!.Instructions;
+
+        if (reference.Field.IsStatic)
+        {
+            instructions.Add(CilOpCodes.Ldsflda, reference.Field.ToFieldDescriptor(module));
+            return true;
+        }
+
+        //The outer members of a chain are read as values and only the last one is addressed - `a.b.c` is
+        //`ldfld b; ldflda c` - which is what makes a nested field's address a place rather than a copy.
+        var path = reference is NestedFieldReference nested ? nested.Path : [reference.Field];
+
+        if (path[0].DeclaringType is not { } owner || reference.Local.Type is not { } held
+            || owner.FullName != held.FullName)
+            return false;
+
+        LoadLocal(reference.Local, method, locals);
+
+        for (var i = 0; i < path.Length - 1; i++)
+            instructions.Add(CilOpCodes.Ldfld, path[i].ToFieldDescriptor(module));
+
+        instructions.Add(CilOpCodes.Ldflda, path[^1].ToFieldDescriptor(module));
+        return true;
+    }
+
     /// <summary>The local a value type's method is called on, where that local is a real place on the stack.</summary>
     /// <remarks>
     /// <para>
