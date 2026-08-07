@@ -152,6 +152,12 @@ public static class ForkPipeline
         // own recovery, whose allocation already carries its argument and is left alone here.
         InlinedConstructorRecovery.Run(method);
 
+        // A struct the frame holds spans several slots and each got a variable of its own, so a field of it
+        // has no connection to the struct - and where a callee writes that field through a pointer, nothing
+        // in the caller ever assigns it. Every `foreach` element read as the zero the slot was cleared to.
+        // Before the pass below, which is what then says a private field like `_current` by its property.
+        StructSlotFields.Run(method);
+
         // A property accessor of another assembly is inlined into its caller, leaving a direct access to the
         // private field behind it - true, but not something the project can write down.
         InaccessibleFieldRecovery.Run(method);

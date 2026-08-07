@@ -86,6 +86,33 @@ public static partial class MetadataResolver
     /// walk again where it is. A field whose size is not known from here - a struct, an enum - ends the walk,
     /// because nothing after it can be placed.
     /// </summary>
+    /// <summary>
+    /// The field of a struct at a byte offset into the <b>value</b>, rather than into the boxed object.
+    /// </summary>
+    /// <remarks>
+    /// A struct on the stack has no object header in front of it, but every offset the layout walk knows is
+    /// measured from the boxed start - so the header goes back on before asking. Exposed for
+    /// <see cref="StructSlotFields"/>, which has offsets from the frame rather than from an object.
+    /// </remarks>
+    internal static FieldAnalysisContext? FieldOfStructValue(TypeAnalysisContext type, long offset, MethodAnalysisContext method)
+    {
+        var header = method.AppContext.Binary.is32Bit ? 8 : 0x10;
+
+        if (FieldOfOpenGeneric(type, offset + header, method) is { } generic)
+            return generic;
+
+        //A struct whose layout il2cpp records is read straight off it, at the same boxed offsets.
+        var definition = (type as GenericInstanceTypeAnalysisContext)?.GenericType ?? type;
+
+        foreach (var field in definition.Fields)
+            if (!field.IsStatic && field.BackingData?.FieldOffset == offset + header)
+                return type is GenericInstanceTypeAnalysisContext instance
+                    ? new ConcreteGenericFieldAnalysisContext(field, instance)
+                    : field;
+
+        return null;
+    }
+
     private static FieldAnalysisContext? FieldOfOpenGeneric(TypeAnalysisContext type, long offset, MethodAnalysisContext method, bool statics = false)
     {
         if (type is StaticFieldStorageTypeAnalysisContext)

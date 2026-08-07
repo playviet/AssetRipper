@@ -67,15 +67,34 @@ public static class InaccessibleFieldRecovery
         if (field.DeclaringType is not { } declaring || Named(field.Name) is not { } name)
             return null;
 
+        //An instantiation carries no methods of its own, so the accessor is declared by the type it
+        //instantiates and has to be named through the arguments again - otherwise `List<int>.Enumerator`
+        //looks like it has no `get_Current` at all, and the field stays private and unwritable.
+        var instance = declaring as GenericInstanceTypeAnalysisContext;
+        var owner = instance?.GenericType ?? declaring;
+
         foreach (var candidate in Names(name))
         {
             var wanted = (written ? "set_" : "get_") + candidate;
 
-            if (declaring.Methods.FirstOrDefault(m => !m.IsStatic && m.Name == wanted
+            if (owner.Methods.FirstOrDefault(m => !m.IsStatic && m.Name == wanted
                     && (written
-                        ? m.Parameters.Count == 1 && m.Parameters[0].ParameterType.FullName == field.FieldType.FullName
-                        : m.Parameters.Count == 0 && m.ReturnType.FullName == field.FieldType.FullName)) is { } accessor)
-                return accessor;
+                        ? m.Parameters.Count == 1
+                        : m.Parameters.Count == 0)) is not { } accessor)
+                continue;
+
+            var named = instance == null
+                ? accessor
+                : new ConcreteGenericMethodAnalysisContext(accessor, instance.GenericArguments, []);
+
+            //The type still has to agree, and for an instantiation that is only true once the arguments are
+            //in - which is why the check is here rather than in the search above.
+            var matches = written
+                ? named.Parameters.Count == 1 && named.Parameters[0].ParameterType.FullName == field.FieldType.FullName
+                : named.ReturnType.FullName == field.FieldType.FullName;
+
+            if (matches)
+                return named;
         }
 
         return written ? null : ForwardingGetter(field, declaring);
