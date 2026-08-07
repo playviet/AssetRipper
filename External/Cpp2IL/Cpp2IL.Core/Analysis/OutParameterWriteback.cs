@@ -46,6 +46,13 @@ public static class OutParameterWriteback
         if (slots.Count == 0)
             return;
 
+        //A struct is cleared a slot at a time, and only the one whose address was taken is found above - so
+        //the rest keep the zero, and a field read after the call folds to it. `foreach (int x in xs)` came
+        //out calling `keep(0)` and adding `0`, because `List<T>.Enumerator._current` lives two slots above
+        //the address that was handed over.
+        foreach (var alongside in ClearedAlongsideAnAddressTakenSlot(graph, slots))
+            slots.Add(alongside);
+
         foreach (var instruction in graph.Instructions)
         {
             for (var i = 0; i < instruction.Operands.Count; i++)
@@ -182,6 +189,81 @@ public static class OutParameterWriteback
         }
 
         return slots;
+    }
+
+    /// <summary>
+    /// The slots cleared in the same run as one whose address is taken - the rest of the struct.
+    /// </summary>
+    /// <remarks>
+    /// The compiler zeroes a struct before it is filled, one slot at a time and in order, so the clearing
+    /// stores form a run of adjacent offsets. Where any slot in such a run has had its address handed to a
+    /// call, the whole run is that struct being cleared, and every slot in it is written by the callee rather
+    /// than holding the zero afterwards. Adjacent means the next four or eight bytes: those are the widths a
+    /// store uses, and anything further apart is a different variable.
+    /// </remarks>
+    private static IEnumerable<string> ClearedAlongsideAnAddressTakenSlot(Graphs.ISILControlFlowGraph graph, HashSet<string> taken)
+    {
+        var cleared = new SortedSet<int>();
+
+        foreach (var instruction in graph.Instructions)
+        {
+            if (instruction.OpCode == OpCode.Move && instruction.Operands.Count == 2
+                && instruction.Operands[0] is Register slot && IsZero(instruction.Operands[1])
+                && OffsetOfSlotNamed(slot.Name) is { } offset)
+                cleared.Add(offset);
+        }
+
+        var takenOffsets = new HashSet<int>();
+        foreach (var name in taken)
+            if (OffsetOfSuffix(name) is { } offset)
+                takenOffsets.Add(offset);
+
+        var run = new List<int>();
+        var found = new List<string>();
+
+        void Flush()
+        {
+            if (run.Exists(takenOffsets.Contains))
+                foreach (var offset in run)
+                    found.Add(StackSlotAddress.Format(offset));
+
+            run.Clear();
+        }
+
+        foreach (var offset in cleared)
+        {
+            if (run.Count > 0 && offset - run[^1] is not (4 or 8))
+                Flush();
+
+            run.Add(offset);
+        }
+
+        Flush();
+
+        return found;
+    }
+
+    private static int? OffsetOfSlotNamed(string name)
+    {
+        if (name.StartsWith(StackSlots.ValuePrefix))
+            return OffsetOfSuffix(Suffix(name, StackSlots.ValuePrefix));
+
+        if (name.StartsWith(StackSlots.AddressPrefix))
+            return OffsetOfSuffix(Suffix(name, StackSlots.AddressPrefix));
+
+        return null;
+    }
+
+    /// <summary>The number a slot's name spells, which is hexadecimal and may be negative.</summary>
+    private static int? OffsetOfSuffix(string suffix)
+    {
+        var negative = suffix.StartsWith('-');
+        var digits = negative ? suffix[1..] : suffix;
+
+        if (!int.TryParse(digits, System.Globalization.NumberStyles.HexNumber, null, out var value))
+            return null;
+
+        return negative ? -value : value;
     }
 
     private static string Suffix(string name, string prefix) => name.Substring(prefix.Length);

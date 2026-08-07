@@ -1036,16 +1036,48 @@ public static partial class IlGenerator
     /// which does not compile, and takes every later statement using the local with it - thirteen
     /// self-assignments in `BoardController::ComputeHighlights`, and all fifty of its branches.
     /// </remarks>
-    private static bool ResultFitsItsDestination(object destination, MethodAnalysisContext callee,
-        Dictionary<LocalVariable, CilLocalVariable> locals, ModuleDefinition module)
+    private static bool ResultFitsItsDestination(object destination, MethodAnalysisContext callee)
     {
         if (destination is not MemoryOperand { Index: null, Scale: 0, Addend: 0, Base: LocalVariable place })
             return true;
 
-        if (!locals.TryGetValue(place, out var local) || callee.ReturnType is not { } returned)
+        if (place.Type is not { } held || callee.ReturnType is not { } returned)
             return true;
 
-        return local.VariableType.FullName == returned.ToTypeSignature(module).FullName;
+        //Compared as the analysis knows them, not as signatures. Round-tripping through `TypeSignature` and
+        //comparing the text refuses `List<int>.Enumerator` against itself - the nesting and the generic
+        //argument are spelled differently on the two sides - and refusing that is refusing the very case the
+        //indirect return exists for.
+        return ReferenceEquals(held, returned) || held.FullName == returned.FullName;
+    }
+
+    /// <summary>The local a value type's method is called on, where that local is a real place on the stack.</summary>
+    /// <remarks>
+    /// <para>
+    /// Calling a method on a struct takes the address of one, and which one matters. `ScratchLocal` compares
+    /// `TypeSignature` by reference, so two descriptions of `List&lt;int&gt;.Enumerator` never match and it
+    /// makes a fresh local nothing assigns - the enumerator a `foreach` walks was not the one
+    /// `GetEnumerator` filled.
+    /// </para>
+    /// <para>
+    /// **Only for a slot the frame actually has**, which is what an address-taken struct is. Reusing the
+    /// caller's local for *every* value-type receiver was measured twice and costs
+    /// `AssetLoader::MoveNext` thirteen of its nineteen instructions: a register-allocated local aliases
+    /// other uses, and handing the callee its address spreads whatever is wrong with it. A stack slot does
+    /// not - it is one place, holding one struct, for as long as the frame lives.
+    /// </para>
+    /// </remarks>
+    private static CilLocalVariable ReceiverLocal(object? receiver, TypeSignature valueType, MethodDefinition method,
+        Dictionary<LocalVariable, CilLocalVariable> locals)
+    {
+        //The slot is named by the register the local sits in, not by the local's own name.
+        if (receiver is LocalVariable { Register.Name: { } name } local
+            && name.StartsWith(StackSlots.AddressPrefix)
+            && locals.TryGetValue(local, out var existing)
+            && existing.VariableType.FullName == valueType.FullName)
+            return existing;
+
+        return ScratchLocal(receiver, valueType, method, locals);
     }
 
     private static CilLocalVariable ScratchLocal(object? argument, TypeSignature elementType, MethodDefinition method,

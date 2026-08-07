@@ -423,7 +423,7 @@ public static partial class IlGenerator
                     //verifiable IL and reads back as a pointer to a managed type, which C# does not have.
                     if (targetMethod.DeclaringType is { IsValueType: true } valueType)
                     {
-                        instructions.Add(CilOpCodes.Ldloca, ScratchLocal(receiver, valueType.ToTypeSignature(module), method, locals));
+                        instructions.Add(CilOpCodes.Ldloca, ReceiverLocal(receiver, valueType.ToTypeSignature(module), method, locals));
                     }
                     else if (receiver != null)
                         LoadOperand(receiver, method, locals, writeLine, stringCtor, targetMethod.DeclaringType);
@@ -476,7 +476,7 @@ public static partial class IlGenerator
                     // refuse - see ResultFitsItsDestination in the fork. Dropping it is what happened before
                     // the indirect return existed, and is better than losing the statements around it.
                     if (instruction.OpCode == OpCode.Call && instruction.Operands.Count > 1
-                        && ResultFitsItsDestination(instruction.Operands[1], targetMethod, locals, module))
+                        && ResultFitsItsDestination(instruction.Operands[1], targetMethod))
                         StoreToOperand(instruction.Operands[1], method, locals, writeLine);
                     else
                         instructions.Add(CilOpCodes.Pop);
