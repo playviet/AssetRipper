@@ -130,6 +130,11 @@ public partial class NewArmV8InstructionSet : Cpp2IlInstructionSet
         {
             Add(address, OpCode.Move, new Register(null, ComparisonLeft), left);
             Add(address, OpCode.Move, new Register(null, ComparisonRight), right);
+            //A condition that reads the carry asks an unsigned question - see ComparisonSide in the fork.
+            //Seeded with the same pair, which is what a subtraction's carry means, and overwritten by
+            //RecordCarry where an addition makes it mean something else.
+            Add(address, OpCode.Move, new Register(null, CarryLeft), left);
+            Add(address, OpCode.Move, new Register(null, CarryRight), right);
             haveComparison = true;
             ConditionalCompare.Clear();
         }
@@ -508,7 +513,7 @@ public partial class NewArmV8InstructionSet : Cpp2IlInstructionSet
                         //The flag-setting instruction that produced the condition is still in hand, so the
                         //branch can be given the comparison it actually makes rather than an expression over
                         //modelled flags. The compare's own flag arithmetic is then dead and gets collected.
-                        Add(address, relational, condition, new Register(null, ComparisonLeft), new Register(null, ComparisonRight));
+                        Add(address, relational, condition, ComparisonSide(instruction.MnemonicConditionCode, true), ComparisonSide(instruction.MnemonicConditionCode, false));
 
                         if (!ConditionalCompare.Apply(instruction.MnemonicConditionCode, condition, (opCode, operands) => Add(address, opCode, operands)))
                             goto default;
@@ -742,7 +747,10 @@ public partial class NewArmV8InstructionSet : Cpp2IlInstructionSet
                 else if (instruction.Mnemonic == Arm64Mnemonic.SUBS)
                     RecordComparison(src1, src2);
                 else
+                {
                     RecordComparison(dest, 0);
+                    RecordCarry(instruction, src1, (o, ops) => Add(address, o, ops));
+                }
                 break;
 
             case Arm64Mnemonic.ORR:
@@ -897,7 +905,9 @@ public partial class NewArmV8InstructionSet : Cpp2IlInstructionSet
                 //Negated multiply: the result is -(a * b).
                 {
                     var product = new Register(null, "TEMP");
-                    Add(address, OpCode.Multiply, product, ConvertOperand(instruction, 1), ConvertOperand(instruction, 2));
+                    Add(address, OpCode.Multiply, product,
+                        WidenedSource(instruction, ConvertOperand(instruction, 1), 1, (o, ops) => Add(address, o, ops)),
+                        WidenedSource(instruction, ConvertOperand(instruction, 2), 2, (o, ops) => Add(address, o, ops)));
                     Add(address, OpCode.Negate, ConvertOperand(instruction, 0), product);
                 }
                 break;
@@ -935,7 +945,9 @@ public partial class NewArmV8InstructionSet : Cpp2IlInstructionSet
                 }
                 break;
 
-            //Multiply-accumulate. The long forms differ only in operand width, which ISIL does not carry.
+            //Multiply-accumulate. The long forms multiply the two **words**, extended to 64 bits by sign or
+            //by zero - see WidenedSource in the fork, without which a magic-division constant is read as a
+            //large positive number and every remainder by a constant comes out wrong.
             case Arm64Mnemonic.MADD:
             case Arm64Mnemonic.MSUB:
             case Arm64Mnemonic.SMADDL:
@@ -956,7 +968,9 @@ public partial class NewArmV8InstructionSet : Cpp2IlInstructionSet
 
             case Arm64Mnemonic.SMULL:
             case Arm64Mnemonic.UMULL:
-                Add(address, OpCode.Multiply, ConvertOperand(instruction, 0), ConvertOperand(instruction, 1), ConvertOperand(instruction, 2));
+                Add(address, OpCode.Multiply, ConvertOperand(instruction, 0),
+                    WidenedSource(instruction, ConvertOperand(instruction, 1), 1, (o, ops) => Add(address, o, ops)),
+                    WidenedSource(instruction, ConvertOperand(instruction, 2), 2, (o, ops) => Add(address, o, ops)));
                 break;
 
             case Arm64Mnemonic.CSET:
@@ -967,7 +981,7 @@ public partial class NewArmV8InstructionSet : Cpp2IlInstructionSet
 
                     if (haveComparison && TryGetRelationalOpCode(instruction.FinalOpConditionCode, out var setRelational))
                     {
-                        Add(address, setRelational, destination, new Register(null, ComparisonLeft), new Register(null, ComparisonRight));
+                        Add(address, setRelational, destination, ComparisonSide(instruction.FinalOpConditionCode, true), ComparisonSide(instruction.FinalOpConditionCode, false));
 
                         if (!ConditionalCompare.Apply(instruction.FinalOpConditionCode, destination, (opCode, operands) => Add(address, opCode, operands)))
                             goto default;
@@ -1002,7 +1016,7 @@ public partial class NewArmV8InstructionSet : Cpp2IlInstructionSet
                     goto default;
                 {
                     var shortCondition = new Register(null, "Z");
-                    Add(address, shortRelational, shortCondition, new Register(null, ComparisonLeft), new Register(null, ComparisonRight));
+                    Add(address, shortRelational, shortCondition, ComparisonSide(instruction.FinalOpConditionCode, true), ComparisonSide(instruction.FinalOpConditionCode, false));
 
                     if (!ConditionalCompare.Apply(instruction.FinalOpConditionCode, shortCondition, (opCode, operands) => Add(address, opCode, operands)))
                         goto default;
@@ -1030,7 +1044,7 @@ public partial class NewArmV8InstructionSet : Cpp2IlInstructionSet
                 if (haveComparison && TryGetRelationalOpCode(instruction.FinalOpConditionCode, out var selectRelational))
                 {
                     var selectCondition = new Register(null, "Z");
-                    Add(address, selectRelational, selectCondition, new Register(null, ComparisonLeft), new Register(null, ComparisonRight));
+                    Add(address, selectRelational, selectCondition, ComparisonSide(instruction.FinalOpConditionCode, true), ComparisonSide(instruction.FinalOpConditionCode, false));
 
                     if (!ConditionalCompare.Apply(instruction.FinalOpConditionCode, selectCondition, (opCode, operands) => Add(address, opCode, operands)))
                         goto default;

@@ -767,6 +767,90 @@ public partial class NewArmV8InstructionSet
     /// their signed counterparts is the existing inaccuracy rather than a new one. Conditions that test
     /// the overflow flag have no relational meaning and are refused.
     /// </summary>
+    //A condition that reads the carry flag asks an **unsigned** question, and ISIL has no unsigned
+    //comparison - so `HI` and `CS` are translated as `>` and `>=`, which is only right while both sides are
+    //non-negative. After an **addition** it is worse than approximate: the carry is not a fact about the
+    //result at all, and rendering `csel w8, w9, w8, hi` after `cmn w8, #32` as `(w8 + 32) > 0` inverts the
+    //answer. `Corpus::Bits` returned 0x55C00000055 where the source says 0x70000055, and 250 sites in the
+    //game are the same shape. These carry the other reading of the same flags, chosen at the consumer.
+    private const string CarryLeft = "CARL";
+    private const string CarryRight = "CARR";
+    private const string CarryValue = "CARV";
+
+    /// <summary>A source of a widening multiply, made to hold what the instruction actually multiplies.</summary>
+    /// <remarks>
+    /// <c>smaddl x8, w1, w8, xzr</c> multiplies the two **words**, sign-extended; <c>umaddl</c> zero-extends
+    /// them. ISIL carries no width, so upstream lifts both as a plain multiply of whatever the 64-bit locals
+    /// happen to hold - and a magic-division constant assembled by <c>movz</c>/<c>movk</c> holds
+    /// <c>0x84210843</c>, which as a signed word is -2078209981, not 2216757315. Every remainder by a
+    /// constant compiled this way then computed the wrong quotient: <c>Corpus::Bits</c> rotated by 15 where
+    /// the source says 9, and nothing marked it.
+    ///
+    /// Written as a shift pair because ISIL has no conversion. Where the source is a constant - which is the
+    /// whole point of these instructions - <c>ConstantFolding</c> collapses it straight back to one number.
+    /// </remarks>
+    internal static object WidenedSource(Arm64Instruction instruction, object source, int operand,
+        Action<OpCode, object[]> emit)
+    {
+        var signed = instruction.Mnemonic is Arm64Mnemonic.SMADDL or Arm64Mnemonic.SMSUBL or Arm64Mnemonic.SMULL;
+        var unsigned = instruction.Mnemonic is Arm64Mnemonic.UMADDL or Arm64Mnemonic.UMSUBL or Arm64Mnemonic.UMULL;
+
+        if (!signed && !unsigned)
+            return source;
+
+        var widened = new Register(null, "WIDE" + operand);
+
+        if (unsigned)
+        {
+            emit(OpCode.And, [widened, source, 0xFFFFFFFFL]);
+            return widened;
+        }
+
+        emit(OpCode.ShiftLeft, [widened, source, 32L]);
+        emit(OpCode.ShiftRight, [widened, widened, 32L]);
+        return widened;
+    }
+
+    /// <summary>Whether the condition asks about the carry rather than about the sign of a result.</summary>
+    internal static bool ReadsCarry(Arm64ConditionCode condition) =>
+        condition is Arm64ConditionCode.CS or Arm64ConditionCode.CC
+            or Arm64ConditionCode.HI or Arm64ConditionCode.LS;
+
+    /// <summary>Which pair of pseudo-registers a condition should be given.</summary>
+    internal static Register ComparisonSide(Arm64ConditionCode condition, bool left) =>
+        new(null, ReadsCarry(condition)
+            ? (left ? CarryLeft : CarryRight)
+            : (left ? ComparisonLeft : ComparisonRight));
+
+    /// <summary>
+    /// Records what the carry out of an addition actually asks, where it can be written down exactly.
+    /// </summary>
+    /// <remarks>
+    /// <c>adds wd, wn, #imm</c> carries when <c>(uint)wn + imm</c> reaches 2^32, so the question is
+    /// <c>(uint)wn >= 2^32 - imm</c> - a comparison of two **non-negative** numbers, which signed ISIL can
+    /// state exactly once the left side is masked to its unsigned value. Every one of the four carry
+    /// conditions then comes out right, including <c>HI</c> and <c>LS</c>, whose extra dependence on Z falls
+    /// where the strict and non-strict comparisons already differ.
+    ///
+    /// Only a 32-bit addition of an unshifted immediate. A 64-bit one would need a value wider than the
+    /// arithmetic can hold, and a register operand would need its own mask; both keep the ordinary pair,
+    /// which is what a subtraction's carry means anyway.
+    /// </remarks>
+    internal static void RecordCarry(Arm64Instruction instruction, object source, Action<OpCode, object[]> emit)
+    {
+        if (instruction.Mnemonic != Arm64Mnemonic.ADDS
+            || instruction.Op0Reg is not (>= Arm64Register.W0 and <= Arm64Register.W31)
+            || instruction.Op2Kind != Arm64OperandKind.Immediate
+            || instruction.MemExtendOrShiftAmount != 0)
+            return;
+
+        var unsigned = new Register(null, CarryValue);
+
+        emit(OpCode.And, [unsigned, source, 0xFFFFFFFFL]);
+        emit(OpCode.Move, [new Register(null, CarryLeft), unsigned]);
+        emit(OpCode.Move, [new Register(null, CarryRight), 0x1_0000_0000L - instruction.Op2Imm]);
+    }
+
     internal static bool TryGetRelationalOpCode(Arm64ConditionCode condition, out OpCode opCode)
     {
         opCode = condition switch
