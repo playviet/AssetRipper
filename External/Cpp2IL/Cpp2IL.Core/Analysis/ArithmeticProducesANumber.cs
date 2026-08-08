@@ -143,8 +143,93 @@ public static class ArithmeticProducesANumber
             changed = true;
         }
 
+        //And the counter, which neither of the two above can see. `int cnt = 0; ... cnt++;` is
+        //
+        //    Move v17, 0        Add v29, v17, 1        Move v18, v29        Move v18 -> v17
+        //
+        //with every one of them untyped: the loop above refuses because an `Add` whose sources say nothing
+        //about width may be an address, and `Suspects` refuses because it wants a typed local at both ends
+        //while here both the seed and the step are **constants**.
+        //
+        //What tells a counter from an address is that it comes back to itself. An address is worked out
+        //forwards - `this`, plus an offset, read - and never flows into the register it started from; a
+        //running total does, once per turn of the loop. The one thing that is also a cycle is a pointer
+        //walked along an array, and that is excluded already by `addressed`, because a walker is
+        //dereferenced and a total is not.
+        foreach (var counter in Accumulators(graph, addressed))
+        {
+            counter.Type = method.AppContext.SystemTypes.SystemInt64Type;
+            changed = true;
+        }
+
         return changed;
     }
+
+    /// <summary>
+    /// The untyped locals that a value flows out of and back into through arithmetic, none of which is ever
+    /// read through: running totals, and nothing else has that shape.
+    /// </summary>
+    private static List<LocalVariable> Accumulators(Graphs.ISILControlFlowGraph graph, HashSet<LocalVariable> addressed)
+    {
+        var flows = new Dictionary<LocalVariable, HashSet<LocalVariable>>();
+        var stepped = new HashSet<LocalVariable>();
+        var seeded = new HashSet<LocalVariable>();
+
+        foreach (var instruction in graph.Instructions)
+        {
+            if (instruction.Operands.Count < 2 || instruction.Operands[0] is not LocalVariable destination
+                || instruction.OpCode is not (OpCode.Move or OpCode.Phi or OpCode.Add or OpCode.Subtract or OpCode.Multiply))
+                continue;
+
+            for (var operand = 1; operand < instruction.Operands.Count; operand++)
+            {
+                if (instruction.Operands[operand] is LocalVariable source)
+                {
+                    if (!flows.TryGetValue(destination, out var from))
+                        flows[destination] = from = [];
+
+                    from.Add(source);
+                }
+                else if (IsWholeNumber(instruction.Operands[operand]))
+                {
+                    //A constant seeds a total where it is copied in and steps it where it is added.
+                    (instruction.OpCode == OpCode.Move ? seeded : stepped).Add(destination);
+                }
+            }
+        }
+
+        var found = new List<LocalVariable>();
+
+        foreach (var (local, _) in flows)
+        {
+            if (local.Type != null || addressed.Contains(local))
+                continue;
+
+            //Everything the value in this local came from, which for a total includes the local itself.
+            var reached = new HashSet<LocalVariable>();
+            var pending = new Queue<LocalVariable>();
+            pending.Enqueue(local);
+
+            while (pending.Count > 0)
+                if (flows.TryGetValue(pending.Dequeue(), out var sources))
+                    foreach (var source in sources)
+                        if (reached.Add(source))
+                            pending.Enqueue(source);
+
+            if (!reached.Contains(local) || !reached.Overlaps(stepped) || !reached.Overlaps(seeded))
+                continue;
+
+            //Nothing in the cycle may be an address, or the whole of it would be one.
+            if (!reached.Overlaps(addressed))
+                found.Add(local);
+        }
+
+        return found;
+    }
+
+    /// <summary>A constant that counts, as against a float, which no counter steps by.</summary>
+    private static bool IsWholeNumber(object operand) => operand is long or ulong or int or uint
+        or short or ushort or byte or sbyte or char;
 
     /// <summary>
     /// The type of what the instruction produces, where every value it reads is a number.
