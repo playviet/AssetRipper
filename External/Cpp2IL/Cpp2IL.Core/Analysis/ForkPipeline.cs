@@ -192,6 +192,12 @@ public static class ForkPipeline
         // compares against still carries its type.
         InlinedTypeTestRecovery.Run(method);
 
+        // And the shape that walk collapses to against a type nothing can derive from: one comparison of the
+        // object's class against a slot of the runtime's table of built-in classes. Beside the pass above,
+        // for the same reason - both end in the call the generator already writes as an isinst - and before
+        // the boolean simplifier turns the answer into something with no comparison left to match.
+        ExactTypeTestRecovery.Run(method);
+
         // A call on an interface is compiled as a walk of the class's interface table rather than a call to a
         // helper that walks it, so nothing in it names a method. The interface it looks for, the slot it adds
         // and the object it read the class from are all right there in the walk.

@@ -22,22 +22,41 @@ namespace Cpp2IL.Core.Analysis;
 ///
 /// Five slots were checked against the source the game was built from and all five agree: bytes from a colour
 /// written as hex, a boolean from an interpolated flag, integers from a pacing check, longs from a stopwatch,
-/// and the string that pinned it. The list stops at the last of them, because what comes after is the part of
-/// the layout that moves between versions, and a class named wrongly would be believed.
+/// and the string that pinned it.
+///
+/// The list stops at <c>string</c>, and no longer because the layout after it is uncertain - it is not.
+/// <c>Il2CppDefaults</c> in the header Unity ships with 2022.3, the editor this game was built with, is byte
+/// for byte the same declaration as the one in 6000, so the order after <c>string</c> is known: enum, array,
+/// delegate, multicast delegate, the three handles, <c>Type</c>, exception, thread, the reflection types,
+/// <c>StringBuilder</c>. It stops there because naming them was **built and measured byte-identical on every
+/// scorer** at 1.0.566. This pass only types a local a slot is read *into*, and every slot past
+/// <c>string</c> is read straight inside a comparison instead - which is what
+/// <see cref="ExactTypeTestRecovery"/> answers for, and it refuses a class anything can derive from, which
+/// all of those are. Adding them back needs a use for them first.
 /// </remarks>
 public static class Il2CppDefaultsTable
 {
-    public static bool Run(MethodAnalysisContext method)
+    /// <summary>
+    /// The locals holding the table. Anything still loaded from a bare address is a global the metadata did
+    /// not account for, which is what this table is - the resolved ones had their operand replaced with what
+    /// they name long ago.
+    /// </summary>
+    public static HashSet<LocalVariable> Tables(Graphs.ISILControlFlowGraph graph)
     {
-        //Anything still loaded from a bare address is a global the metadata did not account for, which is
-        //what this table is - the resolved ones had their operand replaced with what they name long ago.
         var globals = new HashSet<LocalVariable>();
 
-        foreach (var instruction in method.ControlFlowGraph!.Instructions)
+        foreach (var instruction in graph.Instructions)
             if (instruction is { OpCode: OpCode.Move, Operands.Count: 2 }
                 && instruction.Operands[0] is LocalVariable global
                 && instruction.Operands[1] is MemoryOperand { Base: null, Index: null, Scale: 0, Addend: not 0 })
                 globals.Add(global);
+
+        return globals;
+    }
+
+    public static bool Run(MethodAnalysisContext method)
+    {
+        var globals = Tables(method.ControlFlowGraph!);
 
         if (globals.Count == 0)
             return false;
@@ -63,7 +82,7 @@ public static class Il2CppDefaultsTable
     }
 
     /// <summary>The built-in type a slot of the table holds the class of, if this is a slot at all.</summary>
-    private static TypeAnalysisContext? SlotType(long addend, ApplicationAnalysisContext appContext)
+    public static TypeAnalysisContext? SlotType(long addend, ApplicationAnalysisContext appContext)
     {
         var pointerSize = appContext.Binary.is32Bit ? 4 : 8;
 
