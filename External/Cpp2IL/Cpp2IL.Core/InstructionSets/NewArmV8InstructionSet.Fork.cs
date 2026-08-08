@@ -165,8 +165,10 @@ public partial class NewArmV8InstructionSet
         if (import == "__stack_chk_fail")
             return [(OpCode.Nop, [])];
 
-        var isDouble = !import.EndsWith("f");
-        var bare = isDouble ? import : import[..^1];
+        //`modf` is the *double* form and ends in `f` all the same - the only one in libm that does, so the
+        //suffix rule made `bare` come out as "mod" and the hook written for it matched nothing.
+        var isDouble = import is "modf" || !import.EndsWith("f");
+        var bare = import is "modf" ? "modf" : isDouble ? import : import[..^1];
 
         //An import that hands its answers back through pointers is one call and two statements. A call may
         //write into `[reg]` - that is how a big struct comes back through `x8` - and the register holding a
@@ -177,8 +179,8 @@ public partial class NewArmV8InstructionSet
         {
             return
             [
-                (OpCode.Call, [sine, new MemoryOperand(RegisterFor(Arm64Register.X0)), RegisterFor(Arm64Register.V0)]),
-                (OpCode.Call, [cosine, new MemoryOperand(RegisterFor(Arm64Register.X1)), RegisterFor(Arm64Register.V0)]),
+                (OpCode.Call, [sine, RegisterFor(Arm64Register.X0), RegisterFor(Arm64Register.V0)]),
+                (OpCode.Call, [cosine, RegisterFor(Arm64Register.X1), RegisterFor(Arm64Register.V0)]),
             ];
         }
 
@@ -187,9 +189,9 @@ public partial class NewArmV8InstructionSet
         {
             return
             [
-                (OpCode.Call, [whole, new MemoryOperand(RegisterFor(Arm64Register.X0)), RegisterFor(Arm64Register.V0)]),
+                (OpCode.Call, [whole, RegisterFor(Arm64Register.X0), RegisterFor(Arm64Register.V0)]),
                 (OpCode.Subtract, [RegisterFor(Arm64Register.V0), RegisterFor(Arm64Register.V0),
-                    new MemoryOperand(RegisterFor(Arm64Register.X0))]),
+                    RegisterFor(Arm64Register.X0)]),
             ];
         }
 
