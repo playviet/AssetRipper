@@ -75,10 +75,19 @@ public static class DeadCodeEliminator
     {
         var destination = instruction.Destination as LocalVariable;
 
+        // A named runtime helper - boxing, unboxing, a cast, an allocation - is handed the class it is to
+        // work on, and the generator emits `box`/`isinst`/`newarr` from **the operand's own type**, never
+        // from its value. So the read that loaded the class pointer says nothing, exactly as the storage
+        // pointer below says nothing. Counted as a read it keeps itself alive, and the metadata table read
+        // behind it too: both then stand in the recovered method as `Unmanaged memory load`.
+        var resolvedByType = instruction.IsCall && instruction.Operands.Count > 0 && instruction.Operands[0] is string;
+
         foreach (var operand in instruction.Operands)
         {
             switch (operand)
             {
+                case LocalVariable local when resolvedByType && IsClassPointer(local.Type):
+                    break;
                 case LocalVariable local when !ReferenceEquals(local, destination):
                     yield return local;
                     break;
@@ -96,6 +105,16 @@ public static class DeadCodeEliminator
             }
         }
     }
+
+    /// <summary>A pointer to an il2cpp class, which is metadata rather than a value.</summary>
+    /// <remarks>
+    /// Only the class stand-in. A `MethodInfo` in the same position is sometimes a real managed argument -
+    /// see `il2cpp-a-stand-in-is-not-a-type` - and dropping the read that produced one would replace a
+    /// marker with a silently wrong value, which is the worse of the two.
+    /// </remarks>
+    private static bool IsClassPointer(TypeAnalysisContext? type) =>
+        (type is GenericInstanceTypeAnalysisContext instance ? instance.GenericType : type)
+            ?.Name.StartsWith("Il2CppClass") == true;
 
     /// <summary>
     /// Opcodes with no side effects, so removing a never-read result is safe. Calls, stores,
