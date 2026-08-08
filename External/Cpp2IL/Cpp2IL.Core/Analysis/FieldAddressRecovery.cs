@@ -49,11 +49,31 @@ public static class FieldAddressRecovery
                 continue;
 
             if (addition.Operands[0] is not LocalVariable address
-                || addition.Operands[1] is not LocalVariable { Type: { IsValueType: false } owner } held
                 || addition.Operands[2] is not (long or int or ulong or uint))
                 continue;
 
             var offset = System.Convert.ToInt64(addition.Operands[2]);
+
+            //Taking the address of a **static** field: the base is the read of the class's static storage,
+            //which is where `Interlocked.CompareExchange(ref SomeEvent, ...)` gets the place it swaps. Every
+            //event accessor in the game is that call, so the call was already named and its first argument
+            //was `0 + 8L`. Written as a field reference the generator says `ldsflda`, which it can already do.
+            if (StaticFieldAt(addition.Operands[1], offset, method) is { } statics)
+            {
+                if (Uses(graph, addition, address) is not { Count: > 0 } staticUses)
+                    continue;
+
+                foreach (var (instruction, operand) in staticUses)
+                    instruction.Operands[operand] = new FieldReference(statics, address, (int)offset);
+
+                addition.OpCode = OpCode.Nop;
+                addition.Operands = [];
+                changed = true;
+                continue;
+            }
+
+            if (addition.Operands[1] is not LocalVariable { Type: { IsValueType: false } owner } held)
+                continue;
 
             if (FieldAt(owner, offset, header) is not { } field)
                 continue;
@@ -70,6 +90,28 @@ public static class FieldAddressRecovery
         }
 
         return changed;
+    }
+
+    /// <summary>
+    /// The static field at that distance into a class's static storage, where the base is a read of it.
+    /// </summary>
+    /// <remarks>
+    /// <c>Add v96, [v88 (Il2CppClass&lt;T&gt;) + 0xB8], 8</c> is the address of <c>T</c>'s second static
+    /// field. The read half of this - <c>[storage + 8]</c> as a value - `MetadataResolver` already resolves;
+    /// only the address half was missing, and it is the one every event accessor needs.
+    /// </remarks>
+    private static FieldAnalysisContext? StaticFieldAt(object under, long offset, MethodAnalysisContext method)
+    {
+        var storage = method.AppContext.Binary.is32Bit ? 0x5C : 0xB8;
+
+        if (under is not MemoryOperand { Index: null, Scale: 0, Base: LocalVariable klass } read
+            || read.Addend != storage
+            || klass.Type is not RuntimeClassTypeAnalysisContext { RepresentedType: { } owner })
+            return null;
+
+        var definition = (owner as GenericInstanceTypeAnalysisContext)?.GenericType ?? owner;
+
+        return definition.Fields.FirstOrDefault(f => f.IsStatic && f.BackingData?.FieldOffset == offset);
     }
 
     /// <summary>The instance field lying at that distance into the type, if one does.</summary>
