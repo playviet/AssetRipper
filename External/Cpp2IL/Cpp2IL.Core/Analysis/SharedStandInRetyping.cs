@@ -79,6 +79,15 @@ public static class SharedStandInRetyping
         for (var i = 0; i < callee.Parameters.Count && first + i < call.Operands.Count; i++)
             changed |= Adopt(call.Operands[first + i], callee.Parameters[i].ParameterType);
 
+        //And the result, after what the method declares it gives back - the seed the copies above then carry
+        //along the whole chain the value travels. Without it a `Dictionary<string, int>.GetEnumerator` lands
+        //in a place still typed `Dictionary<object, int>.Enumerator`, the two disagree, and the generator
+        //refuses the store: the `foreach` walks an enumerator nothing ever assigned. A struct too large for a
+        //register comes back through a pointer, so the place is the local under the memory operand.
+        if (call.OpCode == OpCode.Call && call.Operands.Count > 1)
+            changed |= Adopt(call.Operands[1] is MemoryOperand { Base: { } through } ? through : call.Operands[1],
+                callee.ReturnType);
+
         return changed;
     }
 

@@ -74,7 +74,8 @@ public static class StructSlotFields
                 if (offset <= start || ReferenceEquals(inside, held) || fields.ContainsKey(inside))
                     continue;
 
-                if (MetadataResolver.FieldOfStructValue(structure, offset - start, method) is { } field)
+                if (MetadataResolver.FieldOfStructValue(structure, offset - start, method) is { } field
+                    && CanBeTheField(inside, field))
                     fields[inside] = (held, field, offset - start);
             }
         }
@@ -100,6 +101,22 @@ public static class StructSlotFields
 
         return changed;
     }
+
+    /// <summary>
+    /// Whether the slot can actually be that field, rather than merely sitting where one would.
+    /// </summary>
+    /// <remarks>
+    /// Containment is inferred from two frame offsets and nothing else, so a slot that already holds
+    /// something of its own can be claimed as a field of whatever lies below it. In <c>Corpus::Tally</c> the
+    /// dictionary enumerator's own slot sits eight bytes above a **copy of itself**, and naming it
+    /// <c>_version</c> - an <c>int</c> - turned the <c>foreach</c> into pointer arithmetic between two
+    /// instantiations, with the whole loop commented out.
+    ///
+    /// A slot with no type is the shape this pass exists for: nothing in the caller's view ever assigned it,
+    /// which is exactly why it needs naming. Where it does have one, that type is evidence and has to agree.
+    /// </remarks>
+    private static bool CanBeTheField(LocalVariable slot, FieldAnalysisContext field)
+        => slot.Type == null || slot.Type.FullName == field.FieldType.FullName;
 
     /// <summary>
     /// Whether the instantiation is one a shared body writes rather than one the program has.
