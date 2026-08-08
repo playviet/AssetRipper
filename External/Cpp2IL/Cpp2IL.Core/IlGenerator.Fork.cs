@@ -1253,9 +1253,13 @@ public static partial class IlGenerator
     private static CilLocalVariable ReceiverLocal(object? receiver, TypeSignature valueType, MethodDefinition method,
         Dictionary<LocalVariable, CilLocalVariable> locals)
     {
-        //The slot is named by the register the local sits in, not by the local's own name.
+        //The slot is named by the register the local sits in, not by the local's own name. A step of an
+        //accessor chain counts too: `Analysis.InaccessibleFieldRecovery` writes it once and reads it once,
+        //so there is nothing else for a callee's mutation to reach - which is the whole objection to reusing
+        //an ordinary local here. Without it `enumerator.Current.Key` calls `get_Key` on a fresh
+        //`default(KeyValuePair<,>)` while `get_Current`'s answer is stored into a local nothing reads.
         if (receiver is LocalVariable { Register.Name: { } name } local
-            && name.StartsWith(StackSlots.AddressPrefix)
+            && (name.StartsWith(StackSlots.AddressPrefix) || name == Analysis.InaccessibleFieldRecovery.ChainStep)
             && locals.TryGetValue(local, out var existing)
             && existing.VariableType.FullName == valueType.FullName)
             return existing;

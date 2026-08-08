@@ -21,6 +21,16 @@ namespace Cpp2IL.Core.Analysis;
 /// </summary>
 public static class InaccessibleFieldRecovery
 {
+    /// <summary>
+    /// The register given to a local that carries one step of a chain of field accesses.
+    /// </summary>
+    /// <remarks>
+    /// Named so the generator can tell them apart. Such a local is written once and read once, by the two
+    /// instructions this pass emits either side of it, so handing its address to the next accessor is safe
+    /// in a way that reusing an ordinary local is not - see `il2cpp-a-fresh-scratch-local-isolates-damage`.
+    /// </remarks>
+    public const string ChainStep = "STEP";
+
     public static void Run(MethodAnalysisContext method)
     {
         foreach (var block in method.ControlFlowGraph!.Blocks)
@@ -53,7 +63,7 @@ public static class InaccessibleFieldRecovery
 
                         foreach (var step in chain.Path)
                         {
-                            var holder = new LocalVariable($"step{method.Locals.Count}", new Register(null, "STEP"), step.FieldType);
+                            var holder = new LocalVariable($"step{method.Locals.Count}", new Register(null, ChainStep), step.FieldType);
                             method.Locals.Add(holder);
 
                             var reached = !IsVisible(step, method) && Accessor(step, written: false) is { } stepGetter
