@@ -255,6 +255,12 @@ public static class ForkPipeline
         // the resolution below, so the reads it recovers are typed by it.
         FieldAddressRecovery.Run(method);
 
+        // Directly after it, on the additions it declined: 62 of the 77 it refuses in Assembly-CSharp are
+        // refused at a plain copy, because the address reaches the place it belongs through a register or
+        // two first. Before the sinking below, since a use that wants the address settles the chain and the
+        // sinking would only refuse it.
+        FieldAddressThroughCopies.Run(method);
+
         // And where the address was only ever copied about and then read through - several field addresses
         // chosen between, then one load - no single field reference can speak for the choice, so the load is
         // moved to where the addresses are made and the choice picks between values instead. Straight after

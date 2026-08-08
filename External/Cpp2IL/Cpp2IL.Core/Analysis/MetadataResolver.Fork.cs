@@ -184,7 +184,7 @@ public static partial class MetadataResolver
     /// takes it to the width of its widest member - and without that the walk stops at the first field of
     /// that kind. Kept separate from <c>SizeOf</c> so the placement this agrees with does not change.
     /// </remarks>
-    private static long? LaidOutSize(TypeAnalysisContext type, int pointerSize, int depth = 0)
+    internal static long? LaidOutSize(TypeAnalysisContext type, int pointerSize, int depth = 0)
     {
         if (SizeOf(type, pointerSize) is { } known)
             return known;
