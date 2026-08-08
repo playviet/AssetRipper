@@ -747,6 +747,18 @@ public static partial class IlGenerator
             // own does nothing a managed reader can see, so it says less than nothing to keep it.
             case "il2cpp_codegen_initialize_runtime_metadata":
             case "il2cpp_codegen_initialize_method":
+                //Dropping the call is right; dropping the **value** it was lifted as producing is not. The
+                //unknown-callee convention gives every call `x0` as a result, and leaving that local
+                //unassigned is what made the generator throw on 691 bodies once these calls started being
+                //recognised - and a body AssetRipper fills with the exception scores as a whole one, so
+                //nothing measured it. Assigning a default keeps everything after the call readable.
+                if (instruction.OpCode == OpCode.Call && instruction.Operands.Count > 1
+                    && instruction.Operands[1] is LocalVariable { Type: { } produced })
+                {
+                    AddDefaultValue(instructions, produced, module, importer);
+                    StoreToOperand(instruction.Operands[1], method, locals, writeLine);
+                }
+
                 return true;
 
             // Allocating a vector: the class operand describes the array type, whose element type is what
@@ -860,6 +872,21 @@ public static partial class IlGenerator
     {
         var start = instruction.OpCode == OpCode.Call ? 2 : 1;
         return instruction.Operands.Count > start + index - 1 ? instruction.Operands[start + index - 1] : null;
+    }
+
+    /// <summary>Gives an instruction somewhere for a branch to land, where it generated nothing.</summary>
+    /// <remarks>
+    /// Resolving a jump takes the **first** IL its target produced - `instructionMap[target][0]` - without
+    /// checking there is one, so an ISIL instruction that produces no IL is a crash waiting for a jump to
+    /// land on it. Recognising `il2cpp_codegen_initialize_runtime_metadata`, whose entire contribution is to
+    /// be deleted, turned that latent fault into **652 lost bodies** - and the loss scored as an improvement
+    /// on every scorer, because AssetRipper writes the exception out as the method. A `Nop` costs nothing:
+    /// the decompiler drops it, and only a branch ever looks for it.
+    /// </remarks>
+    private static void EnsureBranchable(List<CilInstruction> generated, MethodDefinition method)
+    {
+        if (generated.Count == 0)
+            generated.Add(method.CilMethodBody!.Instructions.Add(CilOpCodes.Nop));
     }
 
     private static void StoreResult(Instruction instruction, MethodDefinition method,

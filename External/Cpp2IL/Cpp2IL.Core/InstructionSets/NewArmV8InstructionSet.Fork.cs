@@ -135,13 +135,17 @@ public partial class NewArmV8InstructionSet
         if (!context.AppContext.GetOrCreateKeyFunctionAddresses().IsKeyFunctionAddress(target)
             && FollowThunks(context.AppContext.Binary, target) is var jumped && jumped != target)
         {
-            //Naming the destination after the key function that wraps it - `0x2183DE8` is a wrapper whose
-            //body is one call to this same `0x21E9D18` - was tried and **broke 691 method bodies**: the
-            //resolver then rewrites the callee to a key function name the generator drops without storing a
-            //result, and the generator throws building the body. Every scorer read that as an improvement,
-            //because a body AssetRipper fills with the exception has one statement and no marker. See
-            //`il2cpp-a-thrown-body-scores-as-a-whole-one`.
-            var followed = jumped;
+            //Two thunks that reach the same place are the same function, and Cpp2IL knows one of them by
+            //name: `0x2183DE8` is `il2cpp_codegen_initialize_runtime_metadata`, whose whole body is one
+            //call to `0x21E9D18`, which 56 sites reach by another thunk and nothing names.
+            //
+            //This broke 691 bodies the first time it was tried, because the generator answers that key
+            //function by emitting nothing while the lifted call still carries a result nothing then stores
+            //- it now stores a default - and a body AssetRipper fills with the generator's exception has
+            //one statement and no marker, so every scorer read the regression as a win. See
+            //`il2cpp-a-thrown-body-scores-as-a-whole-one`: count generation failures beside the scorers if
+            //this is ever touched again.
+            var followed = KeyFunctionReaching(context, jumped) ?? jumped;
 
             var thunked = new List<object> { followed, RegisterFor(Arm64Register.X0) };
 
@@ -303,6 +307,52 @@ public partial class NewArmV8InstructionSet
         {
             return null;
         }
+    }
+
+    /// <summary>The key function whose own body is a single call to this address, where there is one.</summary>
+    /// <remarks>
+    /// Only where exactly one call is found before the body returns, so an ordinary function that happens to
+    /// begin with a call cannot be mistaken for a wrapper of it.
+    /// </remarks>
+    private static ulong? KeyFunctionReaching(MethodAnalysisContext context, ulong destination)
+    {
+        foreach (var pair in context.AppContext.GetOrCreateKeyFunctionAddresses().Pairs)
+            if (pair.Value != 0 && SingleCallIn(context.AppContext.Binary, pair.Value) == destination)
+                return pair.Value;
+
+        return null;
+    }
+
+    /// <summary>The one address a short body calls, or zero where it does not call exactly one.</summary>
+    private static ulong SingleCallIn(LibCpp2IL.Il2CppBinary binary, ulong function)
+    {
+        if (Words(binary, function, 8) is not { } body)
+            return 0;
+
+        ulong called = 0;
+
+        for (var index = 0; index < body.Length; index++)
+        {
+            //RET ends the body; anything past it belongs to whatever comes after.
+            if (body[index] == 0xD65F_03C0)
+                break;
+
+            if ((body[index] & 0xFC00_0000) != 0x9400_0000)
+                continue;
+
+            //A second call, and this is a function in its own right rather than a wrapper for either.
+            if (called != 0)
+                return 0;
+
+            var offset = (long)(body[index] & 0x03FF_FFFF);
+
+            if ((offset & 0x0200_0000) != 0)
+                offset -= 0x0400_0000;
+
+            called = (ulong)((long)function + index * 4 + (offset << 2));
+        }
+
+        return called;
     }
 
     /// <summary>Where a chain of one-instruction jumps ends, or the address itself where it is not one.</summary>

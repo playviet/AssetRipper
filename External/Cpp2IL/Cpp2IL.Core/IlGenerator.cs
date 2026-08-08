@@ -118,6 +118,7 @@ public static partial class IlGenerator
             foreach (var instruction in block.Instructions)
             {
                 var generated = GenerateInstructions(instruction, context, definition, locals, writeLine, stringCtor);
+                EnsureBranchable(generated, definition);
                 instructionMap.Add(instruction, generated);
 
                 if (!blockEntryMap.ContainsKey(block) && generated.Count > 0)
