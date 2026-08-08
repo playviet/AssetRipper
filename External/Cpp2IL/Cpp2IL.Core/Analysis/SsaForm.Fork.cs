@@ -28,6 +28,40 @@ namespace Cpp2IL.Core.Analysis;
 /// </summary>
 public partial class SsaForm
 {
+    /// <summary>Every local a phi decides, so a consumer's type is not forced back on to one.</summary>
+    internal static HashSet<LocalVariable> PhiDestinations(ISILControlFlowGraph cfg)
+    {
+        var merged = new HashSet<LocalVariable>();
+
+        foreach (var block in cfg.Blocks)
+            foreach (var instruction in block.Instructions)
+                if (instruction.OpCode == OpCode.Phi && instruction.Operands.Count > 0
+                    && instruction.Operands[0] is LocalVariable destination)
+                    merged.Add(destination);
+
+        return merged;
+    }
+
+    /// <summary>
+    /// Whether two of a phi's inputs cannot be holding the same value, so the phi says nothing about what
+    /// its result is.
+    /// </summary>
+    /// <remarks>
+    /// A register is taken back the moment the value in it is finished with, so a phi at a join often merges
+    /// two unrelated things. Reading a type off the first input that has one then gives the result whichever
+    /// role happens to come first in the operand list: `Corpus::Tally`'s running total was typed `string[]`,
+    /// after the array parameter the same register carried through the loop before it.
+    /// </remarks>
+    internal static bool InputsDisagree(Instruction phi)
+    {
+        for (var i = 1; i < phi.Operands.Count; i++)
+            for (var j = i + 1; j < phi.Operands.Count; j++)
+                if (CannotBeTheSameValue(phi.Operands[i], phi.Operands[j]))
+                    return true;
+
+        return false;
+    }
+
     /// <summary>
     /// Whether the two ends of a phi's edge cannot be holding the same value, whatever the phi says.
     /// </summary>

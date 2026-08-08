@@ -466,8 +466,12 @@ public static partial class LocalVariables
 
         var changed = false;
 
-        // Forward: an untyped phi result takes the type of any typed input.
-        if (destination.Type == null)
+        // Forward: an untyped phi result takes the type of any typed input - but only where the inputs
+        // agree about what they are. Where two of them cannot be holding the same value the register is
+        // simply being reused, and the phi says nothing: taking the first typed one is how `Corpus::Tally`'s
+        // running total came to be typed `string[]`, after the array parameter the same register carried
+        // through the loop before it. See InputsDisagree in the fork.
+        if (destination.Type == null && !SsaForm.InputsDisagree(phi))
         {
             for (var i = 1; i < phi.Operands.Count; i++)
             {
