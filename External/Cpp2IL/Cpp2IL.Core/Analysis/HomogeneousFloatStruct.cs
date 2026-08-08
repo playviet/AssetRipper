@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using Cpp2IL.Core.Model.Contexts;
 
 namespace Cpp2IL.Core.Analysis;
@@ -41,6 +42,28 @@ public static class HomogeneousFloatStruct
         }
 
         return total > 0 ? total : null;
+    }
+
+    /// <summary>
+    /// The type's fields, where every one of them is a float and nothing else - one per register it travels
+    /// in, in the order aapcs64 assigns them.
+    /// </summary>
+    public static List<FieldAnalysisContext>? Fields(TypeAnalysisContext type)
+    {
+        var fields = new List<FieldAnalysisContext>();
+
+        foreach (var field in type.Fields)
+        {
+            if (field.IsStatic)
+                continue;
+
+            if (field.FieldType.FullName != "System.Single")
+                return null;
+
+            fields.Add(field);
+        }
+
+        return fields.Count > 0 ? fields : null;
     }
 
     /// <summary>

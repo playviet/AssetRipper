@@ -1242,6 +1242,33 @@ public static partial class IlGenerator
     /// has to agree, checked by name because the two sides are built separately.
     /// </para>
     /// </remarks>
+    /// <summary>
+    /// Builds a struct of floats from the registers its fields were handed over in.
+    /// </summary>
+    /// <remarks>
+    /// Aapcs64 gives such a struct one vector register per field, so the argument is not a value anywhere -
+    /// it only exists once the fields are gathered. <see cref="Analysis.HomogeneousFloatArguments"/> decides
+    /// which registers those are and refuses wherever it cannot answer for one, so everything reaching here
+    /// is a field of the struct and the constructor takes them in the order the type declares them.
+    /// </remarks>
+    private static bool TryBuildFloatStruct(object? operand, MethodDefinition method,
+        Dictionary<LocalVariable, CilLocalVariable> locals, ModuleDefinition module,
+        MemberReference writeLine, MemberReference stringCtor)
+    {
+        if (operand is not Analysis.FloatStructAssembly assembly)
+            return false;
+
+        var single = assembly.Constructor.AppContext.SystemTypes.SystemSingleType;
+
+        foreach (var part in assembly.Parts)
+            LoadOperand(part, method, locals, writeLine, stringCtor, single);
+
+        method.CilMethodBody!.Instructions.Add(CilOpCodes.Newobj,
+            module.DefaultImporter.ImportMethod(assembly.Constructor.ToMethodDescriptor(module)));
+
+        return true;
+    }
+
     private static bool TryLoadFieldAddress(object? operand, MethodDefinition method,
         Dictionary<LocalVariable, CilLocalVariable> locals, ModuleDefinition module)
     {

@@ -363,5 +363,11 @@ public static class ForkPipeline
         // A condition standing next to the branch that asks it needs no name, and the decompiler folds it in.
         // Last, so that it sees the copies the passes before it leave behind.
         ConditionSinking.Run(method);
+
+        // A struct of floats travels in one register per field and the lifter named only the first, so an
+        // argument reached the generator as a float where a Vector3 belongs. **After everything**, because
+        // the operand it leaves is not a value anything else can reason about, and because the registers it
+        // reads have to be the ones that survived every pass above rather than the ones the lifter emitted.
+        HomogeneousFloatArguments.Run(method);
     }
 }

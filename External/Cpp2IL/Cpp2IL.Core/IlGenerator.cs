@@ -460,6 +460,9 @@ public static partial class IlGenerator
                         continue;
                     }
 
+                    if (TryBuildFloatStruct(argument, method, locals, module, writeLine, stringCtor))
+                        continue;
+
                     if (argument != null)
                         LoadOperand(argument, method, locals, writeLine, stringCtor, parameterType);
                     else
