@@ -67,7 +67,7 @@ internal static partial class InvalidSourceRepair
 		List<AssemblyMetadata> metadata = GetMetadata(assembly, manager);
 		try
 		{
-			Apply(metadata.ConvertAll(m => (MetadataReference)m.GetReference()), languageVersion, unityVersion, outputFolder, fileSystem);
+			Apply(UnityEditorReferences.Prefer(metadata, unityVersion), languageVersion, unityVersion, outputFolder, fileSystem);
 		}
 		finally
 		{
@@ -612,6 +612,7 @@ internal static partial class InvalidSourceRepair
 				?? RewriteEventBackingField(node, model)
 				?? RewriteZeroedStruct(node, model)
 				?? RewriteAmbiguousType(node, model)
+				?? RewritePrimitiveStorage(node, model)
 				?? RewriteBackingField(node, model);
 
 			if (text is not null)
@@ -1259,6 +1260,36 @@ internal static partial class InvalidSourceRepair
 	/// something else, and widening would be pretending to fix it.
 	/// </para>
 	/// </remarks>
+	/// <summary>
+	/// Write every error the first compilation reports to the file named by <c>REPAIR_WHY</c>, id and message.
+	/// </summary>
+	/// <remarks>
+	/// Off unless the variable is set, and it costs one pass over diagnostics that are already computed. The
+	/// message matters as much as the id: <c>CS0030</c> alone says only "invalid cast" for 800 statements,
+	/// while the message names both types and splits them into families that have separate answers.
+	/// </remarks>
+	private static void DumpDiagnostics(CSharpCompilation compilation)
+	{
+		if (Environment.GetEnvironmentVariable("REPAIR_WHY") is not { Length: > 0 } path)
+		{
+			return;
+		}
+
+		StringBuilder text = new();
+		foreach (Diagnostic diagnostic in compilation.GetDiagnostics())
+		{
+			if (diagnostic.Severity == DiagnosticSeverity.Error)
+			{
+				text.Append(diagnostic.Id).Append('\t').Append(diagnostic.GetMessage()).Append('\n');
+			}
+		}
+
+		lock (typeof(InvalidSourceRepair))
+		{
+			System.IO.File.AppendAllText(path, text.ToString());
+		}
+	}
+
 	private static int WidenInaccessibleMembers(List<SourceFile> files, CSharpCompilation? compilation,
 		FileSystem fileSystem, HashSet<string> repairedFiles)
 	{
@@ -1266,6 +1297,8 @@ internal static partial class InvalidSourceRepair
 		{
 			return 0;
 		}
+
+		DumpDiagnostics(compilation);
 
 		Dictionary<SyntaxTree, SourceFile> byTree = [];
 		foreach (SourceFile file in files)

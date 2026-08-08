@@ -82,6 +82,39 @@ internal static partial class InvalidSourceRepair
 	/// called, so both are read.
 	/// </para>
 	/// </remarks>
+	/// <summary>
+	/// The field a primitive stores itself in, which is the primitive.
+	/// </summary>
+	/// <remarks>
+	/// <c>System.Int32</c> is a struct with one field, <c>m_value</c>, holding the number; the same is true of every
+	/// other primitive. Recovery reaches a value through a receiver it has typed as the primitive and writes the field
+	/// read out, so <c>num.m_value</c> is what the source says - and the field is private, and in the reference
+	/// assemblies not present at all, so the statement is commented out and everything downstream of it with it.
+	/// <para>
+	/// There is nothing to resolve here: the field and the value it belongs to are the same storage, so the receiver
+	/// alone says exactly what the field read said. That holds for a write as well - <c>num.m_value = 3</c> assigns
+	/// the number - which is why the receiver replaces the whole access rather than being read out of it.
+	/// </para>
+	/// </remarks>
+	private static string? RewritePrimitiveStorage(SyntaxNode node, SemanticModel model)
+	{
+		if (node is not MemberAccessExpressionSyntax { Name.Identifier.ValueText: "m_value" } access
+			|| model.GetTypeInfo(access.Expression).Type is not { } receiver)
+		{
+			return null;
+		}
+
+		return receiver.SpecialType is SpecialType.System_Boolean or SpecialType.System_Char
+			or SpecialType.System_SByte or SpecialType.System_Byte
+			or SpecialType.System_Int16 or SpecialType.System_UInt16
+			or SpecialType.System_Int32 or SpecialType.System_UInt32
+			or SpecialType.System_Int64 or SpecialType.System_UInt64
+			or SpecialType.System_Single or SpecialType.System_Double
+			or SpecialType.System_IntPtr or SpecialType.System_UIntPtr
+			? access.Expression.ToString()
+			: null;
+	}
+
 	private static string? RewriteBackingField(SyntaxNode node, SemanticModel model)
 	{
 		if (node is not MemberAccessExpressionSyntax access)
