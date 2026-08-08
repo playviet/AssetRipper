@@ -5,7 +5,7 @@ compile and run. This file is the handover: what the state is, how it is measure
 what is left. `CLAUDE.md` is the working rules; `External/Cpp2IL/FORK.md` is how the vendored fork stays
 mergeable; `LocalPackages/README.md` is the fix-by-fix changelog.
 
-## The state, at 1.0.536
+## The state, at 1.0.545
 
 Measured against the original Unity project the build came from (96 files, `Assets/AAA/CF`), and against the
 binary itself.
@@ -23,11 +23,11 @@ binary itself.
 | Unity 6000.0.78f1 batch import | **compiles**, `Assembly-CSharp.dll` produced |
 | **bodies the generator failed to build** | **25-26** — jitters by two between identical builds |
 | whole methods, against the original | **327** of 443, and **62 of 96 files** have nothing left in them |
-| whole bodies, game-wide | **2749** of 3609 (76.2%), 162 dead |
+| whole bodies, game-wide | **2750** of 3609 (76.2%), 162 dead |
 | decisions surviving (`if`, loops, `switch`, `?:`, `&&`) | **94.3%**, 1259 of 1335 |
 | operations surviving, judged from the binary alone | **1296** methods whole of 1993 measured |
-| unresolved memory reads, game-wide | **1250** (1612 before the class-pointer work at 1.0.466) |
-| commented statements, game-wide | **2324** (2350 at 1.0.478) |
+| unresolved memory reads, game-wide | **1255** (1612 before the class-pointer work at 1.0.466) |
+| commented statements, game-wide | **2314** (2350 at 1.0.478) |
 | calls that still resolve to nothing but an address | **288** (344 before 1.0.463) |
 | pure functions that execute identically to the original | **38 of 43** in the corpus |
 
