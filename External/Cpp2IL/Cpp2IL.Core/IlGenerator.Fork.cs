@@ -1072,6 +1072,12 @@ public static partial class IlGenerator
     {
         LocalVariable local => local.Type,
         FieldReference field => field.Field.FieldType,
+        //An element of an array is of the array's element type, and a field of one of the field's. Without
+        //this an element has no type at all here, so `words[i] == null` loads the constant zero as the
+        //number it literally is and then loads the element at that width: `(long)words[i] == 0L`, which does
+        //not compile and takes the whole `foreach` body with it.
+        MemoryOperand memory when CurrentContext is { } context && ArrayElement(memory, context) is { } element
+            => element.Inside?.FieldType ?? element.Element,
         _ => null,
     };
 
