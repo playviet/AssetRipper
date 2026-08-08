@@ -42,6 +42,17 @@ public static class KeyFunctionArguments
         [UnboxRecovery.ObjectUnbox] = 2,
     };
 
+    /// <summary>
+    /// How many arguments an imported C function reads. Its name says so exactly, and an import never
+    /// becomes a managed method either, so it keeps every register the same way a key function does.
+    /// </summary>
+    private static readonly Dictionary<string, int> Imported = new()
+    {
+        ["memcpy"] = 3, ["memset"] = 3, ["memmove"] = 3, ["memcmp"] = 3,
+        ["modf"] = 2, ["modff"] = 2, ["sincos"] = 3, ["sincosf"] = 3,
+        ["exp2"] = 1, ["exp2f"] = 1, ["ldexp"] = 2, ["ldexpf"] = 2, ["fmod"] = 2, ["fmodf"] = 2,
+    };
+
     public static bool Run(MethodAnalysisContext method)
     {
         if (method.ControlFlowGraph is not { } graph)
@@ -51,21 +62,39 @@ public static class KeyFunctionArguments
 
         foreach (var instruction in graph.Instructions)
         {
-            if (!instruction.IsCall || instruction.Operands.Count == 0
-                || instruction.Operands[0] is not string helper
-                || !Takes.TryGetValue(helper, out var takes))
+            if (!instruction.IsCall || instruction.Operands.Count == 0)
                 continue;
 
-            //Operands are the target, the result where there is one, and then the argument registers.
-            var wanted = (instruction.OpCode == OpCode.Call ? 2 : 1) + takes;
+            if (instruction.Operands[0] is ulong address)
+            {
+                if (method.AppContext.Binary is not LibCpp2IL.Elf.ElfFile binary
+                    || binary.ImportedFunctionAt(address) is not { } name
+                    || !Imported.TryGetValue(name, out var reads))
+                    continue;
 
-            if (instruction.Operands.Count <= wanted)
+                changed |= Trim(instruction, reads);
+                continue;
+            }
+
+            if (instruction.Operands[0] is not string helper || !Takes.TryGetValue(helper, out var takes))
                 continue;
 
-            instruction.Operands.RemoveRange(wanted, instruction.Operands.Count - wanted);
-            changed = true;
+            changed |= Trim(instruction, takes);
         }
 
         return changed;
+    }
+
+    /// <summary>Cuts a call back to the arguments it reads.</summary>
+    private static bool Trim(Instruction instruction, int takes)
+    {
+        //Operands are the target, the result where there is one, and then the argument registers.
+        var wanted = (instruction.OpCode == OpCode.Call ? 2 : 1) + takes;
+
+        if (instruction.Operands.Count <= wanted)
+            return false;
+
+        instruction.Operands.RemoveRange(wanted, instruction.Operands.Count - wanted);
+        return true;
     }
 }
