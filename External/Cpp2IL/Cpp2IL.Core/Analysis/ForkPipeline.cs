@@ -280,6 +280,10 @@ public static class ForkPipeline
         DelegateInvokeRecovery.RunOnFoldedLoads(method);
         MetadataResolver.TrimResolvedCallArguments(method);
 
+        // And the same for a runtime helper, which never becomes a managed method and so is never trimmed:
+        // it keeps all eight argument registers and every load that filled one, however few it reads.
+        KeyFunctionArguments.Run(method);
+
         // And again, on the arrays that only just became arrays. The first run is far above, and a base typed
         // by the resolution on the line before it was invisible to that one - so `array.Length` came out as
         // `Unmanaged memory load: [v397 @ X8_v20 (System.Int32[])+18]`, reading a header field of a type the
