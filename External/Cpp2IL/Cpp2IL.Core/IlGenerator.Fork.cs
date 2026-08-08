@@ -1021,11 +1021,66 @@ public static partial class IlGenerator
             return;
         }
 
-        //Only a value type is handed down, and only so an immediate is loaded at the width it is about to be
-        //stored at. Telling the loader a reference is expected would also let it read a zero as null, and a
-        //move is the one place that is wrong: a register the analysis typed as a reference and that in fact
-        //holds a number is common enough that doing so loses more bodies than it saves.
+        //A zero into a place declared as a reference is `null`. That reading was refused here for a long
+        //time - a register the analysis called a reference while in fact holding a number is common - but
+        //the alternative is not a number in a reference slot, it is **invalid IL**: `Expected O, but got I8`,
+        //849 of them in the game, and ILSpy's own note predicts a lost statement seven times over. In
+        //`Corpus::SumSteps` it is the exception slot the compiler cleared, so `if (obj == null)` was false
+        //and the recovered method threw where the original returned.
+        //A local whose type was never worked out is given `System.Object` in the emitted IL, so a number
+        //stored into one is invalid there too - it is the same place, arrived at from the other side.
+        var reference = type is { IsValueType: false } && !LowersToNativeInt(type)
+            || (destination is LocalVariable { Type: null } untyped && OnlyAskedIfItIsNull(untyped));
+
+        if (reference && IsZeroConstant(value))
+        {
+            method.CilMethodBody!.Instructions.Add(CilOpCodes.Ldnull);
+            return;
+        }
+
+        //Only a value type is handed down otherwise, and only so an immediate is loaded at the width it is
+        //about to be stored at.
         LoadOperand(value, method, locals, writeLine, stringCtor, type is { IsValueType: true } ? type : null);
+    }
+
+    /// <summary>
+    /// Whether nothing does anything with the local except ask whether it is zero.
+    /// </summary>
+    /// <remarks>
+    /// A local whose type was never worked out is given <c>System.Object</c> in the emitted IL, so storing a
+    /// number into one is invalid IL whatever the number meant - `Expected O, but got I8`, and ILSpy's own
+    /// note predicts a lost statement seven times over. But reading every such zero as <c>null</c> outright
+    /// turns a genuine integer zero into one, which is a wrong value rather than a lost statement.
+    ///
+    /// A local that is only ever **compared against zero** cannot be an arithmetic value: whichever it is,
+    /// `null` and `0` answer that question the same way, so nothing can be got wrong by choosing the one
+    /// that compiles. That is what the compiler's cleared exception slot looks like, and it is why
+    /// `Corpus::SumSteps` threw where the original returned.
+    /// </remarks>
+    private static bool OnlyAskedIfItIsNull(LocalVariable local)
+    {
+        if (CurrentContext?.ControlFlowGraph is not { } graph)
+            return false;
+
+        foreach (var instruction in graph.Instructions)
+        {
+            for (var operand = 0; operand < instruction.Operands.Count; operand++)
+            {
+                if (!ReferenceEquals(instruction.Operands[operand], local))
+                    continue;
+
+                //Written to, which says nothing about what it is.
+                if (operand == 0 && instruction.OpCode != OpCode.Call && instruction.OpCode != OpCode.CallVoid)
+                    continue;
+
+                if (instruction.OpCode is not (OpCode.CheckEqual or OpCode.CheckNotEqual)
+                    || instruction.Operands.Count < 3
+                    || !IsZeroConstant(instruction.Operands[operand == 1 ? 2 : 1]))
+                    return false;
+            }
+        }
+
+        return true;
     }
 
     /// <summary>Turns what is on the stack into the type an arm64 conversion instruction produces.</summary>
