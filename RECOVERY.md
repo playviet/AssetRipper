@@ -5,7 +5,7 @@ compile and run. This file is the handover: what the state is, how it is measure
 what is left. `CLAUDE.md` is the working rules; `External/Cpp2IL/FORK.md` is how the vendored fork stays
 mergeable; `LocalPackages/README.md` is the fix-by-fix changelog.
 
-## The state, at 1.0.517
+## The state, at 1.0.525
 
 Measured against the original Unity project the build came from (96 files, `Assets/AAA/CF`), and against the
 binary itself.
@@ -23,17 +23,19 @@ binary itself.
 | Unity 6000.0.78f1 batch import | **compiles**, `Assembly-CSharp.dll` produced |
 | **bodies the generator failed to build** | **25-26** — jitters by two between identical builds |
 | whole methods, against the original | **326** of 443, and **62 of 96 files** have nothing left in them |
-| whole bodies, game-wide | **2723** of 3609 (75.5%), 162 dead |
+| whole bodies, game-wide | **2722** of 3609 (75.4%), 162 dead |
 | decisions surviving (`if`, loops, `switch`, `?:`, `&&`) | **94.3%**, 1259 of 1335 |
 | operations surviving, judged from the binary alone | **1296** methods whole of 1993 measured |
-| unresolved memory reads, game-wide | **1256** (1612 before the class-pointer work at 1.0.466) |
-| commented statements, game-wide | **2328** (2350 at 1.0.478) |
+| unresolved memory reads, game-wide | **1279** (1612 before the class-pointer work at 1.0.466) |
+| commented statements, game-wide | **2319** (2350 at 1.0.478) |
 | calls that still resolve to nothing but an address | **288** (344 before 1.0.463) |
 | pure functions that execute identically to the original | **38 of 43** in the corpus |
 
-Of the five corpus methods that still behave differently, `Distance` and `Divide` are corpus artefacts rather
-than defects, `Bits` needs a 32-bit truncation the fork has priced and declined, and `Tally` and `Guarded`
-are open. `SumSteps` closed at 1.0.493.
+Of the five corpus methods that still behave differently, **four are closed with evidence**: `Distance` and
+`Divide` are corpus artefacts rather than defects, `Bits` needs a 32-bit truncation the fork has priced and
+declined, and `Guarded` performs its division correctly from 1.0.525 - what remains there is the `catch`,
+which clang deleted because `udiv` does not trap. Only `Tally` is open, and it is one statement.
+`SumSteps` closed at 1.0.493.
 
 ## How anything here is judged
 
