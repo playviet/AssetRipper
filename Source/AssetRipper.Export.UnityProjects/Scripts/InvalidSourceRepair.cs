@@ -739,7 +739,8 @@ internal static partial class InvalidSourceRepair
 
 		foreach (ISymbol member in declaring.GetMembers())
 		{
-			if (member is IFieldSymbol { IsStatic: false } field
+			if (member is IFieldSymbol field
+				&& field.IsStatic == raised.IsStatic
 				&& SymbolEqualityComparer.Default.Equals(field.Type, raised.Type)
 				&& (field.Name == "m_" + raised.Name || field.Name == "_" + raised.Name
 					|| field.Name == $"<{raised.Name}>k__BackingField"))
