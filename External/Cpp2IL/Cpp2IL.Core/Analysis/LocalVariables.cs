@@ -238,6 +238,9 @@ public static partial class LocalVariables
 
             changed = false;
             changed |= MetadataResolver.ResolveCallsViaMethodInfo(method);
+            // And the same question where an earlier call left its own runtime method in a register the
+            // later call still carries: the pass above takes the last one it finds and gives up on it.
+            changed |= SharedCallByItsOwnMethodInfo.Run(method);
             changed |= MetadataResolver.ResolveAmbiguousCalls(method);
             changed |= PropagateFromCallParameters(method);
             changed |= VirtualCallRecovery.Run(method);
