@@ -249,6 +249,12 @@ public static class ForkPipeline
         // the resolution below, so the reads it recovers are typed by it.
         FieldAddressRecovery.Run(method);
 
+        // And where the address was only ever copied about and then read through - several field addresses
+        // chosen between, then one load - no single field reference can speak for the choice, so the load is
+        // moved to where the addresses are made and the choice picks between values instead. Straight after
+        // the pass above, which has already taken every address that is wanted as one.
+        FieldAddressSinking.Run(method);
+
         // unmanaged memory, so the index tested against it learns nothing from the test, and an untyped index
         // is written out as an object - which makes the bounds check a comparison between unrelated things,
         // and takes the loop and everything in it along with it.
