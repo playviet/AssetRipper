@@ -47,6 +47,7 @@ public static class ForkPipeline
         // language makes the same guarantee without them, and recovering them buries the code that was written.
         NullCheckRemover.Run(method);
 
+
         // The state a state machine starts in is stored separately because il2cpp inlined the constructor that
         // set it; it belongs to the allocation, and has to be moved there before anything reads the two as
         // saying the state is set twice.
@@ -309,6 +310,12 @@ public static class ForkPipeline
         // Again, now that a receiver read from a field is the field itself rather than a copy of it: what
         // the field is declared as is what says which instantiation a shared body was called as.
         GenericSharingRecovery.Run(method);
+
+        // The stack protector - not written by anybody, and with the `__stack_chk_fail` it guards already
+        // dropped in the lifter, all that is left is a comparison of two places the recovery cannot name.
+        // **Late**, because the shape only exists once the frame slots have been named and the two reads have
+        // been propagated into the comparison; run beside the null check it found nothing at all.
+        StackProtectorRemoval.Run(method);
 
         // A condition standing next to the branch that asks it needs no name, and the decompiler folds it in.
         // Last, so that it sees the copies the passes before it leave behind.
