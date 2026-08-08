@@ -120,7 +120,7 @@ public partial class NewArmV8InstructionSet
     /// smashed, and recovered C# has no stack to smash.
     /// </para>
     /// </remarks>
-    private static (OpCode OpCode, object[] Operands)? ImportedCall(MethodAnalysisContext context, ulong target)
+    private static List<(OpCode OpCode, object[] Operands)>? ImportedCall(MethodAnalysisContext context, ulong target)
     {
 
         //A jump straight back out is a thunk, not a function, and the call goes wherever it points:
@@ -152,29 +152,54 @@ public partial class NewArmV8InstructionSet
             for (var argument = 0; argument < Aapcs64.RegistersPerRun; argument++)
                 thunked.Add(RegisterFor(Arm64Register.X0 + argument));
 
-            return (OpCode.Call, thunked.ToArray());
+            return [(OpCode.Call, thunked.ToArray())];
         }
 
         if (CompareExchangeOperands(context, target) is { } exchange)
-            return (OpCode.Call, exchange);
+            return [(OpCode.Call, exchange)];
 
         if (context.AppContext.Binary is not LibCpp2IL.Elf.ElfFile binary
             || binary.ImportedFunctionAt(target) is not { } import)
             return null;
 
         if (import == "__stack_chk_fail")
-            return (OpCode.Nop, []);
+            return [(OpCode.Nop, [])];
 
         var isDouble = !import.EndsWith("f");
         var bare = isDouble ? import : import[..^1];
+
+        //An import that hands its answers back through pointers is one call and two statements. A call may
+        //write into `[reg]` - that is how a big struct comes back through `x8` - and the register holding a
+        //pointer to a local *is* that local here, because taking a slot's address makes the two one variable.
+        //So each answer is written straight where it goes and no temporary is needed.
+        if (bare is "sincos" && Analysis.MathIntrinsics.Resolve(context.AppContext, ["Sin"], 1, isDouble) is { } sine
+            && Analysis.MathIntrinsics.Resolve(context.AppContext, ["Cos"], 1, isDouble) is { } cosine)
+        {
+            return
+            [
+                (OpCode.Call, [sine, new MemoryOperand(RegisterFor(Arm64Register.X0)), RegisterFor(Arm64Register.V0)]),
+                (OpCode.Call, [cosine, new MemoryOperand(RegisterFor(Arm64Register.X1)), RegisterFor(Arm64Register.V0)]),
+            ];
+        }
+
+        //`modf(x, &whole)` writes the whole part where it is told and gives back what is left of it.
+        if (bare is "modf" && Analysis.MathIntrinsics.Resolve(context.AppContext, ["Truncate"], 1, isDouble) is { } whole)
+        {
+            return
+            [
+                (OpCode.Call, [whole, new MemoryOperand(RegisterFor(Arm64Register.X0)), RegisterFor(Arm64Register.V0)]),
+                (OpCode.Subtract, [RegisterFor(Arm64Register.V0), RegisterFor(Arm64Register.V0),
+                    new MemoryOperand(RegisterFor(Arm64Register.X0))]),
+            ];
+        }
 
         //`exp2f(x)` is two raised to `x`, and the language has no name for that on its own - which is why the
         //table below skips it. `Pow` is exactly it once the base is written down, and a constant in an
         //argument position is what every other literal there already is. Six bodies wait on this one call.
         if (bare == "exp2" && Analysis.MathIntrinsics.Resolve(context.AppContext, ["Pow"], 2, isDouble) is { } raise)
         {
-            return (OpCode.Call, [raise, RegisterFor(Arm64Register.V0),
-                isDouble ? 2.0 : 2.0f, RegisterFor(Arm64Register.V0)]);
+            return [(OpCode.Call, [raise, RegisterFor(Arm64Register.V0),
+                isDouble ? 2.0 : 2.0f, RegisterFor(Arm64Register.V0)])];
         }
 
         string[]? names = bare switch
@@ -203,7 +228,7 @@ public partial class NewArmV8InstructionSet
         for (var argument = 0; argument < parameters; argument++)
             operands.Add(RegisterFor(Arm64Register.V0 + argument));
 
-        return (OpCode.Call, operands.ToArray());
+        return [(OpCode.Call, operands.ToArray())];
     }
 
     /// <summary>

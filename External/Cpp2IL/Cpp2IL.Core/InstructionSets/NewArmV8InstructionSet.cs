@@ -486,7 +486,8 @@ public partial class NewArmV8InstructionSet : Cpp2IlInstructionSet
                 }
                 else if (ImportedCall(context, instruction.BranchTarget) is { } imported)
                 {
-                    Add(address, imported.OpCode, imported.Operands);
+                    foreach ((OpCode importedOpCode, object[] importedOperands) in imported)
+                        Add(address, importedOpCode, importedOperands);
                 }
                 else
                 {

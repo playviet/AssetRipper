@@ -57,6 +57,8 @@ public static class MathIntrinsics
                 appContext.GetAssemblyByName("UnityEngine.CoreModule")?.GetTypeByFullName(UnityMathf),
                 appContext.GetAssemblyByName("UnityEngine")?.GetTypeByFullName(UnityMathf),
                 appContext.GetAssemblyByName("mscorlib")?.GetTypeByFullName("System.Math"),
+                //`Truncate` has no single-precision form in `Mathf` or `Math`; `MathF` is where it lives.
+                appContext.GetAssemblyByName("mscorlib")?.GetTypeByFullName("System.MathF"),
             ];
 
         foreach (var type in candidates)
