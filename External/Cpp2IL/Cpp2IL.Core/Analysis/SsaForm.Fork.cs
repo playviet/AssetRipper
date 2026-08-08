@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using Cpp2IL.Core.Graphs;
 using Cpp2IL.Core.ISIL;
 using Cpp2IL.Core.Model.Contexts;
+using LibCpp2IL.BinaryStructures;
 
 namespace Cpp2IL.Core.Analysis;
 
@@ -62,13 +63,31 @@ public partial class SsaForm
         if (Pointee(held) == Pointee(given))
             return false;
 
-        //A number is never a reference, and one kind of number is never another.
+        //Two numbers meeting is ordinary, and for the same reason two references are: **ISIL carries no
+        //width**, so which integer type each end was given says more about which pass typed it than about
+        //what the register holds. `Corpus::Guarded` returns `10 / (n % 3)` on one path and `1` on the other,
+        //and the divide's result was typed `Int64` against an `Int32` return - so the edge was dropped as a
+        //reuse, the phi kept only the constant, and the method returned 1 for every input while the whole
+        //division died as unread. A conversion between two numbers is something the language will say.
+        if (IsNumber(held) && IsNumber(given))
+            return false;
+
+        //A number is never a reference, and a struct is never a different struct.
         if (held.IsValueType || given.IsValueType)
             return true;
 
         //The structures the runtime keeps to itself are never anything the program holds.
         return IsRuntimeStructure(held) != IsRuntimeStructure(given);
     }
+
+    /// <summary>Whether the type is one of the numbers a register can hold without any conversion.</summary>
+    private static bool IsNumber(TypeAnalysisContext type)
+        => type.Type is Il2CppTypeEnum.IL2CPP_TYPE_I1 or Il2CppTypeEnum.IL2CPP_TYPE_U1
+            or Il2CppTypeEnum.IL2CPP_TYPE_I2 or Il2CppTypeEnum.IL2CPP_TYPE_U2
+            or Il2CppTypeEnum.IL2CPP_TYPE_I4 or Il2CppTypeEnum.IL2CPP_TYPE_U4
+            or Il2CppTypeEnum.IL2CPP_TYPE_I8 or Il2CppTypeEnum.IL2CPP_TYPE_U8
+            or Il2CppTypeEnum.IL2CPP_TYPE_I or Il2CppTypeEnum.IL2CPP_TYPE_U
+            or Il2CppTypeEnum.IL2CPP_TYPE_BOOLEAN or Il2CppTypeEnum.IL2CPP_TYPE_CHAR;
 
     /// <summary>The type without the marks that say it is being reached through an address.</summary>
     private static string Pointee(TypeAnalysisContext type) => type.FullName?.TrimEnd('&', '*') ?? "";
