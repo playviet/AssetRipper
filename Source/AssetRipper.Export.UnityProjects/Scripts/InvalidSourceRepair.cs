@@ -375,7 +375,10 @@ internal static partial class InvalidSourceRepair
 				continue;
 			}
 
-			if (!edit.Value.Rewritten && (edit.Value.Replacement is not null || lastAttempt || FindStatement(node) is null))
+			//Only an edit that takes a whole body away. What `FindFixupEdit` returns is an **insertion** - a
+			//return before the closing brace, an assignment after the opening one - and the method keeps
+			//everything it had; counting those made the log report 121 emptied methods where one was.
+			if (!edit.Value.Rewritten && !edit.Value.Span.IsEmpty && (lastAttempt || FindStatement(node) is null))
 			{
 				emptied++;
 			}
