@@ -237,6 +237,11 @@ public static class ForkPipeline
         // structure into the thing it stands for - an array's length, a list's count, the method an interface
         // call goes to - and each of those is a statement about a type that the inference had already finished
         // before it was made. The length is the case that shows it: until it is recognised it is a read of
+        // A lambda is a delegate built from a target and a method, and il2cpp generates one constructor per
+        // delegate type which no method table names - so the allocation beside it had nothing to fuse with
+        // and came out as `DOGetter<Color> getter = null;`. Here, where the allocation's local is typed.
+        DelegateConstruction.Run(method);
+
         // A field whose address the compiler worked out into a register rather than leaving the offset in the
         // addressing mode - 499 additions of `this` and a constant. Nothing names the field then, and what
         // comes out is `Unsafe.AddByteOffset(ref this, 48L)` beside a call given a fresh `default(T)`. Before

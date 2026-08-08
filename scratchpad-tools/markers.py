@@ -22,6 +22,10 @@ MARKERS = [
     ('unknowncall', ['Unknown call target operand:']),
     # A struct handed to something that wanted one of its members.
     ('structvalue', ['Part of a struct used as a value:']),
+    # The generator threw while building the body, and AssetRipper wrote the exception out as the method.
+    # It has no marker of its own and exactly one statement, so without this it scores as a whole method -
+    # which is how a change that broke 689 methods once read as an improvement on every other measure.
+    ('failed', ['at Cpp2IL.Core.IlGenerator.GenerateIl']),
     # The rest of the generator's own giving-up strings.
     ('unknown', ['Unknown operand: ', 'Unknown instruction:', 'Invalid instruction:',
                  'Store into unknown operand:', 'Stack shift:', 'Phi opcodes ']),
@@ -56,7 +60,8 @@ def classify(text):
     """dead where nothing survived, partial where the generator left a marker, full otherwise."""
     found = count(text)
 
-    if not statements(text):
+    # A body the generator threw on is not a body at all, whatever it looks like.
+    if found['failed'] or not statements(text):
         return 'dead', found
 
     return ('partial' if sum(found.values()) else 'full'), found
