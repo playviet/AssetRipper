@@ -94,6 +94,122 @@ public static partial class MetadataResolver
     /// measured from the boxed start - so the header goes back on before asking. Exposed for
     /// <see cref="StructSlotFields"/>, which has offsets from the frame rather than from an object.
     /// </remarks>
+    /// <summary>
+    /// The chain of fields that reaches a distance into a struct held as a value, outermost first.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="FieldOfStructValue"/> answers only where the distance lands exactly on a field. A struct
+    /// whose field is itself a struct has members at distances *inside* that field, and those are what a
+    /// <c>foreach</c> over a dictionary reads: <c>Dictionary&lt;K, V&gt;.Enumerator._current</c> is a
+    /// <c>KeyValuePair&lt;K, V&gt;</c>, so the key is the enumerator plus <c>0x10</c> and the value is
+    /// <c>0x18</c>, and neither is a field of the enumerator. Both instantiations have their offsets laid
+    /// out rather than recorded, which is why <c>PathToNestedField</c> - which reads
+    /// <c>BackingData.FieldOffset</c> - cannot answer either.
+    /// </remarks>
+    internal static FieldAnalysisContext[]? PathIntoStructValue(TypeAnalysisContext type, long offset,
+        MethodAnalysisContext method, int depth = 0)
+    {
+        if (FieldOfStructValue(type, offset, method) is { } exact)
+            return [exact];
+
+        //Three steps is past anything this has been seen to need, and stops a struct that somehow contains
+        //itself from running the analysis out of stack.
+        if (depth > 3)
+            return null;
+
+        //The field that spans the distance, which is the only one that can have it inside.
+        if (SpanningField(type, offset, method) is not var (field, start))
+            return null;
+
+        var inside = PathIntoStructValue(field.FieldType, offset - start, method, depth + 1);
+
+        return inside == null ? null : [field, .. inside];
+    }
+
+    /// <summary>The value-type field a distance falls inside, and where that field starts.</summary>
+    /// <remarks>
+    /// Laid out exactly as <c>FieldOfOpenGeneric</c> lays one out, and reached at the same boxed offsets, so
+    /// the two agree about where every field begins - the difference is only that this one answers for a
+    /// distance that lands *inside* a field rather than on its front.
+    /// </remarks>
+    private static (FieldAnalysisContext Field, long Start)? SpanningField(TypeAnalysisContext type, long offset,
+        MethodAnalysisContext method)
+    {
+        var pointerSize = method.AppContext.Binary.is32Bit ? 4 : 8;
+        var header = pointerSize == 4 ? 8 : 0x10;
+        var boxed = offset + header;
+        var instance = type as GenericInstanceTypeAnalysisContext;
+        var definition = instance?.GenericType ?? type;
+
+        if (definition.GenericParameters.Count == 0 || LayoutStart(definition, pointerSize) is not { } position)
+            return null;
+
+        foreach (var field in definition.Fields)
+        {
+            if (field.IsStatic)
+                continue;
+
+            if (field.BackingData?.FieldOffset != 0 || LaidOutSize(field.FieldType, pointerSize) is not { } size)
+                return null;
+
+            position += (size - position % size) % size;
+
+            if (boxed >= position && boxed < position + size)
+                //A generic instantiation carries no fields of its own - they belong to the definition - so
+                //the members are counted there, or a `KeyValuePair<K, V>` looks like a struct with nothing
+                //in it and the walk stops at the very field it was following.
+                return field.FieldType is { IsValueType: true } inner
+                    && ((inner as GenericInstanceTypeAnalysisContext)?.GenericType ?? inner).Fields.Count > 0
+                    ? (instance == null
+                        ? new ConcreteGenericFieldAnalysisContext(field, definition.GenericParameters)
+                        : new ConcreteGenericFieldAnalysisContext(field, instance), position - header)
+                    : null;
+
+            if (position > boxed)
+                return null;
+
+            position += size;
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// The width of a value, including a generic instantiation whose size il2cpp does not record.
+    /// </summary>
+    /// <remarks>
+    /// <c>SizeOf</c> knows the primitives and treats anything else as a pointer or as unknown, which is
+    /// enough to place the fields it is used for but not to say how far one *reaches*. A
+    /// <c>KeyValuePair&lt;string, int&gt;</c> is sixteen bytes - a reference, an int, and the padding that
+    /// takes it to the width of its widest member - and without that the walk stops at the first field of
+    /// that kind. Kept separate from <c>SizeOf</c> so the placement this agrees with does not change.
+    /// </remarks>
+    private static long? LaidOutSize(TypeAnalysisContext type, int pointerSize, int depth = 0)
+    {
+        if (SizeOf(type, pointerSize) is { } known)
+            return known;
+
+        if (depth > 3 || !type.IsValueType)
+            return null;
+
+        var definition = (type as GenericInstanceTypeAnalysisContext)?.GenericType ?? type;
+        long position = 0, widest = 1;
+
+        foreach (var field in definition.Fields)
+        {
+            if (field.IsStatic)
+                continue;
+
+            if (LaidOutSize(field.FieldType, pointerSize, depth + 1) is not { } size)
+                return null;
+
+            position += (size - position % size) % size + size;
+            widest = System.Math.Max(widest, size);
+        }
+
+        return position == 0 ? null : position + (widest - position % widest) % widest;
+    }
+
     internal static FieldAnalysisContext? FieldOfStructValue(TypeAnalysisContext type, long offset, MethodAnalysisContext method)
     {
         var header = method.AppContext.Binary.is32Bit ? 8 : 0x10;

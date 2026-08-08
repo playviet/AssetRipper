@@ -42,6 +42,35 @@ public static class InaccessibleFieldRecovery
 
                 for (var operand = assigns ? 1 : 0; operand < instruction.Operands.Count; operand++)
                 {
+                    //A chain of fields cannot be reached with one accessor: the getter of the field at the
+                    //end takes the field before it, not the object at the start. `enumerator._current.key`
+                    //has to become `enumerator.Current.Key`, one step at a time, or the property is called
+                    //on the wrong thing and the statement is lost with it.
+                    if (instruction.Operands[operand] is NestedFieldReference { Path.Length: > 1 } chain)
+                    {
+                        object source = chain.Local;
+                        var inserted = 0;
+
+                        foreach (var step in chain.Path)
+                        {
+                            var holder = new LocalVariable($"step{method.Locals.Count}", new Register(null, "STEP"), step.FieldType);
+                            method.Locals.Add(holder);
+
+                            var reached = !IsVisible(step, method) && Accessor(step, written: false) is { } stepGetter
+                                ? new Instruction(instruction.Index, OpCode.Call, stepGetter, holder, source)
+                                : new Instruction(instruction.Index, OpCode.Move, holder,
+                                    source is LocalVariable holding ? new FieldReference(step, holding, 0) : source);
+
+                            block.Instructions.Insert(i + inserted, reached);
+                            inserted++;
+                            source = holder;
+                        }
+
+                        instruction.Operands[operand] = source;
+                        i += inserted;
+                        continue;
+                    }
+
                     if (instruction.Operands[operand] is not FieldReference { Field: { IsStatic: false } field } reference)
                         continue;
 
@@ -182,7 +211,14 @@ public static class InaccessibleFieldRecovery
 
         //The name a compiler gives an auto-property's field is already handled where the property is found
         //by its own accessors; this is the hand-written convention.
-        var bare = field.StartsWith("m_") ? field[2..] : field.StartsWith('_') ? field[1..] : null;
+        //A field written with no prefix at all - `KeyValuePair<K, V>.key`, `.value` - still has a property
+        //with the same name in a different case, and where the field is unreachable that property is the
+        //only way to say it. The compiler's own backing fields are left out: they are found by their
+        //accessors instead, and their names are not a convention anybody wrote.
+        var bare = field.StartsWith("m_") ? field[2..]
+            : field.StartsWith('_') ? field[1..]
+            : field.Contains("_003C") || field.Contains('<') ? null
+            : field;
 
         return string.IsNullOrEmpty(bare) ? null : bare;
     }

@@ -42,20 +42,36 @@ public static class StructSlotFields
         if (method.ControlFlowGraph is not { } graph)
             return false;
 
-        //Every slot the frame has, by where it starts.
-        var slots = new Dictionary<int, LocalVariable>();
+        //Every slot the frame has, by where it starts, **taken from the graph**. `method.Locals` holds only
+        //what the stack analysis registered at the start, which is the callee-saved area; the enumerator's
+        //own slot and the fields a callee wrote through it are made by the passes above and appear only as
+        //operands - and those are exactly the ones this pass exists for. Every version of a slot is kept,
+        //since single assignment form gives one per write and each has to be named.
+        var slots = new Dictionary<int, List<LocalVariable>>();
 
-        foreach (var local in method.Locals)
-            if (OffsetOf(local) is { } offset)
-                slots.TryAdd(offset, local);
+        foreach (var instruction in graph.Instructions)
+            foreach (var operand in instruction.Operands)
+                if (SlotLocal(operand) is { } local && OffsetOf(local) is { } offset)
+                {
+                    if (!slots.TryGetValue(offset, out var versions))
+                        slots[offset] = versions = [];
+
+                    if (!versions.Contains(local))
+                        versions.Add(local);
+                }
 
         if (slots.Count < 2)
             return false;
 
-        //What each slot inside a struct stands for.
-        var fields = new Dictionary<LocalVariable, (LocalVariable Struct, FieldAnalysisContext Field, int Offset)>();
+        //What each slot inside a struct stands for - a chain of fields, since a struct's field may be a
+        //struct with the slot inside *it*, which is where a dictionary keeps its key and its value.
+        var fields = new Dictionary<LocalVariable, (LocalVariable Struct, FieldAnalysisContext[] Path, int Offset)>();
 
-        foreach (var (start, held) in slots)
+        //Nearest first. Two struct slots can overlap - single assignment form gives a copy of a struct its
+        //own slot, and the copy sits a few bytes from the original - and then a slot inside the nearer one
+        //is also some distance into the further one, at a different field. The nearer is the one it is
+        //actually in: `Corpus::Tally` named its key `_current.value` of the copy eight bytes below it.
+        foreach (var (start, versions) in slots.OrderByDescending(entry => entry.Key))
         {
             //An instantiation only. il2cpp records no field offsets for one - which is the whole reason this
             //pass has to lay it out at all - so no other pass has had a chance to name the slot and the
@@ -63,20 +79,24 @@ public static class StructSlotFields
             //the arithmetic is speculation competing with metadata: it renamed a Quaternion temporary that
             //merely sat above a `CharTransform` into that struct's `scale`, and
             //`DOTweenTMPAnimator.SetCharScale` lost its call to a cast that cannot be written.
-            if (held.Type is not GenericInstanceTypeAnalysisContext { IsValueType: true } structure
-                || structure.Namespace == nameof(System)
-                || IsSharedStandIn(structure))
+            if (versions.Find(v => v.Type is GenericInstanceTypeAnalysisContext { IsValueType: true } candidate
+                    && candidate.Namespace != nameof(System)
+                    && !IsSharedStandIn(candidate)) is not { } held
+                || held.Type is not GenericInstanceTypeAnalysisContext structure)
                 continue;
 
-            foreach (var (offset, inside) in slots)
+            foreach (var (offset, inner) in slots)
             {
                 //Only the slots above this one, and not the struct's own first slot, which is the struct.
-                if (offset <= start || ReferenceEquals(inside, held) || fields.ContainsKey(inside))
+                if (offset <= start)
                     continue;
 
-                if (MetadataResolver.FieldOfStructValue(structure, offset - start, method) is { } field
-                    && CanBeTheField(inside, field))
-                    fields[inside] = (held, field, offset - start);
+                if (MetadataResolver.PathIntoStructValue(structure, offset - start, method) is not { } path)
+                    continue;
+
+                foreach (var inside in inner)
+                    if (!ReferenceEquals(inside, held) && !fields.ContainsKey(inside) && CanBeTheField(inside, path[^1]))
+                        fields[inside] = (held, path, offset - start);
             }
         }
 
@@ -93,7 +113,9 @@ public static class StructSlotFields
             {
                 if (instruction.Operands[operand] is LocalVariable local && fields.TryGetValue(local, out var named))
                 {
-                    instruction.Operands[operand] = new FieldReference(named.Field, named.Struct, named.Offset);
+                    instruction.Operands[operand] = named.Path.Length == 1
+                        ? new FieldReference(named.Path[0], named.Struct, named.Offset)
+                        : new NestedFieldReference(named.Path, named.Struct, named.Offset);
                     changed = true;
                 }
             }
@@ -135,6 +157,14 @@ public static class StructSlotFields
             is "System.Object" or "System.SByteEnum" or "System.ByteEnum" or "System.Int16Enum"
             or "System.UInt16Enum" or "System.Int32Enum" or "System.UInt32Enum" or "System.Int64Enum"
             or "System.UInt64Enum");
+
+    /// <summary>The local a slot operand names, whether it stands alone or is the base of an address.</summary>
+    private static LocalVariable? SlotLocal(object operand) => operand switch
+    {
+        LocalVariable local => local,
+        MemoryOperand { Base: LocalVariable local } => local,
+        _ => null,
+    };
 
     /// <summary>Where in the frame a local sits, if it is a slot rather than a register.</summary>
     private static int? OffsetOf(LocalVariable local)
