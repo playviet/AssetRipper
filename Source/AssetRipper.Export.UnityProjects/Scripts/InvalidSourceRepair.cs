@@ -41,8 +41,14 @@ internal static partial class InvalidSourceRepair
 	/// Commenting a statement out can expose another error, most often a local that is now never assigned, so this
 	/// takes more than one pass to settle. It always settles, because every pass removes something and a method with
 	/// nothing left in it compiles.
+	/// <para>
+	/// The loop stops as soon as a pass finds nothing to repair, so a higher cap costs nothing where the source
+	/// settles sooner - it is paid only by the files that were being given up on. At eight, <b>124 methods</b> in
+	/// this game were still being emptied for not settling, including the four largest holders of branches left in
+	/// the recovery.
+	/// </para>
 	/// </remarks>
-	private const int MaxAttempts = 8;
+	private const int MaxAttempts = 24;
 
 	private const string Marker = "//AssetRipper: commented out, this could not be kept as code.";
 
