@@ -254,6 +254,13 @@ public static class ForkPipeline
         // and takes the loop and everything in it along with it.
         LocalVariables.ResolveTypesAndFields(method);
 
+        // And again, on the arrays that only just became arrays. The first run is far above, and a base typed
+        // by the resolution on the line before it was invisible to that one - so `array.Length` came out as
+        // `Unmanaged memory load: [v397 @ X8_v20 (System.Int32[])+18]`, reading a header field of a type the
+        // recovery had by then worked out. Before the arithmetic below, which would otherwise call the index
+        // a number of its own and leave nothing for the subscript to be built from.
+        ArrayAccessRecovery.Run(method);
+
         // Last of all, and only what nothing else could name: what arithmetic produces is a number, whatever
         // the destination register was called. `object obj3 = obj4 - 4L;` is not C#, and that shape begins 99
         // commented blocks in the game. **After** the resolution above, not before it - typing these early
