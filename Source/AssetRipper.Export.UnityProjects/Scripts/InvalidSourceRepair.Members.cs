@@ -1,3 +1,4 @@
+using System;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
@@ -57,6 +58,84 @@ internal static partial class InvalidSourceRepair
 		}
 
 		return $"{access.Expression}.{property.Name}";
+	}
+
+	/// <summary>
+	/// An auto-property's backing field, said by the property it belongs to.
+	/// </summary>
+	/// <remarks>
+	/// <para>
+	/// A property declared <c>{ get; set; }</c> has a field the compiler names <c>&lt;Name&gt;k__BackingField</c>,
+	/// and there is no source for it to forward from - so the rule above, which asks that a getter <i>be</i> the
+	/// field, never fires for one. The name is the contract instead: that field belongs to <c>Name</c> and to
+	/// nothing else, whichever compiler wrote it.
+	/// </para>
+	/// <para>
+	/// This one does answer for an assignment, because an auto-property has a real setter that writes exactly that
+	/// field. The rule above declines assignments on the strength of a measurement that no longer holds: eight
+	/// bodies here are rooted at <c>adjustConfig._003CSkanUpdatedDelegate_003Ek__BackingField = …</c>, where the
+	/// property is right there and accessible.
+	/// </para>
+	/// <para>
+	/// The escaped form is what a field of this export is called - AssetRipper writes <c>&lt;</c> as
+	/// <c>_003C</c> so the name is an identifier - and the raw form is what one from a referenced assembly is
+	/// called, so both are read.
+	/// </para>
+	/// </remarks>
+	private static string? RewriteBackingField(SyntaxNode node, SemanticModel model)
+	{
+		if (node is not MemberAccessExpressionSyntax access)
+		{
+			return null;
+		}
+
+		//Whatever the compiler made of it. Where the declaring assembly is one this export decompiled too, the
+		//field is not merely inaccessible - it is **not there at all**: a decompiler reconstructs
+		//`{ get; set; }` and writes no field, so the reference resolves to nothing.
+		if (model.GetSymbolInfo(access).Symbol is not null
+			|| PropertyBehind(access.Name.Identifier.ValueText) is not { } name
+			|| model.GetTypeInfo(access.Expression).Type is not { } receiver)
+		{
+			return null;
+		}
+
+		bool written = access.Parent is AssignmentExpressionSyntax assignment && assignment.Left == access;
+
+		for (ITypeSymbol? holder = receiver; holder is not null; holder = holder.BaseType)
+		{
+			foreach (ISymbol member in holder.GetMembers(name))
+			{
+				if (member is IPropertySymbol { IsIndexer: false } property
+					&& (written ? property.SetMethod : property.GetMethod) is { } accessor
+					&& model.IsAccessible(access.SpanStart, accessor))
+				{
+					return $"{access.Expression}.{property.Name}";
+				}
+			}
+		}
+
+		return null;
+	}
+
+	/// <summary>The property a compiler-generated backing field belongs to, by the name it was given.</summary>
+	private static string? PropertyBehind(string field)
+	{
+		const string Escaped = "_003C", EscapedEnd = "_003E";
+		const string Tail = "k__BackingField";
+
+		if (!field.EndsWith(Tail, StringComparison.Ordinal))
+		{
+			return null;
+		}
+
+		string inner = field[..^Tail.Length];
+
+		if (inner.StartsWith(Escaped, StringComparison.Ordinal) && inner.EndsWith(EscapedEnd, StringComparison.Ordinal))
+		{
+			return inner[Escaped.Length..^EscapedEnd.Length];
+		}
+
+		return inner.StartsWith('<') && inner.EndsWith('>') ? inner[1..^1] : null;
 	}
 
 	/// <summary>

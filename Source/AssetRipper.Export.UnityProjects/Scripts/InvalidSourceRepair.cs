@@ -611,7 +611,8 @@ internal static partial class InvalidSourceRepair
 				?? RewriteInaccessibleMember(node, model)
 				?? RewriteEventBackingField(node, model)
 				?? RewriteZeroedStruct(node, model)
-				?? RewriteAmbiguousType(node, model);
+				?? RewriteAmbiguousType(node, model)
+				?? RewriteBackingField(node, model);
 
 			if (text is not null)
 			{
