@@ -126,6 +126,23 @@ public static class ArithmeticProducesANumber
                     source.Type = produced;
         }
 
+        //Last, after the loop above has given the arithmetic its types: the evidence this reads is
+        //what that loop produces, and run first it sees those destinations still untyped and finds nothing.
+        //A local typed as a **reference** that is both handed a number and combined with one is a number
+        //wearing the wrong type: a running total whose register carried an array earlier in the method, and
+        //single assignment form kept the name but not the meaning. C# has no arithmetic on a reference, so
+        //the statement holding one is commented out however right the rest of it is.
+        //
+        //Both pieces of evidence are needed. Being *combined* with a number is not enough on its own -
+        //`this + 100L` is the address of a field, and 110 of the 240 such operands in the game are that -
+        //and retyping on that alone measured worse. Being *assigned* one settles it: nothing writes a number
+        //into a place that holds a reference.
+        foreach (var suspect in Suspects(graph))
+        {
+            suspect.Local.Type = suspect.Number;
+            changed = true;
+        }
+
         return changed;
     }
 
@@ -203,6 +220,39 @@ public static class ArithmeticProducesANumber
         Il2CppTypeEnum.IL2CPP_TYPE_I4 or Il2CppTypeEnum.IL2CPP_TYPE_U4 => 4,
         _ => 8,
     };
+
+    /// <summary>
+    /// Every reference-typed local that is assigned a number somewhere and combined with one somewhere.
+    /// </summary>
+    private static List<(LocalVariable Local, TypeAnalysisContext Number)> Suspects(Graphs.ISILControlFlowGraph graph)
+    {
+        var handed = new Dictionary<LocalVariable, TypeAnalysisContext>();
+        var combined = new HashSet<LocalVariable>();
+
+        foreach (var instruction in graph.Instructions)
+        {
+            if (instruction.OpCode == OpCode.Move && instruction.Operands.Count == 2
+                && instruction.Operands[0] is LocalVariable { Type: { IsValueType: false } } written
+                && instruction.Operands[1] is LocalVariable { Type: { } carried } && IsNumber(carried))
+                handed[written] = carried;
+
+            if (instruction.OpCode is not (OpCode.Add or OpCode.Subtract or OpCode.Multiply) || instruction.Operands.Count < 3)
+                continue;
+
+            for (var operand = 1; operand <= 2; operand++)
+                if (instruction.Operands[operand] is LocalVariable { Type: { IsValueType: false } } beside
+                    && instruction.Operands[operand == 1 ? 2 : 1] is LocalVariable { Type: { } other } && IsNumber(other))
+                    combined.Add(beside);
+        }
+
+        var found = new List<(LocalVariable, TypeAnalysisContext)>();
+
+        foreach (var (local, number) in handed)
+            if (combined.Contains(local))
+                found.Add((local, number));
+
+        return found;
+    }
 
     private static bool IsNumber(TypeAnalysisContext type) => StructInArithmetic.IsNumber(type);
 
