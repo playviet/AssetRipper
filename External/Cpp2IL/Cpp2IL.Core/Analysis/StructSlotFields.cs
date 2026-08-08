@@ -96,7 +96,14 @@ public static class StructSlotFields
 
                 foreach (var inside in inner)
                     if (!ReferenceEquals(inside, held) && !fields.ContainsKey(inside) && CanBeTheField(inside, path[^1]))
+                    {
                         fields[inside] = (held, path, offset - start);
+
+                        //And the slot holds what that field holds, which is what a read *through* it needs -
+                        //`pair.Key.Length` reads offset 0x10 of a string. Only where the slot has no type
+                        //of its own, so nothing already worked out is overruled.
+                        inside.Type ??= path[^1].FieldType;
+                    }
             }
         }
 
@@ -111,6 +118,21 @@ public static class StructSlotFields
             //and turning it into a store needs the address of the struct rather than its value.
             for (var operand = instruction.IsAssignment ? 1 : 0; operand < instruction.Operands.Count; operand++)
             {
+                //Read *through* the slot, at a distance: the field's own type says what is there, and the
+                //path simply carries on. `pair.Key.Length` is `_current`, then `key`, then the string's
+                //`_stringLength` - and `InaccessibleFieldRecovery` says the last of those by its property.
+                //Without this the slot is left as a bare local, which nothing ever assigns, so the read
+                //compiles and throws where it used to carry a marker and quietly answer nought.
+                if (instruction.Operands[operand] is MemoryOperand { Index: null, Scale: 0 } read
+                    && read.Base is LocalVariable through && fields.TryGetValue(through, out var outer)
+                    && MetadataResolver.PathToNestedField(outer.Path[^1].FieldType, read.Addend, statics: false,
+                        method.AppContext.Binary.is32Bit ? 8 : 0x10) is { } deeper)
+                {
+                    instruction.Operands[operand] = new NestedFieldReference([.. outer.Path, .. deeper], outer.Struct, outer.Offset);
+                    changed = true;
+                    continue;
+                }
+
                 if (instruction.Operands[operand] is LocalVariable local && fields.TryGetValue(local, out var named))
                 {
                     instruction.Operands[operand] = named.Path.Length == 1
