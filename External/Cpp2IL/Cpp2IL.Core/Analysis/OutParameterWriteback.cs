@@ -84,15 +84,37 @@ public static class OutParameterWriteback
         //is a value that is meant to be there - the caller filling in a `ref`, or the value about to be boxed,
         //which reaches the helper through the same kind of address. Dropping those as well took the store out
         //of `IEnumerator.Current`, so the box read a slot nothing had written and the property returned null.
-        foreach (var instruction in graph.Instructions)
+        //A slot wider than a register is cleared from one - `movi v0.2d, #0` then `stp v0, v0, [sp, #0x10]`
+        //clears thirty-two bytes - so the value stored is a **register** that holds zero rather than the
+        //number nought, and the store looked like a value somebody meant to put there. Left standing it is
+        //an assignment to the slot, which is the same variable as the address after the renaming above, so
+        //everything that wanted the address read the cleared struct instead: `Corpus::Tally` handed
+        //`MoveNext` a zero and threw. Which registers hold zero is carried along the block, like
+        //ConstantFolding does, so nothing is assumed about how control reached it.
+        foreach (var block in graph.Blocks)
         {
-            if (instruction.OpCode == OpCode.Move
-                && instruction.Operands[0] is Register destination
-                && destination.Name.StartsWith(StackSlots.AddressPrefix)
-                && IsZero(instruction.Operands[1]))
+            var zeroed = new HashSet<string>();
+
+            foreach (var instruction in block.Instructions)
             {
-                instruction.OpCode = OpCode.Nop;
-                instruction.Operands = [];
+                if (instruction.OpCode == OpCode.Move
+                    && instruction.Operands[0] is Register destination
+                    && destination.Name.StartsWith(StackSlots.AddressPrefix)
+                    && IsZero(instruction.Operands[1], zeroed))
+                {
+                    instruction.OpCode = OpCode.Nop;
+                    instruction.Operands = [];
+                    continue;
+                }
+
+                if (instruction.Operands.Count > 0 && instruction.Operands[0] is Register written)
+                {
+                    if (instruction.OpCode == OpCode.Move && instruction.Operands.Count > 1
+                        && IsZero(instruction.Operands[1], zeroed))
+                        zeroed.Add(written.Name);
+                    else
+                        zeroed.Remove(written.Name);
+                }
             }
         }
     }
@@ -161,6 +183,9 @@ public static class OutParameterWriteback
             }
         }
     }
+
+    private static bool IsZero(object operand, HashSet<string> zeroed) =>
+        (operand is Register register && zeroed.Contains(register.Name)) || IsZero(operand);
 
     private static bool IsZero(object operand) => operand switch
     {
