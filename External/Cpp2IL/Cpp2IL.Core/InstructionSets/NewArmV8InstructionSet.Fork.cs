@@ -168,6 +168,15 @@ public partial class NewArmV8InstructionSet
         var isDouble = !import.EndsWith("f");
         var bare = isDouble ? import : import[..^1];
 
+        //`exp2f(x)` is two raised to `x`, and the language has no name for that on its own - which is why the
+        //table below skips it. `Pow` is exactly it once the base is written down, and a constant in an
+        //argument position is what every other literal there already is. Six bodies wait on this one call.
+        if (bare == "exp2" && Analysis.MathIntrinsics.Resolve(context.AppContext, ["Pow"], 2, isDouble) is { } raise)
+        {
+            return (OpCode.Call, [raise, RegisterFor(Arm64Register.V0),
+                isDouble ? 2.0 : 2.0f, RegisterFor(Arm64Register.V0)]);
+        }
+
         string[]? names = bare switch
         {
             "sin" => ["Sin"], "cos" => ["Cos"], "tan" => ["Tan"],
