@@ -69,7 +69,7 @@ public static partial class IlGenerator
             return null;
 
         if (memory.Addend == elements)
-            return (array, memory.Index, element, null);
+            return (array, memory.Index, element, FrontMember(memory, element, context));
 
         //A constant subscript is folded into the one offset the load already had, so there is no index
         //register left to read it from - the distance past the first element is the subscript.
@@ -82,7 +82,7 @@ public static partial class IlGenerator
         var within = (int)(past % width);
 
         if (within == 0)
-            return (array, subscript, element, null);
+            return (array, subscript, element, FrontMember(memory, element, context));
 
         //Not a whole number of elements past the start, which for an array of a struct is not a mistake: it
         //is one field of one element. `Vector3` is twelve bytes, so `positions[2].y` is thirty-one bytes past
@@ -92,6 +92,45 @@ public static partial class IlGenerator
             return null;
 
         return (array, subscript, element, inside);
+    }
+
+    /// <summary>
+    /// The member at the front of a struct element, where the read is of that member rather than of the
+    /// whole element.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A struct's first field begins where the struct does, so a read at distance nought into an element of
+    /// <c>Vector3[]</c> is <c>positions[0]</c> and <c>positions[0].x</c> written the same way. The offset
+    /// cannot tell them apart and neither can ISIL, which carries no width - but the place the value lands
+    /// can: nothing copies a <c>Vector3</c> into a <c>float</c>.
+    /// </para>
+    /// <para>
+    /// Without this <c>_cornersBuf[0].x</c> came out as <c>(float)cornersBuf[0]</c> and was commented away
+    /// while <c>.y</c>, four bytes further in and unambiguous, was kept.
+    /// </para>
+    /// </remarks>
+    private static FieldAnalysisContext? FrontMember(MemoryOperand memory, TypeAnalysisContext element, MethodAnalysisContext context)
+    {
+        if (!element.IsValueType || context.ControlFlowGraph is not { } graph
+            || FieldAt(element, 0) is not { } front || ReferenceEquals(front.FieldType, element))
+            return null;
+
+        foreach (var instruction in graph.Instructions)
+        {
+            if (instruction.OpCode != OpCode.Move || instruction.Operands.Count != 2
+                || instruction.Operands[0] is not LocalVariable { Type: { } wanted }
+                || instruction.Operands[1] is not MemoryOperand read
+                || !Equals(read.Base, memory.Base) || !Equals(read.Index, memory.Index)
+                || read.Addend != memory.Addend || read.Scale != memory.Scale)
+                continue;
+
+            //A number where a struct would go, and the number the front member is.
+            if (!ReferenceEquals(wanted, element) && Analysis.StructInArithmetic.IsNumber(wanted))
+                return front;
+        }
+
+        return null;
     }
 
     /// <summary>The instance field of a struct that begins at an offset, if one does.</summary>
