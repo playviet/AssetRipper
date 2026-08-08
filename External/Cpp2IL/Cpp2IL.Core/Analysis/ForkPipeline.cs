@@ -270,6 +270,12 @@ public static class ForkPipeline
         // unmanaged memory, so the index tested against it learns nothing from the test, and an untyped index
         // is written out as an object - which makes the bounds check a comparison between unrelated things,
         // and takes the loop and everything in it along with it.
+        // A local assigned once, from something that says a type derived from the one it carries, holds the
+        // derived one: a call's parameter type is true but weak, and `MonoBehaviour` cannot be more accurate
+        // than the `LevelManager` the field it was read from declares. Directly before the resolution below,
+        // which is what then finds the fields that only the derived type has.
+        MostDerivedLocalType.Run(method);
+
         LocalVariables.ResolveTypesAndFields(method);
 
         // And the delegate invocations the pass that knows them could not see: by the time it ran, the
