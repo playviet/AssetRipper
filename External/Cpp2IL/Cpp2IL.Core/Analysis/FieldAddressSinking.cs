@@ -61,30 +61,36 @@ public static class FieldAddressSinking
         if (addresses.Count == 0)
             return false;
 
-        var changed = false;
+        //Every chain is worked out against the **unmodified** graph and only then written back. Rewriting one
+        //as it is found turns its addition into a `Move` from a field, and the next chain that reaches the
+        //same local sees a source that is no longer a local and refuses the whole of itself - which is how
+        //`CellDraggable::BeginDragInternal` kept twenty-nine commented statements behind two addresses.
+        var covered = new HashSet<LocalVariable>();
+        var accepted = new List<(HashSet<LocalVariable> Members, List<(Instruction At, int Operand, LocalVariable Behind)> Reads)>();
 
-        foreach (var start in addresses.Keys.ToList())
+        foreach (var start in addresses.Keys)
         {
-            if (!addresses.ContainsKey(start) || Chain(graph, start, addresses) is not { } chain)
+            if (covered.Contains(start) || Chain(graph, start, addresses) is not { } chain)
                 continue;
 
-            foreach (var (instruction, operand) in chain.Reads)
-                instruction.Operands[operand] = chain.Through[instruction] is { } local ? local : instruction.Operands[operand];
-
-            foreach (var carried in chain.Members)
-            {
-                if (!addresses.TryGetValue(carried, out var address))
-                    continue;
-
-                address.Addition.OpCode = OpCode.Move;
-                address.Addition.Operands = [carried, new FieldReference(address.Field, address.Owner, address.Offset)];
-                addresses.Remove(carried);
-            }
-
-            changed = true;
+            accepted.Add(chain);
+            covered.UnionWith(chain.Members);
         }
 
-        return changed;
+        foreach (var chain in accepted)
+        {
+            foreach (var (instruction, operand, behind) in chain.Reads)
+                instruction.Operands[operand] = behind;
+
+            foreach (var carried in chain.Members)
+                if (addresses.TryGetValue(carried, out var address))
+                {
+                    address.Addition.OpCode = OpCode.Move;
+                    address.Addition.Operands = [carried, new FieldReference(address.Field, address.Owner, address.Offset)];
+                }
+        }
+
+        return accepted.Count > 0;
     }
 
     /// <summary>
@@ -108,13 +114,12 @@ public static class FieldAddressSinking
     /// <summary>
     /// Everything the address flows into, where every step is a copy and every end is a read at nought.
     /// </summary>
-    private static (HashSet<LocalVariable> Members, List<(Instruction, int)> Reads, Dictionary<Instruction, LocalVariable?> Through)? Chain(
+    private static (HashSet<LocalVariable> Members, List<(Instruction At, int Operand, LocalVariable Behind)> Reads)? Chain(
         ISILControlFlowGraph graph, LocalVariable start,
         Dictionary<LocalVariable, (Instruction Addition, FieldAnalysisContext Field, LocalVariable Owner, int Offset)> addresses)
     {
         var members = new HashSet<LocalVariable> { start };
-        var reads = new List<(Instruction, int)>();
-        var through = new Dictionary<Instruction, LocalVariable?>();
+        var reads = new List<(Instruction, int, LocalVariable)>();
         var pending = new Queue<LocalVariable>();
         pending.Enqueue(start);
 
@@ -134,8 +139,16 @@ public static class FieldAddressSinking
                     switch (instruction.Operands[operand])
                     {
                         case LocalVariable other when ReferenceEquals(other, carried):
-                            if (instruction.OpCode is not (OpCode.Move or OpCode.Select))
+                            //Anything but a copy wants the value, and where the value is the address that
+                            //ends the chain. A member that already holds a **reference** is not an address:
+                            //`FieldAddressRecovery` resolved it to the field's own value, and the null test
+                            //or the call it feeds is asking about that value, not about where it lives.
+                            if (instruction.OpCode is not (OpCode.Move or OpCode.Select)
+                                && !(carried.Type is { IsValueType: false } && !addresses.ContainsKey(carried)))
                                 return Refuse("notACopy " + instruction);
+
+                            if (instruction.OpCode is not (OpCode.Move or OpCode.Select))
+                                continue;
 
                             if (instruction.OpCode == OpCode.Select && operand == 1)
                                 return Refuse("usedAsCondition " + instruction);
@@ -153,6 +166,26 @@ public static class FieldAddressSinking
 
                             for (var source = instruction.OpCode == OpCode.Select ? 2 : 1; source < instruction.Operands.Count; source++)
                             {
+                                //A read at nought through another address is the field's own value, which is
+                                //what this chain is turning that address into - so it joins, and the read is
+                                //rewritten with the rest.
+                                if (instruction.Operands[source] is MemoryOperand
+                                    { Index: null, Scale: 0, Addend: 0, Base: LocalVariable behind })
+                                {
+                                    if (members.Add(behind))
+                                        pending.Enqueue(behind);
+
+                                    reads.Add((instruction, source, behind));
+                                    continue;
+                                }
+
+                                //A field named outright, into a place that holds a reference: that is a
+                                //field's **value**, which is what the rest of the chain is being turned
+                                //into. FieldAddressRecovery has already resolved some of these.
+                                if (instruction.Operands[source] is FieldReference
+                                    && instruction.Operands[0] is LocalVariable { Type: { IsValueType: false } })
+                                    continue;
+
                                 if (instruction.Operands[source] is not LocalVariable feeding)
                                     return Refuse("sourceNotALocal " + instruction);
 
@@ -169,8 +202,7 @@ public static class FieldAddressSinking
                             if (operand == 0 && instruction.IsAssignment)
                                 return Refuse("writtenThrough " + instruction);
 
-                            reads.Add((instruction, operand));
-                            through[instruction] = carried;
+                            reads.Add((instruction, operand, carried));
                             continue;
 
                         case MemoryOperand memory when ReferenceEquals(memory.Base, carried) || ReferenceEquals(memory.Index, carried):
@@ -188,10 +220,10 @@ public static class FieldAddressSinking
         if (reads.Count == 0)
             return Refuse("noRead");
 
-        return (members, reads, through);
+        return (members, reads);
     }
 
-    private static (HashSet<LocalVariable>, List<(Instruction, int)>, Dictionary<Instruction, LocalVariable?>)? Refuse(string why)
+    private static (HashSet<LocalVariable>, List<(Instruction, int, LocalVariable)>)? Refuse(string why)
     {
         if (System.Environment.GetEnvironmentVariable("SINK_TRACE") == "1")
             System.Console.Error.WriteLine("SINK " + why);
