@@ -589,7 +589,8 @@ internal static partial class InvalidSourceRepair
 			string? text = RewriteNullPointer(node, model)
 				?? RewriteNativeBooleanTest(node, model, compilation)
 				?? RewriteConstructorCall(node, model)
-				?? RewriteInaccessibleMember(node, model);
+				?? RewriteInaccessibleMember(node, model)
+				?? RewriteEventBackingField(node, model);
 
 			if (text is not null)
 			{
@@ -704,6 +705,50 @@ internal static partial class InvalidSourceRepair
 		}
 
 		return $"{inner.Expression} {binary.OperatorToken} null";
+	}
+
+	/// <summary>
+	/// An event's backing field, reached by the event's own name.
+	/// </summary>
+	/// <remarks>
+	/// An event declared with its own <c>add</c> and <c>remove</c> has no backing field the language will let anyone
+	/// name: <c>this.OnClicked</c> is the event, and an event may only appear on the left of <c>+=</c> or <c>-=</c>.
+	/// Recovery does not write the event, it writes a read of the field behind it - and the field is right there in
+	/// the same class, under the name the decompiler moved it to so that the two do not clash:
+	/// <code>
+	/// private Action m_OnClicked;
+	/// public event Action OnClicked { add { … } remove { … } }
+	/// </code>
+	/// so <c>if (this.OnClicked != null) this.OnClicked();</c> is `m_OnClicked` twice, and says exactly what the
+	/// binary does. The field has to be in the event's own type and of the event's own type, or this is guessing.
+	/// </remarks>
+	private static string? RewriteEventBackingField(SyntaxNode node, SemanticModel model)
+	{
+		if (node is not MemberAccessExpressionSyntax access)
+		{
+			return null;
+		}
+
+		SymbolInfo info = model.GetSymbolInfo(access);
+
+		if ((info.Symbol ?? info.CandidateSymbols.FirstOrDefault()) is not IEventSymbol raised
+			|| raised.ContainingType is not { } declaring)
+		{
+			return null;
+		}
+
+		foreach (ISymbol member in declaring.GetMembers())
+		{
+			if (member is IFieldSymbol { IsStatic: false } field
+				&& SymbolEqualityComparer.Default.Equals(field.Type, raised.Type)
+				&& (field.Name == "m_" + raised.Name || field.Name == "_" + raised.Name
+					|| field.Name == $"<{raised.Name}>k__BackingField"))
+			{
+				return $"{access.Expression}.{field.Name}";
+			}
+		}
+
+		return null;
 	}
 
 	/// <summary>
