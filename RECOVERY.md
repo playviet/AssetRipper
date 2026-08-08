@@ -5,24 +5,34 @@ compile and run. This file is the handover: what the state is, how it is measure
 what is left. `CLAUDE.md` is the working rules; `External/Cpp2IL/FORK.md` is how the vendored fork stays
 mergeable; `LocalPackages/README.md` is the fix-by-fix changelog.
 
-## The state, at 1.0.327
+## The state, at 1.0.478
 
 Measured against the original Unity project the build came from (96 files, `Assets/AAA/CF`), and against the
 binary itself.
+
+> **The scorers were lost and rebuilt** between 1.0.453 and 1.0.454, and `cfscore`/`compare2`/`decisions` are
+> on a **new scale** from then on: they count every member with a body rather than the 423 the old filter
+> chose, and their marker vocabulary is taken from `IlGenerator`'s own `Ldstr` operands. Numbers below are
+> not comparable with the 1.0.327 table this replaces. `roundtrip` and the corpora carry across unchanged.
+> Durable copies of all of them are in `scratchpad-tools/`.
 
 | | |
 |---|---|
 | method bodies discarded as unreadable | **0** (was 907) |
 | `error CS` in the exported project | **0** |
-| Unity 6000.0.78f1 batch import | **0 errors, 0 shader errors**, 533 files |
-| decisions surviving (`if`, loops, `switch`, `?:`, `&&`) | **95.6%**, and 131 of 141 methods keep every one |
-| whole methods, against the original | **307** of 415 measured (was 294) |
-| whole bodies, game-wide | **2325** of 2946 (was 2281) |
-| operations surviving, judged from the binary alone | calls **78.1%**, fields 74.3%, literals 82.0% |
-| unresolved memory reads, game-wide | **1518** (2291 before the stand-in retyping) |
-| arm64 instructions the lifter cannot translate, game-wide | **32** (306 before the vector work), of which 84 are the lane model refusing rather than an encoding it cannot read |
-| calls still made through an unnamed pointer | **96** (121 before) |
-| pure functions that execute identically to the original | **36 of 43** in the corpus, 6 of 10 in the game |
+| Unity 6000.0.78f1 batch import | **compiles**, `Assembly-CSharp.dll` produced |
+| **bodies the generator failed to build** | **25-26** — jitters by two between identical builds |
+| whole methods, against the original | **326** of 443, and **62 of 96 files** have nothing left in them |
+| whole bodies, game-wide | **2724** of 3609 (75.5%), 162 dead |
+| decisions surviving (`if`, loops, `switch`, `?:`, `&&`) | **94.2%**, 1257 of 1335 |
+| operations surviving, judged from the binary alone | **1295** methods whole of 1993 measured |
+| unresolved memory reads, game-wide | **1256** (1612 before the class-pointer work at 1.0.466) |
+| calls that still resolve to nothing but an address | **288** (344 before 1.0.463) |
+| pure functions that execute identically to the original | **37 of 43** in the corpus |
+
+Of the six corpus methods that still behave differently, `Distance` and `Divide` are corpus artefacts rather
+than defects, `Bits` needs a 32-bit truncation the fork has decided not to pay for, and `SumSteps`, `Tally`
+and `Guarded` are open.
 
 ## How anything here is judged
 
