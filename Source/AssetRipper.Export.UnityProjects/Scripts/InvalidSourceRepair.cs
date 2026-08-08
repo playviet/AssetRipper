@@ -590,7 +590,8 @@ internal static partial class InvalidSourceRepair
 				?? RewriteNativeBooleanTest(node, model, compilation)
 				?? RewriteConstructorCall(node, model)
 				?? RewriteInaccessibleMember(node, model)
-				?? RewriteEventBackingField(node, model);
+				?? RewriteEventBackingField(node, model)
+				?? RewriteZeroedStruct(node, model);
 
 			if (text is not null)
 			{
@@ -672,6 +673,45 @@ internal static partial class InvalidSourceRepair
 			&& model.GetTypeInfo(assignment.Left).Type is { IsReferenceType: true }
 			? "null"
 			: $"default({cast.Type})";
+	}
+
+	/// <summary>
+	/// A struct written as the zero the register holding it was cleared to.
+	/// </summary>
+	/// <remarks>
+	/// <c>Vector3.zero</c> is one instruction - the register is cleared - so what recovery has to write down is a
+	/// zero where a <c>Vector3</c> belongs, and <c>(Vector3)0</c> is not C#. <b>40 of these in this game</b>, and
+	/// <c>(Vector3)0</c> twenty of them.
+	/// <para>
+	/// The rule above declines to read a zero as a value type, on the grounds that a zeroed register is not the same
+	/// thing as a zeroed struct - true where the struct is wider than the register that was cleared, and the reason
+	/// this is a separate rule rather than one more type kind there. What decides it is that the alternative is not a
+	/// more careful answer, it is no answer: the statement is commented out and everything reading the value goes
+	/// with it. <c>default(T)</c> is what a cleared register says, and where the struct really was only half cleared
+	/// the recovery had already lost the other half.
+	/// </para>
+	/// </remarks>
+	private static string? RewriteZeroedStruct(SyntaxNode node, SemanticModel model)
+	{
+		if (node is not CastExpressionSyntax cast
+			|| !IsZero(cast.Expression)
+			|| cast.Type.DescendantNodesAndSelf().OfType<OmittedTypeArgumentSyntax>().Any()
+			|| IsBeingCalled(cast))
+		{
+			return null;
+		}
+
+		//Only a struct the language will not let a zero become. An enum takes one, and so does every primitive, so
+		//a cast it accepts means what it says and is left exactly as recovery wrote it.
+		if (model.GetTypeInfo(cast.Type).Type is not { TypeKind: TypeKind.Struct } type
+			|| type.SpecialType is not SpecialType.None
+			|| type is INamedTypeSymbol { EnumUnderlyingType: not null }
+			|| model.ClassifyConversion(cast.Expression, type).Exists)
+		{
+			return null;
+		}
+
+		return $"default({cast.Type})";
 	}
 
 	/// <summary>
