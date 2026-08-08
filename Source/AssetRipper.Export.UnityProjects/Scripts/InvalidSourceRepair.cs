@@ -97,6 +97,7 @@ internal static partial class InvalidSourceRepair
 
 		int commented = 0;
 		int rewritten = 0;
+		int widened = 0;
 		int emptied = 0;
 		HashSet<string> repairedFiles = [];
 
@@ -109,6 +110,17 @@ internal static partial class InvalidSourceRepair
 			}
 
 			CSharpCompilation? compilation = FindCompilationProblems(files, references);
+
+			//A member of this same assembly that the language will not let another type reach is not a statement
+			//to give up on, it is a modifier to widen. Done before anything is commented, and the loop then
+			//compiles again with the wider member, so the statements that wanted it are never seen as broken.
+			int widenedHere = WidenInaccessibleMembers(files, compilation, fileSystem, repairedFiles);
+
+			if (widenedHere > 0)
+			{
+				widened += widenedHere;
+				continue;
+			}
 
 			//The last pass has no chance to fix what it finds, so it empties the method instead of chipping at it.
 			bool lastAttempt = attempt == MaxAttempts - 1;
@@ -135,6 +147,11 @@ internal static partial class InvalidSourceRepair
 			{
 				break;
 			}
+		}
+
+		if (widened > 0)
+		{
+			Logger.Info(LogCategory.Export, $"Widened {widened} members another type in the same assembly reads but could not reach");
 		}
 
 		if (rewritten > 0)
@@ -1218,6 +1235,133 @@ internal static partial class InvalidSourceRepair
 	/// <summary>
 	/// Comments out each span, keeping the text so it can still be read, and puts any replacement after it.
 	/// </summary>
+	/// <summary>
+	/// Widens the members of this assembly that another type in it reads and the language will not let it reach.
+	/// </summary>
+	/// <remarks>
+	/// <para>
+	/// il2cpp inlines an accessor into its callers, so what arrives here is a read of a <c>private</c> field from
+	/// another type - true to the binary, and not something C# will compile. Where the field has a property to be
+	/// said by, recovery says it that way; <b>106 statements</b> are left where it has none, and each takes its
+	/// statement and everything that reads the value with it.
+	/// </para>
+	/// <para>
+	/// The member is declared in this very export, so the answer is to write it wider rather than to give up on the
+	/// statement: <c>private</c> becomes <c>internal</c>, <c>protected</c> becomes <c>protected internal</c>, and a
+	/// member with no modifier at all is given one. Nothing outside the assembly can see any difference, and nothing
+	/// inside it could have depended on the narrower form - a decompiled project is read and compiled, not published
+	/// against.
+	/// </para>
+	/// <para>
+	/// Only members declared in source, so a private member of the framework is still left alone, and only where the
+	/// modifier is really the obstacle: an accessibility that is already wide enough means the compiler objected to
+	/// something else, and widening would be pretending to fix it.
+	/// </para>
+	/// </remarks>
+	private static int WidenInaccessibleMembers(List<SourceFile> files, CSharpCompilation? compilation,
+		FileSystem fileSystem, HashSet<string> repairedFiles)
+	{
+		if (compilation is null)
+		{
+			return 0;
+		}
+
+		Dictionary<SyntaxTree, SourceFile> byTree = [];
+		foreach (SourceFile file in files)
+		{
+			byTree[file.Root.SyntaxTree] = file;
+		}
+
+		Dictionary<SourceFile, List<Edit>> planned = [];
+		HashSet<ISymbol> done = new(SymbolEqualityComparer.Default);
+
+		foreach (Diagnostic diagnostic in compilation.GetDiagnostics())
+		{
+			if (diagnostic.Id != "CS0122" || diagnostic.Location.SourceTree is not { } tree
+				|| !byTree.TryGetValue(tree, out SourceFile? seenIn))
+			{
+				continue;
+			}
+
+			SemanticModel model = compilation.GetSemanticModel(tree);
+			SyntaxNode node = seenIn.Root.FindNode(diagnostic.Location.SourceSpan, getInnermostNodeForTie: true);
+
+			foreach (ISymbol symbol in model.GetSymbolInfo(node).CandidateSymbols)
+			{
+				if (!done.Add(symbol))
+				{
+					continue;
+				}
+
+				foreach (SyntaxReference reference in symbol.DeclaringSyntaxReferences)
+				{
+					if (!byTree.TryGetValue(reference.SyntaxTree, out SourceFile? declaredIn)
+						|| WideningEdit(reference.GetSyntax()) is not { } edit)
+					{
+						continue;
+					}
+
+					if (!planned.TryGetValue(declaredIn, out List<Edit>? here))
+					{
+						planned[declaredIn] = here = [];
+					}
+
+					here.Add(edit);
+				}
+			}
+		}
+
+		int made = 0;
+
+		foreach ((SourceFile file, List<Edit> edits) in planned)
+		{
+			List<Edit> ordered = [.. edits.DistinctBy(edit => edit.Span).OrderBy(edit => edit.Span.Start)];
+
+			fileSystem.File.WriteAllText(file.Path, ApplyEdits(file.Text, ordered));
+			repairedFiles.Add(file.Path);
+			made += ordered.Count;
+		}
+
+		return made;
+	}
+
+	/// <summary>The edit that makes one declaration reachable from the rest of the assembly.</summary>
+	private static Edit? WideningEdit(SyntaxNode declaration)
+	{
+		//A field's declaring reference is the variable, and the modifiers belong to the declaration around it.
+		MemberDeclarationSyntax? member = declaration as MemberDeclarationSyntax
+			?? declaration.FirstAncestorOrSelf<MemberDeclarationSyntax>();
+
+		if (member is null)
+		{
+			return null;
+		}
+
+		SyntaxTokenList modifiers = member.Modifiers;
+
+		if (modifiers.Any(SyntaxKind.PublicKeyword) || modifiers.Any(SyntaxKind.InternalKeyword))
+		{
+			//Already wide enough, so the protection level was not what the compiler objected to.
+			return null;
+		}
+
+		foreach (SyntaxToken modifier in modifiers)
+		{
+			if (modifier.IsKind(SyntaxKind.PrivateKeyword))
+			{
+				return new Edit(modifier.Span, "internal", Rewritten: true);
+			}
+
+			if (modifier.IsKind(SyntaxKind.ProtectedKeyword))
+			{
+				return new Edit(modifier.Span, "protected internal", Rewritten: true);
+			}
+		}
+
+		//No accessibility at all, which for a member means private.
+		return new Edit(new TextSpan(member.SpanStart, 0), "internal");
+	}
+
 	private static string ApplyEdits(string text, List<Edit> edits)
 	{
 		StringBuilder builder = new(text.Length + edits.Count * 128);
