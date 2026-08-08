@@ -15,6 +15,72 @@ namespace Cpp2IL.Core.Analysis;
 public static partial class DelegateInvokeRecovery
 {
     /// <summary>
+    /// The same recovery where the loads have already been resolved and folded away.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <see cref="Run"/> finds the delegate by looking for the load of <c>invoke_impl</c> - a read at three
+    /// pointers into the object - and following it back to what it was read from. By the time it runs, the
+    /// resolver has often named that read as the field it is and constant folding has put it straight into
+    /// the call, leaving the three loads as <c>Nop</c> and nothing whose definition can be followed:
+    /// </para>
+    /// <code>
+    /// IndirectCall v8 (IntPtr), v10, v0.method_code, v0.method, v0.invoke_impl, v11, …
+    /// </code>
+    /// <para>
+    /// The answer is in the operand list rather than behind it: a call handed a delegate's
+    /// <c>invoke_impl</c> is that delegate's <c>Invoke</c>, and the field says which delegate. 39 of the 94
+    /// indirect calls left in the game are this.
+    /// </para>
+    /// </remarks>
+    public static void RunOnFoldedLoads(MethodAnalysisContext method)
+    {
+        if (method.ControlFlowGraph is not { } graph)
+            return;
+
+        foreach (var instruction in graph.Instructions.ToList())
+        {
+            if (instruction.OpCode != OpCode.IndirectCall)
+                continue;
+
+            //Either the field is already an operand of the call, or the register it was loaded into still
+            //is and the load beside it names the field. Which of the two depends only on whether the
+            //propagation that folds a definition into its use has run yet.
+            var handed = instruction.Operands.OfType<FieldReference>().FirstOrDefault(IsInvokeImpl)
+                ?? (instruction.Operands.Count > 0 && instruction.Operands[0] is LocalVariable target
+                    ? graph.Instructions.FirstOrDefault(i => i is { OpCode: OpCode.Move, Operands: [_, FieldReference read] }
+                        && ReferenceEquals(i.Destination, target) && IsInvokeImpl(read))?.Operands[1] as FieldReference
+                    : null);
+
+            if (handed?.Local is not { } delegateLocal)
+            {
+                Report("noInvokeImpl " + instruction);
+                continue;
+            }
+
+            if (InvokeOf(delegateLocal.Type) is not { } invoke)
+            {
+                Report("noInvoke on " + delegateLocal.Type);
+                continue;
+            }
+
+            RewriteAsInvokeForArchitecture(instruction, delegateLocal, invoke, method);
+
+            if (instruction.OpCode == OpCode.IndirectCall)
+                Report("rewriteRefused " + invoke.FullName + " params=" + invoke.Parameters.Count + " void=" + invoke.IsVoid);
+        }
+    }
+
+    /// <summary>The third pointer into a delegate, which is the stub every invocation goes through.</summary>
+    private static bool IsInvokeImpl(FieldReference reference) => reference.Field.Name == "invoke_impl";
+
+    private static void Report(string why)
+    {
+        if (System.Environment.GetEnvironmentVariable("DELEGATE_TRACE") == "1")
+            System.Console.Error.WriteLine("DELEGATE " + why);
+    }
+
+    /// <summary>
     /// Writes the call back as the delegate's <c>Invoke</c>, by the convention the build actually uses.
     /// </summary>
     /// <remarks>

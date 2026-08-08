@@ -272,6 +272,14 @@ public static class ForkPipeline
         // and takes the loop and everything in it along with it.
         LocalVariables.ResolveTypesAndFields(method);
 
+        // And the delegate invocations the pass that knows them could not see: by the time it ran, the
+        // resolver had named the load of `invoke_impl` as the field it is and folding had put it straight
+        // into the call, leaving nothing whose definition could be followed back to the delegate. Here the
+        // field references exist and say which delegate it is. The trim beside it takes away the two
+        // arguments an invoke does not have, the same way `AfterDelegateInvokeRecovery` does.
+        DelegateInvokeRecovery.RunOnFoldedLoads(method);
+        MetadataResolver.TrimResolvedCallArguments(method);
+
         // And again, on the arrays that only just became arrays. The first run is far above, and a base typed
         // by the resolution on the line before it was invisible to that one - so `array.Length` came out as
         // `Unmanaged memory load: [v397 @ X8_v20 (System.Int32[])+18]`, reading a header field of a type the
