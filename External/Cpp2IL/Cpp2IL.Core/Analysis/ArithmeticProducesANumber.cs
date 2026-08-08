@@ -103,8 +103,20 @@ public static class ArithmeticProducesANumber
             //the typed sources alone, but it costs `full` 308 -> 307, `compare2` 2329 -> 2325 and ninety-six
             //more commented blocks. What made the fallback safe is refusing a **struct** source above, which
             //is what had been turning `1.6f` into `1L`.
+            //**ISIL has no width, but the register does.** A value in `V0`..`V31` is a floating point one -
+            //that is what those registers are for - so where no source says the width, the register the
+            //answer lands in does. Without this, `_cornersBuf[0].y - _cornersBuf[2].y` came out as
+            //`long num6 = num4 - num2;` with every one of the four floats called `System.Int64`, because
+            //the fallback below is the only thing that had an answer.
+            //
+            //It also settles the addition. An `Add` is refused here because it may be an address, and an
+            //address is never worked out in a vector register: an addition landing in one is an `fadd`.
+            var floating = InAFloatRegister(destination);
+
             var produced = widest
-                ?? (instruction.OpCode == OpCode.Add ? null : method.AppContext.SystemTypes.SystemInt64Type);
+                ?? (floating ? method.AppContext.SystemTypes.SystemSingleType
+                    : instruction.OpCode == OpCode.Add ? null
+                    : method.AppContext.SystemTypes.SystemInt64Type);
 
             if (produced == null)
                 continue;
@@ -116,13 +128,16 @@ public static class ArithmeticProducesANumber
             //compile while `obj4` is an `object`, and in this population it always is - the register the
             //value came out of was guessed at exactly as the destination was. Only where addition is not
             //involved, so an address never gets called a number.
-            if (instruction.OpCode == OpCode.Add)
+            if (instruction.OpCode == OpCode.Add && !floating)
                 continue;
 
             for (var operand = 1; operand < instruction.Operands.Count; operand++)
                 if (instruction.Operands[operand] is LocalVariable source
                     && source.Type is not { IsValueType: true }
-                    && !addressed.Contains(source))
+                    && !addressed.Contains(source)
+                    //Where the answer is floating because of where it lands, only the sources that land the
+                    //same way follow it: the other operand of an `fadd` is in a vector register too.
+                    && (!floating || InAFloatRegister(source)))
                     source.Type = produced;
         }
 
@@ -338,6 +353,14 @@ public static class ArithmeticProducesANumber
 
         return found;
     }
+
+    /// <summary>
+    /// Whether the value lives in one of the vector registers, which on this architecture is where floating
+    /// point is kept. Single and double share them and the lifter gives both one name, so this says a value
+    /// is not an integer rather than exactly how wide it is.
+    /// </summary>
+    private static bool InAFloatRegister(LocalVariable local)
+        => local.Register.Name is { Length: > 1 } name && name[0] == 'V' && char.IsDigit(name[1]);
 
     private static bool IsNumber(TypeAnalysisContext type) => StructInArithmetic.IsNumber(type);
 
