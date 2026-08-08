@@ -52,6 +52,7 @@ internal static partial class InvalidSourceRepair
 
 	private const string Marker = "//AssetRipper: commented out, this could not be kept as code.";
 
+
 	public static void Apply(AssemblyDefinition assembly, IAssemblyManager manager, LanguageVersion languageVersion, string outputFolder, FileSystem fileSystem)
 		=> Apply(assembly, manager, languageVersion, default, outputFolder, fileSystem);
 
@@ -386,6 +387,7 @@ internal static partial class InvalidSourceRepair
 			if (seen.Add(edit.Value.Span))
 			{
 				edits.Add(edit.Value);
+
 			}
 		}
 
@@ -591,7 +593,8 @@ internal static partial class InvalidSourceRepair
 				?? RewriteConstructorCall(node, model)
 				?? RewriteInaccessibleMember(node, model)
 				?? RewriteEventBackingField(node, model)
-				?? RewriteZeroedStruct(node, model);
+				?? RewriteZeroedStruct(node, model)
+				?? RewriteAmbiguousType(node, model);
 
 			if (text is not null)
 			{
@@ -673,6 +676,59 @@ internal static partial class InvalidSourceRepair
 			&& model.GetTypeInfo(assignment.Left).Type is { IsReferenceType: true }
 			? "null"
 			: $"default({cast.Type})";
+	}
+
+	/// <summary>
+	/// A type named by a name two namespaces both use.
+	/// </summary>
+	/// <remarks>
+	/// A recovered file gets a <c>using</c> for every namespace anything in it mentions, and two of them
+	/// declaring the same name makes every use of it ambiguous - <c>Debug</c> is <c>UnityEngine.Debug</c> and
+	/// <c>System.Diagnostics.Debug</c>, so <c>Debug.Log(message)</c> does not compile and neither does the
+	/// statement around it. 46 of those here, and the recovery had them all right.
+	/// <para>
+	/// Which one was meant is not a guess: the member being reached says so. <c>Log</c> is declared by one of
+	/// the two and not the other, so where exactly one candidate has it, that is the type, written out in
+	/// full. Where both have it, or neither, nothing is written - an ambiguity this cannot settle is left as
+	/// the ambiguity it is.
+	/// </para>
+	/// </remarks>
+	private static string? RewriteAmbiguousType(SyntaxNode node, SemanticModel model)
+	{
+		if (node is not IdentifierNameSyntax identifier
+			|| identifier.Parent is not MemberAccessExpressionSyntax access
+			|| access.Expression != identifier)
+		{
+			return null;
+		}
+
+		SymbolInfo info = model.GetSymbolInfo(identifier);
+
+		if (info.CandidateReason is not CandidateReason.Ambiguous || info.CandidateSymbols.Length < 2)
+		{
+			return null;
+		}
+
+		string wanted = access.Name.Identifier.ValueText;
+		INamedTypeSymbol? only = null;
+
+		foreach (ISymbol candidate in info.CandidateSymbols)
+		{
+			if (candidate is not INamedTypeSymbol type || type.GetMembers(wanted).Length == 0)
+			{
+				continue;
+			}
+
+			if (only is not null)
+			{
+				//Both of them have it, so the member says nothing about which was meant.
+				return null;
+			}
+
+			only = type;
+		}
+
+		return only?.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
 	}
 
 	/// <summary>
