@@ -46,11 +46,15 @@ public static class OutParameterWriteback
         if (slots.Count == 0)
             return;
 
+        //Worked out once, before the renaming below moves the destinations from one prefix to the other: the
+        //instructions are the same objects either way, and only which of them clears a slot matters here.
+        var clearing = ZeroStores(graph);
+
         //A struct is cleared a slot at a time, and only the one whose address was taken is found above - so
         //the rest keep the zero, and a field read after the call folds to it. `foreach (int x in xs)` came
         //out calling `keep(0)` and adding `0`, because `List<T>.Enumerator._current` lives two slots above
         //the address that was handed over.
-        foreach (var alongside in ClearedAlongsideAnAddressTakenSlot(graph, slots))
+        foreach (var alongside in ClearedAlongsideAnAddressTakenSlot(clearing, slots))
             slots.Add(alongside);
 
         foreach (var instruction in graph.Instructions)
@@ -91,30 +95,13 @@ public static class OutParameterWriteback
         //everything that wanted the address read the cleared struct instead: `Corpus::Tally` handed
         //`MoveNext` a zero and threw. Which registers hold zero is carried along the block, like
         //ConstantFolding does, so nothing is assumed about how control reached it.
-        foreach (var block in graph.Blocks)
+        foreach (var instruction in clearing)
         {
-            var zeroed = new HashSet<string>();
-
-            foreach (var instruction in block.Instructions)
+            if (instruction.Operands.Count > 0 && instruction.Operands[0] is Register destination
+                && destination.Name.StartsWith(StackSlots.AddressPrefix))
             {
-                if (instruction.OpCode == OpCode.Move
-                    && instruction.Operands[0] is Register destination
-                    && destination.Name.StartsWith(StackSlots.AddressPrefix)
-                    && IsZero(instruction.Operands[1], zeroed))
-                {
-                    instruction.OpCode = OpCode.Nop;
-                    instruction.Operands = [];
-                    continue;
-                }
-
-                if (instruction.Operands.Count > 0 && instruction.Operands[0] is Register written)
-                {
-                    if (instruction.OpCode == OpCode.Move && instruction.Operands.Count > 1
-                        && IsZero(instruction.Operands[1], zeroed))
-                        zeroed.Add(written.Name);
-                    else
-                        zeroed.Remove(written.Name);
-                }
+                instruction.OpCode = OpCode.Nop;
+                instruction.Operands = [];
             }
         }
     }
@@ -226,17 +213,51 @@ public static class OutParameterWriteback
     /// than holding the zero afterwards. Adjacent means the next four or eight bytes: those are the widths a
     /// store uses, and anything further apart is a different variable.
     /// </remarks>
-    private static IEnumerable<string> ClearedAlongsideAnAddressTakenSlot(Graphs.ISILControlFlowGraph graph, HashSet<string> taken)
+    /// <summary>
+    /// Every store of a zero into a stack slot, whether the zero is the number or a register holding one.
+    /// </summary>
+    /// <remarks>
+    /// A slot wider than a register is cleared from one - <c>movi v0.2d, #0</c> then
+    /// <c>stp v0, v0, [sp, #0x10]</c> clears thirty-two bytes - so the value stored is a register, and a test
+    /// that only knows the number nought sees none of it. Which registers hold zero is carried along the
+    /// block, as <c>ConstantFolding</c> does, so nothing is assumed about how control reached it.
+    /// </remarks>
+    private static HashSet<Instruction> ZeroStores(Graphs.ISILControlFlowGraph graph)
+    {
+        var stores = new HashSet<Instruction>();
+
+        foreach (var block in graph.Blocks)
+        {
+            var zeroed = new HashSet<string>();
+
+            foreach (var instruction in block.Instructions)
+            {
+                if (instruction.OpCode == OpCode.Move && instruction.Operands.Count == 2
+                    && instruction.Operands[0] is Register slot && OffsetOfSlotNamed(slot.Name) != null
+                    && IsZero(instruction.Operands[1], zeroed))
+                    stores.Add(instruction);
+
+                if (instruction.Operands.Count > 0 && instruction.Operands[0] is Register written)
+                {
+                    if (instruction.OpCode == OpCode.Move && instruction.Operands.Count > 1
+                        && IsZero(instruction.Operands[1], zeroed))
+                        zeroed.Add(written.Name);
+                    else
+                        zeroed.Remove(written.Name);
+                }
+            }
+        }
+
+        return stores;
+    }
+
+    private static IEnumerable<string> ClearedAlongsideAnAddressTakenSlot(HashSet<Instruction> clearing, HashSet<string> taken)
     {
         var cleared = new SortedSet<int>();
 
-        foreach (var instruction in graph.Instructions)
-        {
-            if (instruction.OpCode == OpCode.Move && instruction.Operands.Count == 2
-                && instruction.Operands[0] is Register slot && IsZero(instruction.Operands[1])
-                && OffsetOfSlotNamed(slot.Name) is { } offset)
+        foreach (var instruction in clearing)
+            if (instruction.Operands[0] is Register slot && OffsetOfSlotNamed(slot.Name) is { } offset)
                 cleared.Add(offset);
-        }
 
         var takenOffsets = new HashSet<int>();
         foreach (var name in taken)
@@ -257,7 +278,11 @@ public static class OutParameterWriteback
 
         foreach (var offset in cleared)
         {
-            if (run.Count > 0 && offset - run[^1] is not (4 or 8))
+            //4 and 8 are a word and a doubleword; 16 is a vector, which is how a struct wider than that is
+            //cleared - `stp v0, v0, [sp, #0x10]` writes two of them and leaves a gap of 0x10 between the two
+            //slots it names. Without 16 the run breaks there and the second half keeps the zero, which is
+            //where `Corpus::Tally` read its key.
+            if (run.Count > 0 && offset - run[^1] is not (4 or 8 or 16))
                 Flush();
 
             run.Add(offset);
