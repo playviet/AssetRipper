@@ -17,6 +17,14 @@ public static class ContextToTypeSignature
     public static TypeSignature ToTypeSignature(this TypeAnalysisContext context, ModuleDefinition parentModule) => context switch
     {
         ReferencedTypeAnalysisContext referencedTypeAnalysisContext => referencedTypeAnalysisContext.ToTypeSignature(parentModule),
+
+        //The module type is the one type nothing builds a stub for - AsmResolver creates it with the module
+        //itself, so it never passes through `BuildStubType` and never gets an `AsmResolverType` to be found.
+        //A generic method declared on it then threw, and the exception took the **whole body** with it: 25 of
+        //them in `GoogleMobileAds.Android`, every one lost entirely rather than one statement short.
+        { Name: "<Module>" } => parentModule.DefaultImporter
+            .ImportType(parentModule.GetModuleType()!).ToTypeSignature(false),
+
         _ => parentModule.DefaultImporter.ImportType(context.GetTypeDefinition()).ToTypeSignature(context.IsValueType)
     };
 
