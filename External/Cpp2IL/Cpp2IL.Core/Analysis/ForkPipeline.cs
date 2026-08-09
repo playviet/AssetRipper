@@ -443,6 +443,11 @@ public static class ForkPipeline
         // not arithmetic, and it makes a `Color32` stop looking like one. Late, where the value has its type.
         WidthMaskIsIdentity.Run(method);
 
+        // A struct of two words travels in one register, and its halves are its fields: a shift of thirty-two
+        // brings the top one down, and an array subscript in such a register is the bottom one. Late, beside
+        // the mask above, where the local carries the struct's type and the accesses are already recovered.
+        PackedPairField.Run(method);
+
         // One immediate broadcast into every lane of a struct of floats - `Color.white` is `FMOV V0.4S` and
         // one store, and the lifter keeps the number and loses the broadcast. Here, where the destination has
         // its declared type and before the generator has to write the number down as a cast.
