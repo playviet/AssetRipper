@@ -88,7 +88,15 @@ public static class HomogeneousFloatArguments
             if (FloatConstructor(type, floats) is not { } constructor)
                 continue;
 
-            var parts = new List<object> { instruction.Operands[first + i] };
+            var whole = instruction.Operands[first + i];
+
+            //Where the first register already holds the struct itself - the untouched result of a call that
+            //returned one - there is nothing to assemble, and assembling anyway puts a `Vector3` where the
+            //constructor wants its `x`. Without this guard the same design cost 49 whole bodies.
+            if (whole is LocalVariable { Type: { } already } && HomogeneousFloatStruct.Count(already) is > 1)
+                continue;
+
+            var parts = new List<object> { whole };
 
             for (var field = 1; field < floats && parts.Count == field; field++)
             {
@@ -97,10 +105,23 @@ public static class HomogeneousFloatArguments
             }
 
 
-            if (parts.Count == floats)
+            //And every part has to be a float. A register the walk reached may hold anything - a long, an
+            //address, a read through one - and a constructor taking four floats handed those comes out as
+            //`new Vector3(num * 1067366482L, num, ((Vector3*)num)->z)`, which is worse than the cast it
+            //replaced. Three of the 96 files lost a method to exactly that.
+            if (parts.Count == floats && parts.TrueForAll(IsAFloat))
                 instruction.Operands[first + i] = new FloatStructAssembly(constructor, parts);
         }
     }
+
+    /// <summary>Whether an operand is a single-precision value, which is all a field of one of these is.</summary>
+    private static bool IsAFloat(object part) => part switch
+    {
+        float or double => true,
+        FieldReference field => field.Field.FieldType.FullName == "System.Single",
+        LocalVariable { Type: { } type } => type.FullName == "System.Single",
+        _ => false,
+    };
 
     /// <summary>The constructor that takes the struct's fields one float at a time, in field order.</summary>
     private static MethodAnalysisContext? FloatConstructor(TypeAnalysisContext type, int floats)
@@ -118,6 +139,8 @@ public static class HomogeneousFloatArguments
     /// </remarks>
     private static object? Reaching(Block block, int at, int first, int field)
     {
+        var register = first + field;
+
         //A field is in the next register along - or, where one vector register held the whole struct and the
         //lane splitter took it apart, in a lane of the first. `set_pivot` is handed `q0` with both floats in
         //it, so what holds `y` is `V0#4` and there is no `V1` in the body at all.
@@ -133,18 +156,16 @@ public static class HomogeneousFloatArguments
                 if (Defined(instruction) is { } written && (Names(written, name) || Names(written, lane)))
                     return written;
 
-                if (instruction.IsCall)
-                    return null;
-
-                //Every vector register is caller-saved, so a call destroys whatever was in this one and a
-                //definition from before it says nothing about what is there now.
+                //Every vector register is caller-saved, so a call destroys whatever was in this one - unless
+                //the call is what put it there. A struct of floats comes back one field to a register, so
+                //after such a call this register holds that field and nothing else does.
                 //
-                //A call *returning* a struct of floats does leave one field in each of these registers, and
-                //taking them from there was built and measured: `cfscore` 362 -> 349 whole. The reason is
-                //that only the register the first field is in has an answer from the ISIL - the lifter names
-                //a struct return `x0` - so the fields after it came from the call while the first came from
-                //whatever the value flow said, and where the caller had overwritten none of them the result
-                //was a struct built half from one place and half from another.
+                //The lifter names a struct return `x0`, so the **first** field's answer comes from the value
+                //flow while the rest come from here. Where the caller had overwritten none of them that is a
+                //struct built half from one place and half from another - which is what the guard in
+                //`Assemble` refuses, and without that guard this cost 49 whole bodies.
+                if (instruction.IsCall)
+                    return Returned(instruction, register);
             }
 
             if (block.Predecessors.Count != 1)
@@ -155,6 +176,26 @@ public static class HomogeneousFloatArguments
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// The field of a call's result left in a vector register, where the call returns a struct of floats
+    /// that reaches this far. Null for any other call, which merely destroyed the register.
+    /// </summary>
+    private static object? Returned(Instruction call, int register)
+    {
+        if (call.OpCode != OpCode.Call || call.Operands.Count < 2
+            || call.Operands[0] is not MethodAnalysisContext callee
+            || call.Operands[1] is not LocalVariable result)
+            return null;
+
+        var returned = callee.ReturnType;
+
+        if (HomogeneousFloatStruct.Count(returned) is not { } floats || register >= floats
+            || HomogeneousFloatStruct.Fields(returned) is not { } fields || fields.Count != floats)
+            return null;
+
+        return new FieldReference(fields[register], result, register * 4);
     }
 
     /// <summary>The local a single instruction writes, which for a call is where its result comes back.</summary>
