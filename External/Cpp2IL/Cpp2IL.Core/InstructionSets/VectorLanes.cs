@@ -176,7 +176,8 @@ internal sealed class VectorLanes
 
     private bool Decode(MethodAnalysisContext context, uint word, Action<OpCode, object[]> emit)
         => Copy(word, emit) || Immediate(word, emit) || Arithmetic(context, word, emit) || Integer(word, emit)
-           || Scaled(word, emit) || Permute(word, emit) || Reduce(word, emit) || Shifted(word, emit);
+           || Scaled(word, emit) || Permute(word, emit) || Reduce(word, emit) || Pairwise(word, emit)
+           || Shifted(word, emit);
 
     /// <summary>
     /// The same constant put into every lane, which is how a vector of a literal is made.
@@ -837,6 +838,54 @@ internal sealed class VectorLanes
     /// "did all of them". Over numbers they are a maximum and a minimum, which ISIL has no word for, so only
     /// the answers are taken.
     /// </remarks>
+    /// <summary>
+    /// Adds the two halves of a register together, which is how a vectorised sum ends.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// clang does two multiplications at once and finishes with <c>faddp s0, v0.2s</c> - the two lanes added
+    /// to each other - so `difficultyFactor * w1 + experienceFactor * w2` is one add rather than two.
+    /// Nothing lifted it, and the whole expression went with it: `WinMenu::ComputeBeatPercent` kept
+    /// <c>Not implemented instruction: Instruction FADDP</c> and every statement after it.
+    /// </para>
+    /// <para>
+    /// The scalar pairwise space is <c>01 U 11110 sz 11000 opcode 10 Rn Rd</c>, which is not where the
+    /// across-lane reductions live, so <see cref="Reduce"/> never saw it. Only <c>FADDP</c> is taken: the
+    /// other members of the space are maximum and minimum, which ISIL has no word for.
+    /// </para>
+    /// </remarks>
+    private bool Pairwise(uint word, Action<OpCode, object[]> emit)
+    {
+        if ((word >> 30 & 3) != 0b01 || (word >> 24 & 0x1F) != 0b11110
+            || (word >> 17 & 0x1F) != 0b11000 || (word >> 10 & 3) != 0b10)
+        {
+            return false;
+        }
+
+        //U set and opcode 01101 is the floating point add; nothing else here has an ISIL counterpart.
+        if ((word >> 29 & 1) != 1 || (word >> 12 & 0x1F) != 0b01101)
+            return false;
+
+        var elementWidth = (word >> 22 & 1) == 1 ? 8 : 4;
+        var destination = (int)(word & 0x1F);
+        var source = (int)(word >> 5 & 0x1F);
+
+        if (!Ensure(source, 0, elementWidth, emit) || !Ensure(source, elementWidth, elementWidth, emit))
+            return false;
+
+        var low = Lane(source, 0);
+        var high = Lane(source, elementWidth);
+
+        //Into a scalar, so the answer lives in the low part alone and the rest of the register is gone.
+        var answer = Lane(destination, 0);
+
+        Forget(destination);
+        emit(OpCode.Move, [answer, low]);
+        emit(OpCode.Add, [answer, answer, high]);
+
+        return true;
+    }
+
     private bool Reduce(uint word, Action<OpCode, object[]> emit)
     {
         if (word >> 31 != 0 || (word >> 24 & 0x1F) != 0b01110
