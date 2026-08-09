@@ -166,6 +166,14 @@ public static partial class LocalVariables
         var floatsMaySpeak = !logical && OnlyFloatingPointIsKnown(arithmetic, last);
         var changed = false;
 
+        //The destination's own type is what needs correcting here, so it cannot also be the reason not to:
+        //`OnlyFloatingPointIsKnown` counts operand zero, and a result left `System.Int64` by a load whose
+        //width was all anyone knew therefore blocks its own correction. Judged on what the expression *reads*
+        //instead - and only where every one of those is a known floating point value, which is what keeps the
+        //`Vector2 / float` shape out: that one reads a vector on one side, so it never qualifies.
+        if (!logical && ReadsOnlyFloatingPoint(arithmetic, last, out var reads) && !addresses.Contains(destination))
+            changed |= SharpenAVectorRegister(destination, reads);
+
         for (var i = 1; i <= last && i < arithmetic.Operands.Count; i++)
         {
             //An immediate with a fraction can only have come out of a floating point register, so it says what
@@ -173,6 +181,7 @@ public static partial class LocalVariables
             if (floatsMaySpeak && !addresses.Contains(destination) && FloatingPointConstant(arithmetic.Operands[i], method) is { } constant)
             {
                 changed |= SetTypeIfUnknown(destination, constant);
+                changed |= SharpenAVectorRegister(destination, constant);
                 continue;
             }
 
@@ -181,7 +190,10 @@ public static partial class LocalVariables
             if (arithmetic.Operands[i] is FieldReference read)
             {
                 if (Travels(read.Field.FieldType, arithmetic.OpCode, floatsMaySpeak) && !addresses.Contains(destination))
+                {
                     changed |= SetTypeIfUnknown(destination, read.Field.FieldType);
+                    changed |= SharpenAVectorRegister(destination, read.Field.FieldType);
+                }
 
                 continue;
             }
@@ -190,13 +202,41 @@ public static partial class LocalVariables
                 continue;
 
             if (Travels(operand.Type, arithmetic.OpCode, floatsMaySpeak) && !addresses.Contains(destination))
+            {
                 changed |= SetTypeIfUnknown(destination, operand.Type);
+                changed |= SharpenAVectorRegister(destination, operand.Type);
+            }
 
             if (Travels(destination.Type, arithmetic.OpCode, floatsMaySpeak) && !addresses.Contains(operand))
                 changed |= SetTypeIfUnknown(operand, destination.Type);
         }
 
         return changed;
+    }
+
+    /// <summary>
+    /// Gives a vector register holding the result of floating point arithmetic its floating point type, even
+    /// where it already has one that says nothing.
+    /// </summary>
+    /// <remarks>
+    /// The type a value takes here is settled by a fixpoint, so a destination can be given the type of an
+    /// operand that is *later* sharpened and never revisited: `Vector3.one * 0.85f` typed its result
+    /// `System.Int64` from a whole-vector load, and kept it after the load became a `Vector3`. A bare integer
+    /// is what a value of unknown kind ends up as, and a value in v0..v31 is a float - so between the two
+    /// there is nothing to weigh. Only in a vector register, and only overruling a bare integer, so a type
+    /// that says something is never thrown away.
+    /// </remarks>
+    private static bool SharpenAVectorRegister(LocalVariable local, TypeAnalysisContext? type)
+    {
+        if (type?.FullName is not ("System.Single" or "System.Double")
+            || !IsABareInteger(local.Type)
+            || local.Register.Name is not { Length: > 1 } name || name[0] is not ('V' or 'S' or 'D'))
+        {
+            return false;
+        }
+
+        local.Type = type;
+        return true;
     }
 
     /// <summary>
@@ -222,6 +262,44 @@ public static partial class LocalVariables
         }
 
         return true;
+    }
+
+    /// <summary>
+    /// Whether every value the expression reads is a known floating point one, and what kind.
+    /// </summary>
+    /// <remarks>
+    /// Operand zero - the destination - is deliberately not counted, and a constant with a fraction counts as
+    /// much as a typed value: <c>Vector3.one.x * 0.85f</c> reads a <c>Single</c> field and a <c>float</c>, and
+    /// nothing else. Requiring *every* read to be known is what keeps the shape this rule must not touch out:
+    /// dividing a <c>Vector2</c> by a <c>float</c> reads a vector on one side, so it never qualifies.
+    /// </remarks>
+    private static bool ReadsOnlyFloatingPoint(Instruction arithmetic, int last, out TypeAnalysisContext? kind)
+    {
+        kind = null;
+
+        for (var i = 1; i <= last && i < arithmetic.Operands.Count; i++)
+        {
+            switch (arithmetic.Operands[i])
+            {
+                //A constant with a fraction can only have come out of a floating point register, and says so
+                //without saying which width - so it is allowed through without settling the kind.
+                case float or double:
+                    continue;
+
+                case LocalVariable { Type: { } local } when IsFloatingPoint(local):
+                    kind ??= local;
+                    continue;
+
+                case FieldReference { Field.FieldType: { } field } when IsFloatingPoint(field):
+                    kind ??= field;
+                    continue;
+
+                default:
+                    return false;
+            }
+        }
+
+        return kind is not null;
     }
 
     private static bool IsFloatingPoint(TypeAnalysisContext? type) => type?.FullName is "System.Single" or "System.Double";

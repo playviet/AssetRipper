@@ -135,11 +135,20 @@ public static class HomogeneousFloatArguments
     }
 
     /// <summary>Whether an operand is a single-precision value, which is all a field of one of these is.</summary>
+    /// <remarks>
+    /// A value with no type at all is taken where it sits in a vector register. The guard exists to keep a
+    /// long, an address or a read through one out of a constructor that wants floats - and none of those is
+    /// ever in v0..v31, because an address lives in an x register. What is left there is a float by the same
+    /// convention that says which registers the argument occupies, and refusing it lost the whole assembly
+    /// over one lane the type fixpoint never reached: `tf.localScale = Vector3.one * 0.85f` had two of its
+    /// three fields.
+    /// </remarks>
     private static bool IsAFloat(object part) => part switch
     {
         float or double => true,
         FieldReference field => field.Field.FieldType.FullName == "System.Single",
         LocalVariable { Type: { } type } => type.FullName == "System.Single",
+        LocalVariable { Type: null, Register.Name: { Length: > 1 } name } => name[0] is 'V' or 'S' or 'D',
         _ => false,
     };
 

@@ -7540,7 +7540,7 @@
 6
 ],
 "Assembly-CSharp::CFramework.GizmosDrawer::DrawArrowEnd": [
-4,
+5,
 8,
 5
 ],
@@ -10145,7 +10145,7 @@
 4
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenTMPAnimator::SkewCharY": [
-4,
+5,
 11,
 5
 ],
@@ -10215,7 +10215,7 @@
 4
 ],
 "Assembly-CSharp::CF.BoardController+<HammerAnimation>d__155::MoveNext": [
-25,
+26,
 45,
 27
 ],
@@ -11025,7 +11025,7 @@
 19
 ],
 "Assembly-CSharp::CF.SubCellVisual::PlayHighlightAccent": [
-10,
+13,
 15,
 13
 ],
@@ -12380,7 +12380,7 @@
 6
 ],
 "Assembly-CSharp::CF.IngameMenu::CompleteAndRemoveSlot": [
-11,
+13,
 16,
 13
 ],
