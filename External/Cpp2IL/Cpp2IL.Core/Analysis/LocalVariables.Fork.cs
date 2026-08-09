@@ -80,7 +80,7 @@ public static partial class LocalVariables
         //for, and the callee says outright what it produces, so the guess from the width has nothing to
         //recommend it: `Vector3.one * 0.85f` came out as `(long)(Vector3.one * 1062836634L)`, which C# will
         //quietly compile because a `long` converts to a `float`.
-        if (IsABareInteger(value.Type) && HomogeneousFloatStruct.Count(produced) is > 1)
+        if (IsOnlyAWidth(value.Type) && HomogeneousFloatStruct.Count(produced) is > 1)
         {
             value.Type = produced;
             return true;
@@ -88,6 +88,19 @@ public static partial class LocalVariables
 
         return false;
     }
+
+    /// <summary>
+    /// Whether a type is no more than the width of the register a value was loaded into.
+    /// </summary>
+    /// <remarks>
+    /// The integers are what an unrecognised load of eight bytes leaves behind. <c>Single</c> and
+    /// <c>Double</c> belong here too, for the same reason and only in this question: <c>Vector2.zero</c> is
+    /// <c>ldr d2, [x8, #...]</c>, eight bytes, and the register was called a <c>Double</c> because that is
+    /// what a d register usually holds - while a <c>Vector2</c> is eight bytes and fits it exactly. Where a
+    /// call declares it returns a struct of floats, that declaration is the better answer than the width.
+    /// </remarks>
+    private static bool IsOnlyAWidth(TypeAnalysisContext? type)
+        => IsABareInteger(type) || type?.FullName is "System.Single" or "System.Double";
 
     /// <summary>
     /// Whether a type is what a value of unknown kind ends up as - the width of the register it was in, and
