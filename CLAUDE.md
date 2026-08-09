@@ -3,6 +3,11 @@
 This fork of AssetRipper exists to recover IL2CPP method bodies from an arm64 Android build. Everything below
 is about getting that done in as few tokens and as little wall-clock time as possible.
 
+`RECOVERY.md` beside this file is the long form: how to bring up a **new** game, what each scorer is blind
+to, what decides keep-or-revert, the families to check in order, and how to work several games at once so a
+fix is general rather than fitted. Read it when starting on a different build; this file is the short version
+and wins where the two disagree.
+
 ## Read memory before searching the codebase
 
 `~/.claude/projects/-Users-playviet-Documents--BZ-AssetRipper/memory/` holds what earlier sessions worked out

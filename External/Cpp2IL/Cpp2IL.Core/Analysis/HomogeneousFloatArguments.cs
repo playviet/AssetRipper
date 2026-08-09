@@ -92,7 +92,7 @@ public static class HomogeneousFloatArguments
 
             for (var field = 1; field < floats && parts.Count == field; field++)
             {
-                if (Reaching(block, at, start + field) is { } held)
+                if (Reaching(block, at, start, field) is { } held)
                     parts.Add(held);
             }
 
@@ -116,9 +116,13 @@ public static class HomogeneousFloatArguments
     /// left there by something earlier and the compiler had no reason to touch it. There is nothing to name,
     /// so the argument keeps the one register it had.
     /// </remarks>
-    private static object? Reaching(Block block, int at, int register)
+    private static object? Reaching(Block block, int at, int first, int field)
     {
-        var name = "V" + register;
+        //A field is in the next register along - or, where one vector register held the whole struct and the
+        //lane splitter took it apart, in a lane of the first. `set_pivot` is handed `q0` with both floats in
+        //it, so what holds `y` is `V0#4` and there is no `V1` in the body at all.
+        var name = "V" + (first + field);
+        var lane = "V" + first + "#" + (field * 4);
 
         for (var depth = 0; depth < Depth; depth++)
         {
@@ -126,7 +130,7 @@ public static class HomogeneousFloatArguments
             {
                 var instruction = block.Instructions[i];
 
-                if (Defined(instruction) is { } written && Names(written, name))
+                if (Defined(instruction) is { } written && (Names(written, name) || Names(written, lane)))
                     return written;
 
                 if (instruction.IsCall)
@@ -169,6 +173,13 @@ public static class HomogeneousFloatArguments
         => local.Register is { Name: { Length: > 1 } name }
             && (name[0] is 'V' or 'S' or 'D')
             && "V" + name[1..] == register;
+
+    /// <summary>Which vector register a local is, ignoring any lane within it.</summary>
+    private static int? VectorRegister(LocalVariable local)
+        => local.Register is { Name: { Length: > 1 } name } && name[0] is 'V' or 'S' or 'D'
+            && int.TryParse(name[1..].Split('#')[0], out var number)
+            ? number
+            : null;
 }
 
 /// <summary>

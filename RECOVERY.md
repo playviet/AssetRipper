@@ -1,187 +1,195 @@
-# Recovering IL2CPP method bodies — where this stands
+# Recovering an il2cpp game, and learning from more than one
 
-This fork exists to recover the method bodies of an arm64 Android IL2CPP build as C# a Unity project will
-compile and run. This file is the handover: what the state is, how it is measured, what has been tried, and
-what is left. `CLAUDE.md` is the working rules; `External/Cpp2IL/FORK.md` is how the vendored fork stays
-mergeable; `LocalPackages/README.md` is the fix-by-fix changelog.
+This is the operating manual for pointing this fork at a build and getting method bodies back. It is written
+so that a session starting cold can bring up a **new** game, score it honestly, and improve the fork without
+repeating work — and so that several games can be worked at once, each holding the others honest.
 
-## The state, at 1.0.545
+`CLAUDE.md` is the short version and takes precedence where the two disagree. The long-form record of every
+family, fix and dead end is in `~/.claude/projects/.../memory/`, indexed by `MEMORY.md`. **Read the memory
+before searching the code**; a memory costs a few hundred tokens and rediscovering a runtime offset costs a
+build, an export and a disassembly session.
 
-Measured against the original Unity project the build came from (96 files, `Assets/AAA/CF`), and against the
-binary itself.
+---
 
-> **The scorers were lost and rebuilt** between 1.0.453 and 1.0.454, and `cfscore`/`compare2`/`decisions` are
-> on a **new scale** from then on: they count every member with a body rather than the 423 the old filter
-> chose, and their marker vocabulary is taken from `IlGenerator`'s own `Ldstr` operands. Numbers below are
-> not comparable with the 1.0.327 table this replaces. `roundtrip` and the corpora carry across unchanged.
-> Durable copies of all of them are in `scratchpad-tools/`.
+## 1. What a new game needs
 
 | | |
 |---|---|
-| method bodies discarded as unreadable | **0** (was 907) |
-| `error CS` in the exported project | **0** |
-| Unity 6000.0.78f1 batch import | **compiles**, `Assembly-CSharp.dll` produced |
-| **bodies the generator failed to build** | **25-26** — jitters by two between identical builds |
-| whole methods, against the original | **327** of 443, and **62 of 96 files** have nothing left in them |
-| whole bodies, game-wide | **2750** of 3609 (76.2%), 162 dead |
-| decisions surviving (`if`, loops, `switch`, `?:`, `&&`) | **94.3%**, 1259 of 1335 |
-| operations surviving, judged from the binary alone | **1296** methods whole of 1993 measured |
-| unresolved memory reads, game-wide | **1255** (1612 before the class-pointer work at 1.0.466) |
-| commented statements, game-wide | **2314** (2350 at 1.0.478) |
-| calls that still resolve to nothing but an address | **288** (344 before 1.0.463) |
-| pure functions that execute identically to the original | **38 of 43** in the corpus |
+| The build | an `.apk`/`.aab`, or `libil2cpp.so` + `global-metadata.dat` |
+| Architecture | **arm64 only.** Every lifter change in this fork is arm64. An x86-64 build gets none of it |
+| Unity version | read from the import log: `found Unity version: X`. Install that exact editor if you can |
+| Original source | **optional**, and only for scoring — recovery never reads it |
 
-Of the five corpus methods that still behave differently, **four are closed with evidence**: `Distance` and
-`Divide` are corpus artefacts rather than defects, `Bits` needs a 32-bit truncation the fork has priced and
-declined, and `Guarded` performs its division correctly from 1.0.525 - what remains there is the `catch`,
-which clang deleted because `udiv` does not trap. Only `Tally` is open, and its `foreach` is now the source verbatim with nothing commented in it - what is
-left is the **return**, which comes back as `-1` because the accumulator shares a register with the array
-parameter and inherits its type. `SumSteps` closed at 1.0.493.
+The editor matters twice: it compiles the export for the gate, and `UnityEditorReferences` uses its
+unstripped assemblies so the repair pass stops discarding code the editor would accept.
 
-## How anything here is judged
-
-Five scorers, in `scratchpad/`. **None subsumes another**, and the session that built them found a defect that
-four of the five could not see.
-
-| | asks | needs the original? |
-|---|---|---|
-| `cfscore.py` | did this method come back whole, against the original | yes |
-| `compare2.py` | the same, over every body in the game | yes |
-| `roundtrip.py` | did the calls, fields and literals the **binary** names survive | **no** |
-| `decisions.py` | did the branching survive | yes |
-| `difftest.py` / `autodiff.py` | run it and compare the answers | yes |
-
-`roundtrip.py` is the one that transfers to a game nobody has the source of. `difftest.py` is the only one
-that can tell a method that is right from one that merely looks right — it found nine methods rated *full* by
-every other scorer of which only two actually worked.
-
-There are also **two ground-truth corpora**: `scratchpad/corpus/` and `scratchpad/corpus6/`, the same Unity
-project written to be recovered and built to arm64 IL2CPP on purpose, so every method has known source on
-shapes chosen rather than found. `autodiff.py` runs the whole of either without being told what to test.
-
-Two of the seven the corpus still fails are **not defects at all**: `Divide` and `Guarded` both divide, and
-arm64's `UDIV`/`SDIV` do not trap - il2cpp emitted no zero check, so clang deleted the handler and the shipped
-binary returns a number where the source would have caught. Writing a `catch` there would be fabrication.
-
-The corpus was grown from 29 methods to 43 once it stopped failing, across eight families it had no shape for
-- lambdas, StringBuilder and string splitting, dictionary and list mutation, switch on a string, shifts and
-masks, boxing, checked arithmetic, try/finally, and virtual dispatch through a base class. Seven of the fifteen
-passed first time; the other seven were defects, of which two are fixed and one half fixed. **Growing the
-corpus is the cheapest way to find a defect** - one Unity build, and it does not depend on guessing.
-
-`Areas` and `Boxed` were fixed since - an inlined constructor built its objects with zeroed fields, and a cast
-whose answer is read through is an unboxing rather than a cast. `Filtered` and `Tally` remain, both blocked on
-a struct wider than sixteen bytes coming back through the pointer in `x8` rather than in a register.
-
-Of the three original failures, **none is a known defect** - `Distance` is a corpus artifact (the build
-strips `Mathf.Sqrt`, so `FSQRT` has nothing to name it back to), `Divide` is a faithful transcription of a
-handler clang deleted, and `SumSteps` sits behind a deliberately-chosen rule. A new failure there is a
-regression by definition.
-
-They are built on **different Unity versions** — 2022.3.62f2 and 6000.0.78f1 — and that is the point. The game
-itself is Unity 6, so for a long time the only corpus was on the *older* editor and nothing said so. Building
-the second one found two wrong-value bugs that had nothing to do with the version
-(`subs` recording its comparison after overwriting the register it compared; a phi slot left unfilled where
-both arms of a branch land on the same block) and **nothing** to do with the `Il2CppClass` offsets, which were
-the predicted risk — all three binaries report metadata version 31. Both corpora now score **22 of 25 and fail
-on exactly the same three methods**, which is the strongest evidence the fork has that it is recovering
-il2cpp rather than recovering this build.
+## 2. Bring-up, in order
 
 ```sh
-scratchpad/bump.sh <old> <new>          # version must change; NuGet caches by version
-scratchpad/riprun ... <out> <log> 3 fast
-scratchpad/cfscore.py <out>             # and compare2 / roundtrip / decisions / difftest
-scratchpad/unityverify.sh <out> <log>   # before staging, not every round
+scratchpad/bump.sh <old> <new>            # ALWAYS. NuGet caches by version; without a bump you measure the old build
+scratchpad/riprun ... <out> <log> 3 fast  # `fast`: ~2 min, scores identically to the full export
 ```
 
-## Four rules that were learned the hard way
+`riprun` is `scratchpad/riprun/` (a project, not a script) — run
+`dotnet scratchpad/riprun/bin/Release/net10.0/riprun.dll <apk> <exportRoot> <log> 3 fast`. If it is missing,
+`memory/tools/` holds the whole toolchain; every old log ends with a settings dump that recovers a forgotten
+option.
 
-**A marker is a signpost; a wrong value is a lie that scores well.** A read that becomes a placeholder is
-better than one that quietly returns element zero, even though the placeholder costs `full` and the wrong
-answer does not. `CLAUDE.md`'s keep-rule was amended for this.
+Build with `~/.dotnet`. The system SDK fails with a misleading missing-member error.
 
-**Naming an inlined instruction costs branches.** Turning an arm64 instruction into the library method it was
-compiled from removes the marker and recovers the call — and three times has cost more decisions than it
-bought, because the instruction is also what the *next* instruction reads. Measure `decisions.py`, not the
-marker count.
+## 3. Scoring — and what each scorer is blind to
 
-**A baseline is a number measured now, from this tree.** The export is not textually deterministic — two runs
-of one source differ in 424 of 533 files — and `compare2`'s game-wide count moves with that while `cfscore`
-and `decisions` do not. A real win was nearly discarded against a number from several builds earlier.
+Run **all** of them. Each is blind exactly where the next one sees.
 
-**The disassembler is not an oracle either.** `Disarm` reports `fabd`'s second source as its first, so
-lifting its operands as given made the difference between a value and itself - zero, compiling, wrong
-everywhere. It reports an instruction it cannot place at all with **no address**. It reports a vector load's
-offset unscaled. Every one of those was found by disassembling the same word with the toolchain's own
-disassembler and comparing; `scratchpad/neon.py` does that over every distinct word in the game and is the
-reason the fork's own decoders can be trusted.
+| tool | needs source? | what it answers | blind to |
+|---|---|---|---|
+| `compare2.py <export>/ExportedProject` | no | every body in the game: whole / partial / dead | whether a whole body is *right* |
+| `cfscore.py <export>` | yes | method by method against the original | anything outside those files |
+| `decisions.py <export>` | yes | did the branching survive | values |
+| `roundtrip.py <export>/ExportedProject <rt.jsonl>` | **no** | do the calls, fields and literals the binary names still appear | ordering, values |
+| `autodiff.py` (corpus) | yes | **runs** the recovered code against the original and compares answers | only covers the corpus |
 
-**Methods are lifted in parallel.** Per-method state on the instruction set is shared between them. One
-dictionary written from several methods at once cost 570 bodies and looked like an unrelated crash - and every
-measurement taken while it was live was noise. `[ThreadStatic]`.
+`grep -c 'Decompiling.*failed' <log>` **every round.** A body the generator threw on has one statement and
+no marker, so it scores as *whole* on every other measure — a change that broke 691 methods once read as an
+improvement. The count jitters by ±2; treat anything larger as real.
 
-**A revert is a measurement, not a diagnosis.** Three of the reverts recorded here as "naming an instruction
-costs branches" were nothing of the kind. `FRINT` cost 33 decisions and *all 33 were in one method*, which
-`Math.Floor(double)` made uncompilable; `CINC` was reverted twice for an operand-count bug in how it was
-lifted. Both are now in, and both moved every scorer up. Before reverting on a number, `diff` the per-method
-output of the scorer that moved and find out which method it came from.
+### Without original source
 
-**A pass that finds nothing is usually in the wrong place, not wrong.** Where a pass runs in
-`Analysis/ForkPipeline.cs` is as load-bearing as what it does; the reason for each position is written beside
-it.
+`compare2`, `roundtrip` and the generation-failure count work on any binary. That is enough to run the loop:
+`roundtrip` is the one that can tell a method that is right from one that only looks right, because it asks
+the binary rather than the export.
 
-## What is left, ranked, and what it will cost
+### First run on a new game: calibrate before believing
 
-| family | size | what it needs |
-|---|---|---|
-| **reads through a base with no type** | 2508 game-wide | **Measured and closed for now.** 739 are the stack pointer, 377 are calls to runtime helpers no symbol names, and 1158 are cascades of those. Four fixes were tried and every one measured worse or did nothing - see `il2cpp-untyped-bases-are-downstream` in memory before trying a fifth. Thunk following is dead too: of the 377 targets only 13 are a single branch and none reaches a managed method. |
-| **generic sharing** | ~470 placeholders left | Two ways in are taken — a type parameter standing for itself (−155 reads) and the invoker entry point (−14 calls). What blocks the rest is now **proved**: a shared body whose result is a type parameter takes a hidden return buffer in x0, so every argument is one register out and nothing its context holds resolves. The mechanism is not in doubt; what is missing is a way to tell, from metadata alone, whether the body at an address is the shared one or a specialisation. Assuming every generic-returning method has the buffer makes it far worse. |
-| **vector lanes the model refuses** | most of the 32 markers | `Analysis`-free: `InstructionSets/VectorLanes.cs` decodes the Advanced SIMD encodings the disassembler package refuses and lifts each lane as a register of its own. What is left is mostly **refusal rather than ignorance** - the model will not emit half a vectorised expression, so one lane it cannot follow costs the whole instruction. Closing them means following the dataflow further, not decoding more. `frintm`/`frintp` in that set are deliberate. |
-| the depth pre-check an `is` leaves behind | 11 reads | `Analysis/InlinedTypeTestRecovery.cs` claims every one of these tests; what is left is the `typeHierarchyDepth >= depth` guard in front of it, which the `isinst` subsumes but which still feeds a branch. Removing it means removing control flow, so it is a deliberate decision rather than an oversight. |
-| width, I4 against I8 | 15 sites | `SXTW`/`SMULL` lift to a plain move because ISIL carries no width. Needs a new opcode; small payoff. |
-| rank-2 arrays, non-float structs, `String._stringLength` | one corpus method each | each described in memory |
-| calls into the C library | 224 game-wide, **11 in the 96** | 580 calls resolve to no managed method; 224 go through the procedure linkage table, of which 79 are `Mathf`/`Math` compiled to a real call. Naming one means resolving its linkage-table slot through a relocation to a symbol, which LibCpp2IL does not expose. Measured and left: six cleanly nameable calls inside the measured files does not pay for the ELF work. |
+Score the **committed** build first and write the numbers down. A rebuilt or re-pointed scorer that reports
+differently looks exactly like a code regression. Two faults found this way, both making recovery look worse
+than it was: members named after their `[Attribute(...)]` instead of themselves, and the scorer demanding
+methods that sit behind `#if UNITY_EDITOR` and are not in the binary at all.
 
+## 4. The loop
 
-## Things that are **not** defects — do not "fix" these
+```
+read the memory index  →  measure  →  find a root, not a symptom  →  read the ISIL  →
+one change  →  measure all scorers + gen-fail  →  keep or revert with the numbers  →  record
+```
 
-* **A missing `catch`.** `sdiv` does not trap and il2cpp emitted no zero check, so clang proved the try body
-  non-throwing and deleted the handler — confirmed from `.eh_frame`, whose FDE for that function has no LSDA
-  while the same binary has plenty that do. The recovery is a faithful transcription; producing a `catch`
-  would be fabrication.
-* **`CINC`.** Measured and reverted three times.
-* **Most of the "mangled" marker.** Of 72, about 53 are redundant with markers already counted, cosmetic, or
-  charged to a phantom method called `if` that `cfscore`'s pattern invents out of an `else if` line.
-* **`List<T>._items.Length`.** It is the capacity, not the count. 64 of 81 `_items` reads are that.
+* **Start the export in the background and edit the next change while it runs.**
+* **Batch independent changes** that touch different passes; split them again only if the round measures worse.
+* **Measure with the scorers, not by reading exported files.** Read one file only to find a root cause, and
+  read the part you need: `grep -n` for the shape, then `sed -n` the range.
+* **Read ISIL, not exported C#, when diagnosing** — `scratchpad/probeg isil <Type> [Method]`. It is the level
+  the passes operate on. `probeg asm <Type> [Method]` when the ISIL itself looks wrong.
+* Run the **full** export and the Unity gate once before staging, not every round.
 
-## The layouts are no longer guesswork
+## 5. What decides keep or revert
 
-`Cpp2IL.Core/Il2CppClassLayout.cs` holds every field of `Il2CppClass` and `MethodInfo` for this build,
-computed from the struct Unity itself ships in
-`Unity.app/Contents/il2cpp/libil2cpp/il2cpp-class-internals.h`. Five offsets found empirically over earlier
-sessions — `element_class` 0x40, `interfaceOffsets` 0xB0, `static_fields` 0xB8, `rgctx_data` 0xC0,
-`interface_offsets_count` 0x12E — all agree with it exactly, which is what makes the rest trustworthy. The
-upstream `Il2CppClassUsefulOffsets` describes an older metadata and disagrees on three of them.
+**Keep a change only if it makes the recovery better, which is not the same as making `full` go up.** A method
+can compile whole and be wrong: an execution oracle found nine of ten methods rated `full` and two of ten that
+actually work.
 
-**Read the header before guessing at an offset.** One command settled what several rounds of inference had
-only narrowed:
+Order of authority, highest first:
 
-* `0xFC` is `stack_slot_size` — real data an inlined allocation computes with, so answering it with a constant
-  would compile and be wrong. That is why the quick way through these reads was refused.
-* `0x135` is the byte holding `initialized_and_no_error` — bookkeeping the program never sees, so answering it
-  is right, exactly as for the flag already recognised at 0xE4.
-* `MethodInfo + 0x10` is `invoker_method`, one of **three** pointers a body can reach a method's own code
-  through and the one a fully shared generic is entered by. Only the plain pointer at zero was accepted.
+1. **`autodiff` / the execution oracle** — it ran and gave the right answer.
+2. **`roundtrip`** — the binary says this method calls X and touches Y, and the export still does.
+3. **`decisions`** — the branching survived.
+4. **`compare2` / `cfscore` `full`** — it compiles whole.
+5. `commented` — noisy. One uncompilable declaration cascades into every later statement that used the local,
+   so most commented statements are collateral. Chase the markers (`unmanaged`, `notfound`, `notimpl`,
+   `mangled`) instead; the cascade clears itself.
 
-## Where the knowledge lives
+Where they disagree, say which you followed and why. **A read that becomes a marker is better than a read
+that quietly returns element zero**, even though the marker costs `full` and the wrong answer does not.
 
-Thirty memory files under `~/.claude/projects/-Users-playviet-Documents--BZ-AssetRipper/memory/`, indexed by
-`MEMORY.md`. **Read the index before searching the code** — a runtime struct offset costs a few hundred tokens
-there and a build, an export and a disassembly session to rediscover. The ones that change how you work:
+**Revert what is inert.** Byte-identical means the premise was wrong; find out why before rebuilding, and
+record it — a documented negative is worth as much as a fix, because it stops the next session repeating it.
 
-* `il2cpp-recovery-verification` — the measure-first loop
-* `il2cpp-execution-oracle`, `il2cpp-decisions-are-the-unmeasured-half` — why five scorers
-* `il2cpp-ground-truth-corpus` — the corpus and how to rebuild it
-* `il2cpp-what-the-agents-found` — the ranked map of everything still broken
-* `il2cpp-naming-an-instruction-costs-branches`, `il2cpp-remeasure-the-baseline` — the two traps
-* `il2cpp-struct-layouts`, `il2cpp-read-the-header-unity-ships`, `aapcs64-argument-registers` — the runtime facts worth not rediscovering
+## 6. Where the errors come from, and what to try in order
+
+For a new game, work this list top-down. Each entry names the measurement that sizes it.
+
+1. **Is the disassembler right?** Differential-test it against llvm over the whole binary, by the numbers.
+   Six wrong-value bugs were found this way and none was findable by reading code. Everything downstream
+   inherits these, so do it first.
+2. **What does the compiler say?** `REPAIR_WHY=<file>` writes the C# diagnostic id **and message** behind every
+   statement the repair comments out. The id alone is useless (`CS0030` covers 1800 statements); the message
+   splits it into families with separate answers. This seam paid more than any other.
+3. **What is the first commented statement of each body that nothing else blocks?** `roots.py` — counting all
+   commented statements gives a map of cascades; counting the first one of each body gives the causes.
+4. **What do the markers decompose into?** Group `unmanaged` reads by the shape of their base, `notfound` by
+   address, `indirect` by call shape. Then chase the largest, and **instrument the refusal** — put a counter at
+   every `continue` in the pass that should have handled it and print on a modulus smaller than the population.
+5. **Which bodies kept nothing?** `deadbodies.py`. Mostly genuinely empty methods; check before chasing.
+
+### Families with known answers — check each on a new game
+
+Runtime and ABI, all arm64/il2cpp and expected to transfer:
+
+* a struct of floats is one register per field, both as parameter and as argument
+* a big struct returns through `x8`; a `Vector2` returns in `v0`
+* the register holding a stack slot's address **is** the slot — do not dereference it
+* a class pointer is named from the operand type, not read from memory
+* `il2cpp_defaults` is a table of built-in classes; locate it by counting
+* an rgctx entry, a shared generic's `MethodInfo`, and the instantiation written down in it
+* every event accessor is an `Interlocked.CompareExchange`
+* a `.plt` stub is an import — follow it to its JUMP_SLOT relocation
+
+Compiler idioms:
+
+* the subscript lives in the addressing mode; a pointer-stepping loop must become an index
+* a bitfield move is a shift either way; a conditional compare is an `&&`
+* one wide store can be two adjacent fields
+* an inlined constructor is an allocation plus field writes
+* the bounds check outlives the access it belongs to
+
+Language-level, where recovery is right and C# cannot say it:
+
+* `goto` into a block, `memcpy`/`memset`, a private field of a type this project does not declare
+
+## 7. Rules that do not bend
+
+* **Build with `~/.dotnet`.**
+* **Bump the version before every export.** Twice in one session a measurement was of the previous build
+  because a bump silently failed — check its output, not just the export's.
+* **Where a pass runs is as load-bearing as what it does.** Write the reason beside it in `ForkPipeline.cs`.
+* **Stay mergeable with both upstreams.** Never change the signature of an upstream method — clone it beside
+  the original. Put new work in files upstream does not have. What must go in an upstream file should be one
+  line. Record it in `External/Cpp2IL/FORK.md` in the same edit.
+* **Score only a finished export.** A half-written one reported `full=344, commented=0` where the truth was
+  295 and 520.
+* **Keep `probe` and `riprun` on the same build.** `probebump.sh` proves it; probe once drifted 75 versions
+  and every ISIL reading in between was of code that had since changed.
+
+## 8. Working several games at once
+
+Ground truth from more than one build is what turns a fix from *calibrated* into *general*. It has already
+paid: a second corpus on a different Unity version exposed two ordinary correctness bugs that every scorer but
+the execution oracle was blind to, and both were version-independent.
+
+**Onboarding a game into the set**
+
+1. Export and score it as-is. Record the baseline in memory, dated, with the fork version.
+2. Point `cfscore` at its originals (`ORIGIN`), and exclude what the build cannot contain
+   (`#if UNITY_EDITOR` and friends) before treating anything as missing.
+3. Regenerate `rt.jsonl` for it so `roundtrip` has that binary's ground truth.
+4. Build a small **corpus** for it if the game has shapes the existing corpus lacks — a Unity project compiled
+   to arm64 il2cpp on purpose, where every method has known source and can be *run*.
+
+**The rule that makes it training rather than fitting**
+
+> A change is only kept when it does not make **any** game in the set worse.
+
+Measure every game before staging. A predicate narrowed to make one binary's numbers move is fitting; a
+predicate that holds on two binaries built by different Unity versions is a rule. Several guards in this fork
+are narrow for exactly this reason and are flagged as one-game-deep in
+`memory/il2cpp-how-general-is-this-fork.md` — those are the first things a second game should re-test.
+
+**What a disagreement between games means**
+
+* fails on the new game only → a pinned constant or a predicate calibrated on the old one. Re-derive it from
+  the header Unity ships rather than by inference.
+* fails on both → a real defect, and the more valuable find.
+* passes both but the oracle disagrees → a wrong value no marker shows. These are the expensive ones and only
+  execution finds them.
+
+**Record per game, not once**: baseline numbers, its Unity version and metadata version, which families it
+exercises that others do not, and every negative result with its numbers.

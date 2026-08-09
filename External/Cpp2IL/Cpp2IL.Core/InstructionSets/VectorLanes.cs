@@ -454,7 +454,7 @@ internal sealed class VectorLanes
             if (elementWidth == 0)
                 return false;
 
-            var address = new MemoryOperand(General(source));
+            var address = Place(source, 0);
 
             if ((word >> 22 & 1) == 1)
             {
@@ -969,13 +969,14 @@ internal sealed class VectorLanes
         if (lanes < 2 || !Ensure(stored, (lanes - 1) * elementWidth, elementWidth, emit))
             return false;
 
-        var address = General(baseRegister);
-
         for (var lane = 0; lane < lanes; lane++)
         {
+            //Through `Place`, so that register 31 is the frame rather than an address: a `Vector4` built up
+            //in the frame and then passed is four lane stores, and writing them as memory nothing can name
+            //left the slot the call reads with no writes reaching it at all.
             emit(OpCode.Move,
             [
-                new MemoryOperand(address, null, instruction.MemOffset + (long)lane * elementWidth),
+                Place(baseRegister, instruction.MemOffset + (long)lane * elementWidth),
                 Lane(stored, lane * elementWidth),
             ]);
         }
