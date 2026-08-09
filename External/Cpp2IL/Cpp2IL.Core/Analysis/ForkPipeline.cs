@@ -379,6 +379,18 @@ public static class ForkPipeline
         // has already taken them - and it runs three times inside `Analyze`, before any of this. Running
         // this earlier to catch them is therefore not possible without moving elimination itself, and was
         // measured: byte-identical, because the divide computing the second field is gone by then either way.
+        // Before the two below, which read a field's type to decide what to do with it: a byte masked out of
+        // a field that overlaps it is that byte's own field, and until that is said the value is an `int`
+        // where a `byte` belongs. Needs the fields resolved, which is why it is here and not with the
+        // resolver itself.
+        PackedByteField.Run(method);
+
+        // Beside the rule below, and the same shape from the other end: a struct of floats assigned to a
+        // field one member at a time, where only the first member landed on the field and the rest fell
+        // between two of them. Needs the fields resolved and the members typed, so it is here rather than
+        // with WideFieldStore, which splits the opposite case.
+        StructFieldStoreSplit.Run(method);
+
         // Before the assembly below, and after everything that types a place: the first field of a struct
         // put where that whole struct is declared is the struct being handed on unchanged, and naming the
         // vector registers a call's answer lands in is what makes that shape appear at all.

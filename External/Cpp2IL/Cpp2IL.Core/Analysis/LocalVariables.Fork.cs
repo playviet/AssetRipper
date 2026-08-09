@@ -80,6 +80,11 @@ public static partial class LocalVariables
         //for, and the callee says outright what it produces, so the guess from the width has nothing to
         //recommend it: `Vector3.one * 0.85f` came out as `(long)(Vector3.one * 1062836634L)`, which C# will
         //quietly compile because a `long` converts to a `float`.
+        //A struct of floats only. Widening this to any value type the callee declares - so that
+        //`_settings.GetColor(c)` returning a four-byte `Color32` in w0 stops being called `System.Int64` -
+        //was built and **cost five branches**, `decisions` 1304 -> 1299, while closing no method at all. A
+        //declaration does beat a width, but somewhere downstream a small struct arriving where an integer
+        //was expected loses a comparison, and finding that is a round of its own.
         if (IsOnlyAWidth(value.Type) && HomogeneousFloatStruct.Count(produced) is > 1)
         {
             value.Type = produced;
