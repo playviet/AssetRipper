@@ -48,7 +48,9 @@ public static class FieldAddressSinking
         {
             if (instruction.OpCode != OpCode.Add || instruction.Operands.Count != 3
                 || instruction.Operands[0] is not LocalVariable made
-                || instruction.Operands[1] is not LocalVariable { Type: { IsValueType: false } owner } held
+                || instruction.Operands[1] is not LocalVariable { Type: { } owner } held
+                || owner.IsEnumType
+                || (owner.IsValueType && (owner.Namespace == nameof(System) || !owner.Fields.Any(f => !f.IsStatic)))
                 || instruction.Operands[2] is not (long or int or ulong or uint))
                 continue;
 
@@ -105,7 +107,8 @@ public static class FieldAddressSinking
     /// </remarks>
     private static FieldAnalysisContext? FieldAt(TypeAnalysisContext owner, long offset, int header)
     {
-        var wanted = owner.IsValueType ? offset + header : offset;
+        //As above: recorded from the struct's own start, so no header to add.
+        var wanted = offset;
 
         return owner.Fields.FirstOrDefault(f => !f.IsStatic && f.BackingData?.FieldOffset == wanted
             && f.FieldType is { IsValueType: false });

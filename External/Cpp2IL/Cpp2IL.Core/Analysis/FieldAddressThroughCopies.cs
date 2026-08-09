@@ -51,7 +51,9 @@ public static class FieldAddressThroughCopies
         {
             if (addition.OpCode != OpCode.Add || addition.Operands.Count != 3
                 || addition.Operands[0] is not LocalVariable made
-                || addition.Operands[1] is not LocalVariable { Type: { IsValueType: false } owner } held
+                || addition.Operands[1] is not LocalVariable { Type: { } owner } held
+                || owner.IsEnumType
+                || (owner.IsValueType && (owner.Namespace == nameof(System) || !owner.Fields.Any(f => !f.IsStatic)))
                 || addition.Operands[2] is not (long or int or ulong or uint))
                 continue;
 
@@ -90,7 +92,9 @@ public static class FieldAddressThroughCopies
     /// <summary>The instance field lying at that distance into the type, if one does.</summary>
     private static FieldAnalysisContext? FieldAt(TypeAnalysisContext owner, long offset, int header)
     {
-        var wanted = owner.IsValueType ? offset + header : offset;
+        //A struct's fields are recorded from its own start, so the addend is the recorded offset for both
+        //kinds - see FieldAddressRecovery.FieldAt, where adding the header was wrong and untested.
+        var wanted = offset;
 
         return owner.Fields.FirstOrDefault(f => !f.IsStatic && f.BackingData?.FieldOffset == wanted);
     }
