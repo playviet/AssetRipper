@@ -213,6 +213,11 @@ public static class ForkPipeline
         // answering the test is what makes the shape stop existing.
         RuntimeClassReadRemover.Run(method);
 
+        // And the steps before it, for the same reason: `methodInfo->rgctx_data` and `methodInfo->klass` are
+        // named by the type the resolver gave their destination, and what reads through them is named too, so
+        // the read itself answers nothing and only says it could not be answered.
+        RgctxReadRemover.Run(method);
+
         // Storing a reference into an array is asked about before it is done, because an array of one thing
         // can be handed out as an array of what it derives from. The language promises that itself and says
         // nothing about it, so the question - and the store it guards - is only in the way.
