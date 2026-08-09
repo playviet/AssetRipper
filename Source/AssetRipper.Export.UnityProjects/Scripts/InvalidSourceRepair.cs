@@ -491,6 +491,17 @@ internal static partial class InvalidSourceRepair
 	{
 		for (SyntaxNode? current = node; current is not null; current = current.Parent)
 		{
+			//A field's initialiser is the same case one step further out: there is no statement to comment, and
+			//leaving it be fails the whole assembly rather than one method. It reaches here now that valid IL
+			//lets the decompiler fold a static constructor into initialisers - the assignment that used to be
+			//a commentable statement is a field declaration, and one of them referred to a private nested type
+			//in a plugin, which no widening can reach because the declaration is not in the exported source.
+			if (current is EqualsValueClauseSyntax { Parent: VariableDeclaratorSyntax } initialiser
+				&& current.FirstAncestorOrSelf<BaseFieldDeclarationSyntax>() is not null)
+			{
+				return new Edit(initialiser.Value.Span, $"default /*{EmptiedNote}*/", Rewritten: true);
+			}
+
 			//A member written with an arrow has no statement anywhere in it, so there is nothing to comment out and
 			//the loop below would walk past it. What it says has to be replaced instead, since deleting the arrow
 			//would leave a member with no body at all.

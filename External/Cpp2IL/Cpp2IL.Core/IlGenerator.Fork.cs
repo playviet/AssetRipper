@@ -1228,10 +1228,28 @@ public static partial class IlGenerator
 
     // The types a value sits in a 32-bit slot for, which includes an enum with any of them underneath.
     private static bool IsThirtyTwoBitInteger(TypeAnalysisContext? type) =>
-        type?.Type is Il2CppTypeEnum.IL2CPP_TYPE_I4 or Il2CppTypeEnum.IL2CPP_TYPE_U4
+        StoredAs(type)?.Type is Il2CppTypeEnum.IL2CPP_TYPE_I4 or Il2CppTypeEnum.IL2CPP_TYPE_U4
             or Il2CppTypeEnum.IL2CPP_TYPE_I2 or Il2CppTypeEnum.IL2CPP_TYPE_U2
             or Il2CppTypeEnum.IL2CPP_TYPE_I1 or Il2CppTypeEnum.IL2CPP_TYPE_U1
             or Il2CppTypeEnum.IL2CPP_TYPE_BOOLEAN or Il2CppTypeEnum.IL2CPP_TYPE_CHAR;
+
+    /// <summary>
+    /// The integer a value is actually held as - which for an enum is what it derives from, not itself.
+    /// </summary>
+    /// <remarks>
+    /// An enum's own <c>Type</c> is <c>VALUETYPE</c>, so the rule above saw none of them and every enum
+    /// constant was loaded as a 64-bit number. <c>levelManager.levelEndReason = ELevelEndReason.out_of_time</c>
+    /// is an <c>ldc.i8</c> into an <c>int</c>-sized field: not verifiable IL, so the whole statement is
+    /// commented out. It is the largest thing the decompiler's own notes complain about - <b>684</b> of them
+    /// say "Expected I4, but got I8" - and enum assignment is most of it.
+    ///
+    /// Read from the metadata rather than assumed to be <c>int</c>: an enum may derive from any integer, and
+    /// a <c>long</c>-based one loaded as 32 bits would be the same defect the other way round.
+    /// </remarks>
+    private static TypeAnalysisContext? StoredAs(TypeAnalysisContext? type)
+        => type is { IsEnumType: true }
+            ? type.Fields.FirstOrDefault(f => !f.IsStatic)?.FieldType ?? type
+            : type;
 
     /// <summary>
     /// Whether the operand ends up as a native integer in the emitted IL: either a value whose type was
