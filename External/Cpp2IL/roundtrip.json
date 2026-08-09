@@ -60,7 +60,7 @@
 5
 ],
 "Assembly-CSharp::Joystick::OnDrag": [
-12,
+13,
 20,
 13
 ],
@@ -75,7 +75,7 @@
 1
 ],
 "Assembly-CSharp::Joystick::SnapFloat": [
-3,
+4,
 5,
 4
 ],
@@ -360,7 +360,7 @@
 0
 ],
 "Assembly-CSharp::EpicToonFX.ETFXFireProjectile::ShootProjectile": [
-9,
+11,
 17,
 11
 ],
@@ -470,7 +470,7 @@
 11
 ],
 "Assembly-CSharp::EpicToonFX.ETFXProjectileScript::RotateTowardsDirection": [
-3,
+5,
 12,
 5
 ],
@@ -3455,7 +3455,7 @@
 1
 ],
 "Assembly-CSharp::CFramework.SwipeControl::Update": [
-7,
+9,
 15,
 9
 ],
@@ -8535,7 +8535,7 @@
 1
 ],
 "Assembly-CSharp::CFramework.VectorExtensions::GetRandomDirVector2": [
-1,
+2,
 4,
 2
 ],
@@ -10140,7 +10140,7 @@
 3
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenTMPAnimator::SkewCharX": [
-3,
+4,
 8,
 4
 ],

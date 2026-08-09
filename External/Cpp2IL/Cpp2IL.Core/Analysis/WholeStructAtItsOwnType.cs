@@ -1,4 +1,6 @@
+using System.Collections.Generic;
 using System.Linq;
+using Cpp2IL.Core.Graphs;
 using Cpp2IL.Core.ISIL;
 using Cpp2IL.Core.Model.Contexts;
 
@@ -29,12 +31,14 @@ public static class WholeStructAtItsOwnType
         if (method.ControlFlowGraph is not { } graph)
             return;
 
+        var carriedBy = FrontMemberCarriers(graph);
+
         foreach (var instruction in graph.Instructions)
         {
             if (instruction.OpCode == OpCode.Move && instruction.Operands.Count == 2)
             {
                 if (Declared(instruction.Operands[0]) is { } destination)
-                    Restore(instruction, 1, destination);
+                    Restore(instruction, 1, destination, carriedBy);
 
                 continue;
             }
@@ -50,7 +54,7 @@ public static class WholeStructAtItsOwnType
                 : (callee.IsStatic ? 1 : 2);
 
             for (var i = 0; i < callee.Parameters.Count && first + i < instruction.Operands.Count; i++)
-                Restore(instruction, first + i, callee.Parameters[i].ParameterType);
+                Restore(instruction, first + i, callee.Parameters[i].ParameterType, carriedBy);
         }
     }
 
@@ -62,20 +66,61 @@ public static class WholeStructAtItsOwnType
         _ => null,
     };
 
-    private static void Restore(Instruction instruction, int operand, TypeAnalysisContext destination)
+    /// <summary>
+    /// Every local whose one definition is a read of a struct's front member, and what that read was.
+    /// </summary>
+    /// <remarks>
+    /// The naming of a call's answer writes one move per returned field, and the first of those is carried on
+    /// in a local of its own rather than reaching the place it is going directly - so
+    /// `_lastDragSfxPos = transform.position` arrives here as a `System.Single` and nothing above can see
+    /// what it came out of. Only where the local is written **once**: a value assembled from two places is
+    /// not the struct either of them came from.
+    /// </remarks>
+    private static Dictionary<LocalVariable, FieldReference> FrontMemberCarriers(ISILControlFlowGraph graph)
     {
-        if (HomogeneousFloatStruct.Count(destination) is not > 1
-            || instruction.Operands[operand] is not FieldReference { Offset: 0, Local: { Type: { } held } whole }
-            || held.FullName != destination.FullName)
+        var carried = new Dictionary<LocalVariable, FieldReference>();
+        var written = new HashSet<LocalVariable>();
+
+        foreach (var instruction in graph.Instructions)
         {
-            return;
+            if (instruction.Operands.Count == 0 || instruction.Operands[0] is not LocalVariable destination)
+                continue;
+
+            if (!written.Add(destination))
+            {
+                carried.Remove(destination);
+                continue;
+            }
+
+            if (instruction is { OpCode: OpCode.Move, Operands: [_, FieldReference { Offset: 0 } front] })
+                carried[destination] = front;
         }
+
+        return carried;
+    }
+
+    private static void Restore(Instruction instruction, int operand, TypeAnalysisContext destination,
+        Dictionary<LocalVariable, FieldReference> carriedBy)
+    {
+        if (HomogeneousFloatStruct.Count(destination) is not > 1)
+            return;
+
+        //The read itself, or the local that is carrying it and nothing else.
+        var read = instruction.Operands[operand] switch
+        {
+            FieldReference { Offset: 0 } direct => direct,
+            LocalVariable local when carriedBy.TryGetValue(local, out var indirect) => indirect,
+            _ => null,
+        };
+
+        if (read is not { Local: { Type: { } held } whole } front2 || held.FullName != destination.FullName)
+            return;
 
         //And it must really be the first field, not a one-field struct's only one or a name that happens to
         //sit at nought in something else. By name: a field reached through a generic instantiation is not the
         //same object as the one on the type definition, and reference equality quietly refused those.
         if (HomogeneousFloatStruct.Fields(held) is not { Count: > 1 } fields
-            || fields[0].Name != ((FieldReference)instruction.Operands[operand]).Field.Name)
+            || fields[0].Name != front2.Field.Name)
         {
             return;
         }
