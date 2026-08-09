@@ -448,6 +448,13 @@ public static class ForkPipeline
         // the mask above, where the local carries the struct's type and the accesses are already recovered.
         PackedPairField.Run(method);
 
+        // Again, and last. A struct of floats standing where a number belongs is only recognisable once
+        // something beside it *is* a number, and several passes below the first run are what make one: the
+        // ternary between two field offsets produces the `float` that tells `Vector3.one * num` which of its
+        // operands is the struct. `ButtonGroup::Select` kept "Part of a struct used as a value" for exactly
+        // that reason - the number arrived after the question had been asked.
+        StructInArithmetic.Run(method);
+
         // One immediate broadcast into every lane of a struct of floats - `Color.white` is `FMOV V0.4S` and
         // one store, and the lifter keeps the number and loses the broadcast. Here, where the destination has
         // its declared type and before the generator has to write the number down as a cast.

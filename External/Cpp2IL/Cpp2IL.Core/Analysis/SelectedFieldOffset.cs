@@ -78,27 +78,27 @@ public static class SelectedFieldOffset
                     continue;
                 }
 
-                if (MemberAt(holder, choice.IfTrue) is not { } whenTrue || MemberAt(holder, choice.IfFalse) is not { } whenFalse)
+                if (PathTo(holder, choice.IfTrue) is not { } whenTrue || PathTo(holder, choice.IfFalse) is not { } whenFalse)
                     continue;
 
-                //The two arms must agree on what they hold, or the choice has no type to be written as.
-                if (whenTrue.FullName != whenFalse.FullName)
+                //The two arms must agree on what they hold, or the choice has no type to be written as. Read
+                //at the leaf, because the two need not sit at the same depth: `on ? scale.y : scale.x` picks
+                //280 and 284 of a `Vector2` at 280, so one arm is the field's own start and the other is
+                //inside it, and comparing the field at each offset made them a `Vector2` and a `float`.
+                if (whenTrue[^1].FieldType?.FullName is not { } held || held != whenFalse[^1].FieldType?.FullName)
                     continue;
 
-                //Left as plain reads at a constant distance, for the resolution that follows to name - which
-                //is what reaches `minMaxIconScale.y`, a member *inside* a field, that no single field
-                //reference could have been built for here.
-                var first = new LocalVariable($"arm{method.Locals.Count}", new Register(null, "ARM"), whenTrue);
+                var first = new LocalVariable($"arm{method.Locals.Count}", new Register(null, "ARM"), whenTrue[^1].FieldType);
                 method.Locals.Add(first);
 
-                var second = new LocalVariable($"arm{method.Locals.Count}", new Register(null, "ARM"), whenFalse);
+                var second = new LocalVariable($"arm{method.Locals.Count}", new Register(null, "ARM"), whenFalse[^1].FieldType);
                 method.Locals.Add(second);
 
                 block.Instructions.Insert(at, new Instruction(instruction.Index, OpCode.Move, first,
-                    new MemoryOperand(through, addend: choice.IfTrue)));
+                    Read(whenTrue, through, choice.IfTrue)));
 
                 block.Instructions.Insert(at + 1, new Instruction(instruction.Index, OpCode.Move, second,
-                    new MemoryOperand(through, addend: choice.IfFalse)));
+                    Read(whenFalse, through, choice.IfFalse)));
 
                 instruction.OpCode = OpCode.Select;
                 instruction.Operands = [read, choice.Condition, first, second];
@@ -108,15 +108,22 @@ public static class SelectedFieldOffset
         }
     }
 
+    /// <summary>The reference the path names, which is a plain one where the path is a single step.</summary>
+    private static FieldReference Read(FieldAnalysisContext[] path, LocalVariable through, long offset)
+        => path.Length == 1
+            ? new FieldReference(path[0], through, (int)offset)
+            : new NestedFieldReference(path, through, (int)offset);
+
     /// <summary>
-    /// What lies at that distance into the type: a field of its own, or one step into a value-type field.
+    /// The chain of fields reaching that distance into the type - outermost first, ending at what lies there.
     /// </summary>
     /// <remarks>
-    /// One step is enough and is where it stops. A <c>Vector2</c> field holds the pair of offsets that
-    /// <c>on ? minMaxIconScale.y : minMaxIconScale.x</c> chooses between, and going deeper would start
-    /// naming members of members on offsets that agree by accident.
+    /// A member of a struct held in a field is stored where it lies, so it is a read at a distance from the
+    /// outer field with no indirection - and one step down is where this stops. A <c>Vector2</c> field holds
+    /// the pair of offsets a ternary between its members chooses between; going deeper would start naming
+    /// members of members on offsets that agree by accident.
     /// </remarks>
-    private static TypeAnalysisContext? MemberAt(TypeAnalysisContext owner, long offset, int depth = 0)
+    private static FieldAnalysisContext[]? PathTo(TypeAnalysisContext owner, long offset, int depth = 0)
     {
         if (owner.IsEnumType || (owner.IsValueType && owner.Namespace == nameof(System)))
             return null;
@@ -126,13 +133,25 @@ public static class SelectedFieldOffset
             if (field.IsStatic || field.BackingData?.FieldOffset is not { } at)
                 continue;
 
+            //A read at a struct field's own start is its front member, not the struct - the load is one
+            //member wide, and the other arm of the choice proves it by landing inside.
             if (at == offset)
-                return field.FieldType;
+            {
+                if (depth == 0 && field.FieldType is { IsValueType: true } front
+                    && front.Namespace != nameof(System) && !front.IsEnumType
+                    && PathTo(front, 0, depth + 1) is { } inside)
+                {
+                    return [field, .. inside];
+                }
+
+                return [field];
+            }
 
             if (depth == 0 && field.FieldType is { IsValueType: true } held && offset > at
-                && MetadataResolver.LaidOutSize(held, 8) is { } size && offset < at + size)
+                && MetadataResolver.LaidOutSize(held, 8) is { } size && offset < at + size
+                && PathTo(held, offset - at, depth + 1) is { } within)
             {
-                return MemberAt(held, offset - at, depth + 1);
+                return [field, .. within];
             }
         }
 
