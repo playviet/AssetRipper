@@ -74,7 +74,10 @@ internal sealed class VectorLanes
     /// floats or two doubles - only the instruction that reads them does. So the load is kept and split at the
     /// first use, at the width that use asks for.
     /// </remarks>
-    private readonly Dictionary<int, (int Base, long Offset, int Bytes)> pending = new();
+    private readonly Dictionary<int, (int Base, long Offset, int Bytes, long? Absolute)> pending = new();
+
+    /// <summary>The method being lifted, so a settled address can be read out of the binary.</summary>
+    private MethodAnalysisContext? reading;
 
     /// <summary>
     /// Where a register stops holding anything: every byte at or above this offset is zero.
@@ -146,6 +149,8 @@ internal sealed class VectorLanes
 
         if (Store(instruction, emit))
             return true;
+
+        reading = context;
 
         var word = Word(context, address);
 
@@ -1025,7 +1030,8 @@ internal sealed class VectorLanes
         var loaded = (int)(word & 0x1F);
 
         Forget(loaded);
-        pending[loaded] = ((int)(word >> 5 & 0x1F), offset, bytes);
+        var loadedFrom = (int)(word >> 5 & 0x1F);
+        pending[loaded] = (loadedFrom, offset, bytes, Settled(loadedFrom, offset));
         return true;
     }
 
@@ -1078,10 +1084,10 @@ internal sealed class VectorLanes
         var second = (int)(word >> 10 & 0x1F);
 
         Forget(first);
-        pending[first] = (baseRegister, offset, bytes);
+        pending[first] = (baseRegister, offset, bytes, Settled(baseRegister, offset));
 
         Forget(second);
-        pending[second] = (baseRegister, offset + bytes, bytes);
+        pending[second] = (baseRegister, offset + bytes, bytes, Settled(baseRegister, offset + bytes));
 
         return true;
     }
@@ -1426,10 +1432,73 @@ internal sealed class VectorLanes
         pending.Remove(register);
 
         for (var lane = 0; lane < lanes; lane++)
-            emit(OpCode.Move, [Lane(register, lane * elementWidth), Place(load.Base, load.Offset + (long)lane * elementWidth)]);
+        {
+            //From the address the load was made at, where that was settled - the base register may have been
+            //written again between the load and whatever first reads its lanes.
+            object from;
+
+            if (load.Absolute is { } settled)
+            {
+                var at = settled + (long)lane * elementWidth;
+
+                //And where that address is in the constant pool, the number itself. A pair of floats in
+                //`.rodata` is how a vectorised expression gets its two constants, and left as a read it is a
+                //read of unmanaged memory that nothing can write down.
+                from = Literal(at, elementWidth) ?? new MemoryOperand(addend: at);
+            }
+            else
+            {
+                from = Place(load.Base, load.Offset + (long)lane * elementWidth);
+            }
+
+            emit(OpCode.Move, [Lane(register, lane * elementWidth), from]);
+        }
 
         Note(register, elementWidth, lanes, false);
     }
+
+    /// <summary>
+    /// The floating point number at an address, where the address is one the program cannot change.
+    /// </summary>
+    /// <remarks>
+    /// il2cpp keeps anything that can change in a type's static storage, reached through its class, never at
+    /// an address baked into the instruction - so a read at a fixed address in read-only memory is a literal
+    /// the source wrote. `WinMenu::ComputeBeatPercent` divides by <c>TargetUnitsForMax</c> and multiplies by
+    /// <c>DifficultyWeight</c>, and both were reads of unmanaged memory.
+    /// </remarks>
+    private object? Literal(long address, int elementWidth)
+    {
+        if (elementWidth is not (4 or 8) || reading?.AppContext.Binary is not LibCpp2IL.Elf.ElfFile elf
+            || !elf.IsReadOnlyAddress((ulong)address, elementWidth)
+            || !elf.TryMapVirtualAddressToRaw((ulong)address, out var raw) || raw <= 0)
+        {
+            return null;
+        }
+
+        var content = elf.GetRawBinaryContent();
+
+        if (raw + elementWidth > content.Length)
+            return null;
+
+        var bytes = content.Slice((int)raw, elementWidth);
+
+        return elementWidth == 4 ? BitConverter.ToSingle(bytes) : BitConverter.ToDouble(bytes);
+    }
+
+    /// <summary>
+    /// The address a load reads from, where the base register holds a page an <c>adrp</c> put there.
+    /// </summary>
+    /// <remarks>
+    /// Only the constant pool. A page register is never written by anything but an <c>adrp</c>, and the table
+    /// is cleared the moment it is, so where a page is known the address is exact - and taking it here rather
+    /// than at the read is the whole point: a second <c>adrp</c> into the same register between the two made
+    /// every lane of the first load read a page too far.
+    /// </remarks>
+    private static long? Settled(int baseRegister, long offset)
+        => baseRegister != 31
+            && NewArmV8InstructionSet.TryPageOf(Arm64Register.X0 + baseRegister, out var page)
+            ? (long)page + offset
+            : null;
 
     /// <summary>
     /// Where a value lives, as the rest of the lifting names it.

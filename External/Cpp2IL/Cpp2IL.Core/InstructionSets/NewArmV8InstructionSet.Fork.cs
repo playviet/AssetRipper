@@ -1269,6 +1269,25 @@ public partial class NewArmV8InstructionSet
     private static bool WorksInThirtyTwoBits(MethodAnalysisContext context, Arm64Instruction instruction)
         => RawWord(context, instruction) is { } word && (word >> 31 & 1) == 0;
 
+    /// <summary>The page a register was given by an <c>adrp</c>, where it still holds one.</summary>
+    /// <remarks>
+    /// <see cref="VectorLanes"/> needs this at the moment of a load rather than at the moment something reads
+    /// it. It defers a whole-register load and materialises the lanes where the first operation on them is,
+    /// and the base register can be written again in between - which is exactly what
+    /// <c>WinMenu::ComputeBeatPercent</c> does: two <c>adrp</c> into <c>x8</c> four instructions apart, and
+    /// the lanes of the first load came out reading the second one's page.
+    /// </remarks>
+    internal static bool TryPageOf(Arm64Register register, out ulong page)
+    {
+        if (adrpOffsets is null)
+        {
+            page = 0;
+            return false;
+        }
+
+        return adrpOffsets.TryGetValue(register, out page);
+    }
+
     private static uint? RawWord(MethodAnalysisContext context, Arm64Instruction instruction)
     {
         var binary = context.AppContext.Binary;
