@@ -364,6 +364,10 @@ public static class ForkPipeline
         // Last, so that it sees the copies the passes before it leave behind.
         ConditionSinking.Run(method);
 
+        // A mask to thirty-two bits on something that has no more than thirty-two is the register's width and
+        // not arithmetic, and it makes a `Color32` stop looking like one. Late, where the value has its type.
+        WidthMaskIsIdentity.Run(method);
+
         // One immediate broadcast into every lane of a struct of floats - `Color.white` is `FMOV V0.4S` and
         // one store, and the lifter keeps the number and loses the broadcast. Here, where the destination has
         // its declared type and before the generator has to write the number down as a cast.

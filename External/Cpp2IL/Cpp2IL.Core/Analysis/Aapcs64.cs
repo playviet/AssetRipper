@@ -59,6 +59,8 @@ public static class Aapcs64
     /// How many bytes the value of a struct occupies. What the metadata records is the size it would take
     /// boxed, so the object header in front of it comes off.
     /// </summary>
+    public static long? SizeOf(TypeAnalysisContext type) => ValueSize(type, 0);
+
     private static long? ValueSize(TypeAnalysisContext type) => ValueSize(type, 0);
 
     private static long? ValueSize(TypeAnalysisContext type, int depth)
