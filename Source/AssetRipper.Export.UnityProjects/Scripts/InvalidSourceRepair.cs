@@ -612,6 +612,8 @@ internal static partial class InvalidSourceRepair
 				?? RewriteEventBackingField(node, model)
 				?? RewriteZeroedStruct(node, model)
 				?? RewriteAmbiguousType(node, model)
+				?? RewriteEmptyArray(node, model)
+				?? RewriteQuaternionInternal(node, model)
 				?? RewritePrimitiveStorage(node, model)
 				?? RewriteBackingField(node, model);
 
