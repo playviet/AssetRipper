@@ -649,4 +649,38 @@ public static partial class LocalVariables
 
         return true;
     }
+
+    /// <summary>
+    /// Whether some call in this method puts its result in this local.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A receiver position says the value is *at least* the callee's declaring type, which is true and weak.
+    /// A return type says what it is. Both reach <see cref="SetTypeIfUnknown"/>, which is monotonic, so
+    /// whichever arrives first wins - and where the callee's own address carries two names the resolution is
+    /// late, so the receiver position wins a race it should always lose.
+    /// </para>
+    /// <para>
+    /// <c>SaveManager::SetLevel</c> is the case. <c>SaveBaseSingleton&lt;CommonSaveData&gt;.get_I</c> answers
+    /// into <c>x0</c>, and clang leaves it there for <c>SetFinishLevel</c>, which never reads <c>this</c>. So
+    /// the local was typed <c>SaveManager</c>, <c>CommonSaveData.level</c> at 0x50 resolved to
+    /// <c>SaveManager.abilitySaveData</c> - also at 0x50 - and the method wrote a level number into a save
+    /// object.
+    /// </para>
+    /// </remarks>
+    private static bool AnsweredByACall(MethodAnalysisContext method, LocalVariable local)
+    {
+        if (method.ControlFlowGraph is not { } graph)
+            return false;
+
+        foreach (var instruction in graph.Instructions)
+            if (instruction.OpCode is OpCode.Call or OpCode.IndirectCall
+                && instruction.Operands.Count > 1
+                && ReferenceEquals(instruction.Operands[1], local))
+            {
+                return true;
+            }
+
+        return false;
+    }
 }

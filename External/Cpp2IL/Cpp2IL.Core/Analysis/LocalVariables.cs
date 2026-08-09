@@ -550,9 +550,11 @@ public static partial class LocalVariables
             // ... parameters
             var thisParamIndex = instruction.OpCode == OpCode.CallVoid ? 1 : 2;
             
-            // 'this' param
+            // 'this' param - but not where the value is a call's own answer, which says what it is exactly.
+            // See AnsweredByACall in the fork.
             if (!calledMethod.IsStatic
-                && instruction.Operands[thisParamIndex] is LocalVariable thisParam)
+                && instruction.Operands[thisParamIndex] is LocalVariable thisParam
+                && !AnsweredByACall(method, thisParam))
             {
                 changed |= SetTypeIfUnknown(thisParam, calledMethod.DeclaringType);
             }

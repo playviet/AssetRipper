@@ -58,6 +58,8 @@ public static class InlinedTypeTestRecovery
             {
                 if (Match(block.Instructions[i], latest) is not var (answer, tested, target, equal))
                 {
+                    Guard(block.Instructions[i]);
+
                     if (block.Instructions[i].Destination is LocalVariable written)
                         latest[written] = block.Instructions[i];
 
@@ -80,6 +82,43 @@ public static class InlinedTypeTestRecovery
             }
         }
     }
+
+    /// <summary>
+    /// Answers the fast path in front of the walk, which the walk itself makes redundant.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The inlined test opens by asking whether the object's chain is deep enough to hold the target at all:
+    /// </para>
+    /// <code>
+    /// CheckLess _, [obj-&gt;klass + 0x130], [typeof(T) + 0x130]   // and if so, fail outright
+    /// </code>
+    /// <para>
+    /// Both of its reads are of a runtime structure and neither has a name, so the guard survived as two
+    /// <c>unmanaged</c> markers and an <c>if</c> in front of a test that was otherwise recovered whole. It
+    /// decides nothing once the walk below it has become an <c>isinst</c>: the guard's failure edge and the
+    /// walk's are the same edge, and a shallower chain fails the walk anyway. So the answer is written down -
+    /// not deep enough is <b>false</b> - and the branch and its two reads go with the rest.
+    /// </para>
+    /// </remarks>
+    private static void Guard(Instruction instruction)
+    {
+        if (instruction is not { OpCode: OpCode.CheckLess or OpCode.CheckGreaterOrEqual, Operands: [LocalVariable answer, { } mine, { } theirs] }
+            || !IsDepth(mine) || !IsDepth(theirs))
+        {
+            return;
+        }
+
+        //`CheckLess` asks "shallower than the target", which is what fails; the other way round is the same
+        //question answered the other way. Read before the opcode is overwritten.
+        var shallower = instruction.OpCode == OpCode.CheckLess;
+
+        instruction.OpCode = OpCode.Move;
+        instruction.Operands = [answer, shallower ? 0 : 1];
+    }
+
+    private static bool IsDepth(object operand)
+        => operand is MemoryOperand { Index: null, Scale: 0, Addend: Il2CppClassLayout.TypeHierarchyDepth };
 
     /// <summary>
     /// The comparison that ends the walk, and what it is really asking.
