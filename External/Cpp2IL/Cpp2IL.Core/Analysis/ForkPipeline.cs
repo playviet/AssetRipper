@@ -340,6 +340,7 @@ public static class ForkPipeline
         // reached through alive. Before the collection below, which is what then finds that chain dead.
         UnreachableBlockRemover.Run(method);
 
+
         // The passes above turn reads of runtime structures into the thing they stand for - a static field, an
         // array's length, a list's count - and what those reads were reached through is then read by nothing.
         // A class pointer and the static storage taken out of it have no way of being written down, so left
@@ -369,6 +370,13 @@ public static class ForkPipeline
         // Last, so that it sees the copies the passes before it leave behind.
         ConditionSinking.Run(method);
 
+        // A struct of floats travels in one register per field and the lifter named only the first. **After
+        // everything**: the fields the argument does not name are read by nothing, so dead code elimination
+        // has already taken them - and it runs three times inside `Analyze`, before any of this. Running
+        // this earlier to catch them is therefore not possible without moving elimination itself, and was
+        // measured: byte-identical, because the divide computing the second field is gone by then either way.
+        HomogeneousFloatArguments.Run(method);
+
         // A shared generic body opens by asking whether its own runtime context is filled in yet. It is, by
         // the time the method's code runs. **Here and not beside the class guard**: the comparison only
         // reads the field directly once the copies between them have been propagated away, and earlier it is
@@ -388,10 +396,5 @@ public static class ForkPipeline
         // it, and the type has to be resolved before that can be seen - so, here rather than in the lifter.
         NullablePackedCompare.Run(method);
 
-        // A struct of floats travels in one register per field and the lifter named only the first, so an
-        // argument reached the generator as a float where a Vector3 belongs. **After everything**, because
-        // the operand it leaves is not a value anything else can reason about, and because the registers it
-        // reads have to be the ones that survived every pass above rather than the ones the lifter emitted.
-        HomogeneousFloatArguments.Run(method);
     }
 }

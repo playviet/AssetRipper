@@ -171,6 +171,17 @@ public static partial class LocalVariables
                     registers.Add(register);
             }
 
+            //As in DeadCodeEliminator: the registers a struct of floats was assembled from are inside the
+            //operand, and a local whose register is never seen here is removed from under it.
+            if (operand is FloatStructAssembly assembly)
+            {
+                foreach (var part in assembly.Reads())
+                {
+                    if (!registers.Contains(part.Register))
+                        registers.Add(part.Register);
+                }
+            }
+
             if (operand is MemoryOperand memory)
             {
                 if (memory.Base != null)

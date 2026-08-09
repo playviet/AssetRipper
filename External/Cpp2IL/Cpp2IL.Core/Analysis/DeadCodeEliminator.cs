@@ -102,6 +102,14 @@ public static class DeadCodeEliminator
                 case FieldReference { Field.IsStatic: false, Local: { } fieldLocal }:
                     yield return fieldLocal;
                     break;
+
+                // A struct of floats put together from several registers reads every one of them, and they
+                // are inside the operand rather than beside it - so without this the fields the argument
+                // does not name are counted as read by nothing and taken away underneath it.
+                case FloatStructAssembly assembly:
+                    foreach (var part in assembly.Reads())
+                        yield return part;
+                    break;
             }
         }
     }

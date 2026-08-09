@@ -233,5 +233,25 @@ public sealed class FloatStructAssembly(MethodAnalysisContext constructor, List<
 
     public List<object> Parts { get; } = parts;
 
+    /// <summary>
+    /// Every local the assembly reads, for the passes that count uses. They are inside the operand rather
+    /// than beside it, so nothing that walks `Instruction.Operands` sees them without asking.
+    /// </summary>
+    public IEnumerable<LocalVariable> Reads()
+    {
+        foreach (var part in Parts)
+        {
+            switch (part)
+            {
+                case LocalVariable local:
+                    yield return local;
+                    break;
+                case FieldReference { Local: { } through }:
+                    yield return through;
+                    break;
+            }
+        }
+    }
+
     public override string ToString() => $"new {Constructor.DeclaringType?.Name}({string.Join(", ", Parts)})";
 }
