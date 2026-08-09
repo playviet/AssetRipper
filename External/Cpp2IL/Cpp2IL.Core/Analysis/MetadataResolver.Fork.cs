@@ -570,7 +570,20 @@ public static partial class MetadataResolver
 
             kept += callee.Parameters.Count;
 
-            if (instruction.Operands.Count <= kept)
+            //A struct of floats occupies a vector register per field, and the lifter hands the ones beyond
+            //the first over after every parameter. They are arguments as much as the rest, so a list that is
+            //exactly the signature's length with them included is the lifter's own and nothing is dropped.
+            //Only *exactly*: an unresolved callee was given all eight registers of a run whether or not
+            //anything wrote them, and keeping any of those is what cost branches and crashed bodies before.
+            var occupied = kept;
+
+            foreach (var parameter in callee.Parameters)
+            {
+                if (HomogeneousFloatStruct.Count(parameter.ParameterType) is { } floats and > 1)
+                    occupied += floats - 1;
+            }
+
+            if (instruction.Operands.Count == occupied || instruction.Operands.Count <= kept)
                 continue;
 
             instruction.Operands.RemoveRange(kept, instruction.Operands.Count - kept);

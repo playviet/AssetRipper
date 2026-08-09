@@ -66,6 +66,11 @@ public static class HomogeneousFloatArguments
             ? (callee.IsStatic ? 2 : 3)
             : (callee.IsStatic ? 1 : 2);
 
+        //Where the registers beyond the first begin. The lifter hands them over after every parameter, in the
+        //order the parameters occupy them - see BeyondTheFirstRegister. They are what the walk below used to
+        //have to go looking for, and where they are present nothing has to be inferred at all.
+        var beyond = first + callee.Parameters.Count;
+
         for (var i = 0; i < callee.Parameters.Count; i++)
         {
             var type = callee.Parameters[i].ParameterType;
@@ -80,7 +85,10 @@ public static class HomogeneousFloatArguments
                 continue;
 
             var start = vector;
+            var handed = beyond;
+
             vector += floats;
+            beyond += floats - 1;
 
             if (floats < 2 || first + i >= instruction.Operands.Count)
                 continue;
@@ -100,6 +108,18 @@ public static class HomogeneousFloatArguments
 
             for (var field = 1; field < floats && parts.Count == field; field++)
             {
+                //What the call was handed, where the lifter recorded it, and otherwise the walk back. The two
+                //answer the same question; the first is what the convention says rather than what the
+                //instructions before this one happen to show, and it is right in the cases the walk gave up
+                //on - a value carried in from a caller, or one that copy propagation moved to another
+                //register and left no definition of this one behind.
+                if (handed + field - 1 < instruction.Operands.Count
+                    && instruction.Operands[handed + field - 1] is { } given && IsAFloat(given))
+                {
+                    parts.Add(given);
+                    continue;
+                }
+
                 if (Reaching(block, at, start, field) is { } held)
                     parts.Add(held);
             }

@@ -1263,6 +1263,11 @@ public partial class NewArmV8InstructionSet : Cpp2IlInstructionSet
 
         var ret = new List<object>();
 
+        //Every vector register beyond the first that a struct of floats occupies. Handed over at the end of
+        //the operand list rather than beside the parameter, so that everything counting operands off the
+        //parameter list - the generator included - sees exactly what it saw before.
+        var alsoOccupied = new List<object>();
+
         //Handle 'this' if it's an instance method
         if (!contextBeingCalled.IsStatic)
         {
@@ -1291,8 +1296,13 @@ public partial class NewArmV8InstructionSet : Cpp2IlInstructionSet
             else if (Cpp2IL.Core.Analysis.HomogeneousFloatStruct.Count(paramType) is { } floats)
             {
                 //A struct whose every field is a float travels in that many vector registers, one field to
-                //each - Vector3 in s0/s1/s2, Quaternion in s0..s3. The value is named by the first of them.
+                //each - Vector3 in s0/s1/s2, Quaternion in s0..s3. The value is named by the first of them,
+                //and the rest are handed over too - see BeyondTheFirstRegister in the fork.
                 ret.Add(RegisterFor(Arm64Register.S0 + vectorCount));
+
+                for (var beyond = 1; beyond < floats; beyond++)
+                    alsoOccupied.Add(RegisterFor(Arm64Register.S0 + vectorCount + beyond));
+
                 vectorCount += floats;
             }
             else
@@ -1300,6 +1310,9 @@ public partial class NewArmV8InstructionSet : Cpp2IlInstructionSet
                 ret.Add(RegisterFor(Arm64Register.X0 + nonVectorCount++));
             }
         }
+
+        //After every parameter, so that nothing which counts operands off the parameter list sees them.
+        ret.AddRange(alsoOccupied);
 
         return ret;
     }
