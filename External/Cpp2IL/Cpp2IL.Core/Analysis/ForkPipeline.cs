@@ -364,6 +364,12 @@ public static class ForkPipeline
         // Last, so that it sees the copies the passes before it leave behind.
         ConditionSinking.Run(method);
 
+        // A shared generic body opens by asking whether its own runtime context is filled in yet. It is, by
+        // the time the method's code runs. **Here and not beside the class guard**: the comparison only
+        // reads the field directly once the copies between them have been propagated away, and earlier it is
+        // two instructions this does not match.
+        RgctxGuardFolding.Run(method);
+
         // A mask to thirty-two bits on something that has no more than thirty-two is the register's width and
         // not arithmetic, and it makes a `Color32` stop looking like one. Late, where the value has its type.
         WidthMaskIsIdentity.Run(method);
