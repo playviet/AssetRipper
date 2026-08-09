@@ -58,13 +58,15 @@ public static class PackedByteField
 
             //Either the read itself, or a read shifted along to bring another byte into the low eight bits.
             var shift = 0;
+            Instruction? shifting = null;
 
             if (masked is LocalVariable shifted
-                && definitions.GetValueOrDefault(shifted) is { OpCode: OpCode.ShiftRight, Operands: [_, { } from, { } places] }
+                && definitions.GetValueOrDefault(shifted) is { OpCode: OpCode.ShiftRight, Operands: [_, { } from, { } places] } moving
                 && Places(places) is { } bits and (8 or 16 or 24))
             {
                 shift = bits / 8;
                 masked = from;
+                shifting = moving;
             }
 
             if (masked is not FieldReference { Field: { } packed, Local: { } holder } read
@@ -76,7 +78,36 @@ public static class PackedByteField
 
             instruction.OpCode = OpCode.Move;
             instruction.Operands = [result, new FieldReference(member, holder, read.Offset + shift)];
+
+            //The shift that brought the byte down is now the only thing still reading the packed field, and
+            //nothing reads *it* - but it survives as a statement of its own, `_ = (uint)c.rgba >> 8`, which
+            //is the one thing left between three of the 96 originals and whole. Recovering an access orphans
+            //the arithmetic that reached it, exactly as recovering an indexed one orphans its length read.
+            if (shifting is { Operands: [LocalVariable carried, ..] } && !ReadElsewhere(graph, carried, instruction))
+            {
+                shifting.OpCode = OpCode.Nop;
+                shifting.Operands = [];
+            }
         }
+    }
+
+    /// <summary>Whether anything other than the instruction just rewritten still reads this value.</summary>
+    private static bool ReadElsewhere(Graphs.ISILControlFlowGraph graph, LocalVariable value, Instruction rewritten)
+    {
+        foreach (var instruction in graph.Instructions)
+        {
+            if (ReferenceEquals(instruction, rewritten) || instruction.OpCode == OpCode.Nop)
+                continue;
+
+            //Operand zero is where a result goes; everything after it is read.
+            for (var i = 1; i < instruction.Operands.Count; i++)
+            {
+                if (ReferenceEquals(instruction.Operands[i], value))
+                    return true;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>How many bytes a field holds, for the primitives this needs to know about.</summary>
