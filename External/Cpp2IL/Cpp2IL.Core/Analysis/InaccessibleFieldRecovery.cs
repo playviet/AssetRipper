@@ -274,14 +274,24 @@ public static class InaccessibleFieldRecovery
         return false;
     }
 
+    private static TypeAnalysisContext Definition(TypeAnalysisContext type)
+        => (type as GenericInstanceTypeAnalysisContext)?.GenericType ?? type;
+
+    private static TypeAnalysisContext? Up(TypeAnalysisContext type)
+        => type is GenericInstanceTypeAnalysisContext generic ? generic.GenericType.BaseType : type.BaseType;
+
     private static bool Inherits(TypeAnalysisContext type, TypeAnalysisContext ancestor)
     {
         //Bounded rather than trusting the chain to end: a base pointer that resolved oddly must not hang the
         //whole export, and no real hierarchy in a game is anywhere near this deep.
+        //Through the definition at every step. A generic instance is a wrapper around the type it instantiates
+        //and reports no base of its own, so a chain passing through one - which is every singleton and every
+        //`State<T>` here - ended one type early, and every protected field behind one was refused.
         var walked = type;
+        var wanted = Definition(ancestor);
 
-        for (var steps = 0; walked != null && steps < 64; steps++, walked = walked.BaseType)
-            if (ReferenceEquals(walked, ancestor))
+        for (var steps = 0; walked != null && steps < 64; steps++, walked = Up(walked))
+            if (ReferenceEquals(Definition(walked), wanted))
                 return true;
 
         return false;

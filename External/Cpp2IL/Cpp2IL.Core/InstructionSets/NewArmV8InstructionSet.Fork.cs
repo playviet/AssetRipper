@@ -593,6 +593,15 @@ public partial class NewArmV8InstructionSet
         if (VectorLanes.Word(context, instruction.Address) is not { } word)
             return null;
 
+        //Advanced SIMD modified immediate, the vector form: 0 Q op 0111100000 abc cmode 0 1 defgh Rd.
+        //`FMOV Vd.2S, #1.0` is cmode 1111 with op nought, and the disassembler hands back nought for its
+        //immediate - a silent wrong value at 191 sites, since a broadcast of nought reads as plausible.
+        if ((word >> 19 & 0x3FF) == 0b0111100000 && (word >> 12 & 0xF) == 0b1111
+            && (word >> 29 & 1) == 0 && (word >> 10 & 3) == 0b01)
+        {
+            return Expanded((int)((word >> 16 & 7) << 5 | (word >> 5 & 0x1F)));
+        }
+
         //Floating point immediate, scalar: 00011110 type 1 imm8 100 00000 Rd.
         if (word >> 24 != 0b00011110 || (word >> 21 & 1) != 1 || (word >> 10 & 0x1F) != 0b10000)
             return null;

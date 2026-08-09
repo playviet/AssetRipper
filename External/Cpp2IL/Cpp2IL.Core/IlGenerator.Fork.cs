@@ -118,15 +118,26 @@ public static partial class IlGenerator
 
         foreach (var instruction in graph.Instructions)
         {
-            if (instruction.OpCode != OpCode.Move || instruction.Operands.Count != 2
-                || instruction.Operands[0] is not LocalVariable { Type: { } wanted }
-                || instruction.Operands[1] is not MemoryOperand read
-                || !Equals(read.Base, memory.Base) || !Equals(read.Index, memory.Index)
-                || read.Addend != memory.Addend || read.Scale != memory.Scale)
+            //A copy is the plain case, and arithmetic is the same evidence: what an instruction *writes*
+            //discriminates as well as what sits beside it. `Rect.MinMaxRect(c[0].x, .., c[2].x, ..)` inlines
+            //to a copy for one corner and a subtraction for the next, and only the copy was believed - so the
+            //element the subtraction reads was loaded whole and the whole statement went.
+            //Not a call: an argument may be a struct passed entire to something that answers with a number,
+            //and Vector3.Distance would then have said its first argument was an `x`.
+            if (instruction.OpCode is not (OpCode.Move or OpCode.Add or OpCode.Subtract or OpCode.Multiply or OpCode.Divide)
+                || instruction.Operands.Count < 2
+                || instruction.Operands[0] is not LocalVariable { Type: { } wanted })
                 continue;
 
+            var reads = false;
+
+            for (var i = 1; i < instruction.Operands.Count && !reads; i++)
+                reads = instruction.Operands[i] is MemoryOperand read
+                    && Equals(read.Base, memory.Base) && Equals(read.Index, memory.Index)
+                    && read.Addend == memory.Addend && read.Scale == memory.Scale;
+
             //A number where a struct would go, and the number the front member is.
-            if (!ReferenceEquals(wanted, element) && Analysis.StructInArithmetic.IsNumber(wanted))
+            if (reads && !ReferenceEquals(wanted, element) && Analysis.StructInArithmetic.IsNumber(wanted))
                 return front;
         }
 
@@ -1317,10 +1328,17 @@ public static partial class IlGenerator
     /// </remarks>
     private static bool ResultFitsItsDestination(object destination, MethodAnalysisContext callee)
     {
-        if (destination is not MemoryOperand { Index: null, Scale: 0, Addend: 0, Base: LocalVariable place })
-            return true;
+        //A field is a place too, and one the buffer's own front member resolves to: `get_startColor` returning
+        //a `MinMaxGradient` had its answer stored into that struct's `m_Mode`, which is an enum, so the
+        //statement came out as a write through a pointer of a value that is not one.
+        var held = destination switch
+        {
+            MemoryOperand { Index: null, Scale: 0, Addend: 0, Base: LocalVariable place } => place.Type,
+            FieldReference field => field.Field.FieldType,
+            _ => null,
+        };
 
-        if (place.Type is not { } held || callee.ReturnType is not { } returned)
+        if (held is null || callee.ReturnType is not { } returned)
             return true;
 
         //Compared as the analysis knows them, not as signatures. Round-tripping through `TypeSignature` and
@@ -1442,7 +1460,11 @@ public static partial class IlGenerator
     private static CilLocalVariable ScratchLocal(object? argument, TypeSignature elementType, MethodDefinition method,
         Dictionary<LocalVariable, CilLocalVariable> locals)
     {
-        if (argument is LocalVariable local && locals.TryGetValue(local, out var existing) && existing.VariableType == elementType)
+                //By name, not by object. Two signatures describing the same `Rect` are never the same instance, so
+        //the reference test essentially never matched and a fresh local nothing assigns was minted at every
+        //call on a value-type receiver.
+        if (argument is LocalVariable local && locals.TryGetValue(local, out var existing)
+            && existing.VariableType?.FullName == elementType.FullName)
             return existing;
 
         var scratch = new CilLocalVariable(elementType);

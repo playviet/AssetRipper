@@ -49,6 +49,18 @@ public static class HomogeneousFloatParameters
 
         var overwrittenBefore = OverwrittenBefore(method.ControlFlowGraph.Blocks);
 
+        //Every register single assignment form gave more than one version.
+        var renamed = new HashSet<int>();
+        var seen = new Dictionary<int, int>();
+
+        foreach (var local in method.Locals)
+        {
+            if (seen.TryGetValue(local.Register.Number, out var version) && version != local.Register.Version)
+                renamed.Add(local.Register.Number);
+            else
+                seen[local.Register.Number] = local.Register.Version;
+        }
+
         foreach (var block in method.ControlFlowGraph.Blocks)
         {
             //How many vector registers an answer has already been returned into, on any path arriving here.
@@ -75,7 +87,13 @@ public static class HomogeneousFloatParameters
                         //matches. What is left is the call whose callee is not known while lifting - a virtual
                         //or interface call, resolved long after - and for that nothing can say what is in the
                         //register, so it keeps its own name and the statement is marked rather than decided.
-                        if (held.Register < overwritten)
+                        //...and only where single assignment form did not track the write itself. A register
+                        //it renamed has a later version somewhere in the method, so reading version -1 here
+                        //means SSA proved the entry value still reaches this point - which is exactly the
+                        //parameter. Without that test the guard refused `mergeCenter.x` and `.y` in
+                        //`PlayDisappear` and took `.z` (the one whose register index happened to be at the
+                        //cut-off), leaving two lanes as `default(float)`.
+                        if (held.Register < overwritten && !renamed.Contains(local.Register.Number))
                             continue;
 
                         instruction.Operands[i] = new FieldReference(held.Field, held.Struct, held.Offset);

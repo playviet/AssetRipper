@@ -500,8 +500,11 @@ public static partial class LocalVariables
             }
         }
 
-        // Backward: a typed phi result types each of its still-untyped inputs.
-        if (destination.Type != null)
+        // Backward: a typed phi result types each of its still-untyped inputs - unless what it carries is a
+        // runtime stand-in, which managed code never holds. A register taken back for something else made
+        // `IngameMenu`'s `List<TargetSlotUI>` an `Il2CppClass<IngameMenu>`, and `SetTypeIfUnknown` never
+        // revises, so every read through it was unmanaged and the inlined `List.Add` went with them.
+        if (destination.Type != null && !IsRuntimeStandIn(destination.Type))
         {
             for (var i = 1; i < phi.Operands.Count; i++)
             {

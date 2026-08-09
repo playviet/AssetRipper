@@ -159,7 +159,7 @@ internal sealed class VectorLanes
                 $"zero=[{string.Join(",", zeroAbove)}]\tpending=[{string.Join(",", pending.Keys)}]");
         }
 
-        if (word is { } loaded && Load(loaded, instruction))
+        if (word is { } loaded && (Load(loaded, instruction) || LoadPair(loaded, instruction)))
             return false;
 
         if (Replicate(instruction, emit))
@@ -1026,6 +1026,63 @@ internal sealed class VectorLanes
 
         Forget(loaded);
         pending[loaded] = ((int)(word >> 5 & 0x1F), offset, bytes);
+        return true;
+    }
+
+    /// <summary>
+    /// The same for a load pair, which fills two whole registers from adjacent addresses.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A hundred and twenty-eight bit load pair is how two adjacent statics or two adjacent fields reach the
+    /// vector registers at once - <c>Color.Lerp(a, b, t)</c> opens with <c>ldp q2, q3, [x8, #0x10]</c> - and
+    /// recording nothing for it left every lane of both registers unknown. Everything downstream then refused:
+    /// <b>1550 refusals across 235 methods</b> are instructions this file can already decode and declines only
+    /// because no lane of a source was ever written. Worse than a refusal in places, since the first lane is
+    /// still lifted the ordinary way and reads a stale register.
+    /// </para>
+    /// <para>
+    /// Only the plain signed-offset form. Pre- and post-index write the address back into the base register,
+    /// which this would have to model, and there is no need to guess at it.
+    /// </para>
+    /// </remarks>
+    private bool LoadPair(uint word, Arm64Instruction instruction)
+    {
+        if (instruction.Mnemonic != Arm64Mnemonic.LDP)
+            return false;
+
+        //opc 101 V 010 L imm7 Rt2 Rn Rt - V says the registers are vector ones, 010 the signed-offset form.
+        if ((word >> 27 & 0x7) != 0b101 || (word >> 26 & 1) != 1
+            || (word >> 23 & 0x7) != 0b010 || (word >> 22 & 1) != 1)
+        {
+            return false;
+        }
+
+        //The width each register takes, which is also what the immediate counts in.
+        var bytes = (word >> 30 & 3) switch
+        {
+            0b00u => 4,
+            0b01u => 8,
+            0b10u => 16,
+            _ => 0,
+        };
+
+        if (bytes == 0)
+            return false;
+
+        var imm7 = (int)(word >> 15 & 0x7F);
+        var offset = (imm7 >= 0x40 ? imm7 - 0x80 : imm7) * (long)bytes;
+
+        var baseRegister = (int)(word >> 5 & 0x1F);
+        var first = (int)(word & 0x1F);
+        var second = (int)(word >> 10 & 0x1F);
+
+        Forget(first);
+        pending[first] = (baseRegister, offset, bytes);
+
+        Forget(second);
+        pending[second] = (baseRegister, offset + bytes, bytes);
+
         return true;
     }
 

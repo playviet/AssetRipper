@@ -206,6 +206,11 @@ public static class GenericSharingRecovery
         if (held is SzArrayTypeAnalysisContext { ElementType: { } standIn } && real is SzArrayTypeAnalysisContext { ElementType: { } element })
             return IsStandInFor(standIn, element);
 
+        //And one wrapper along: a `TryGetValue`'s `out` parameter arrives as `System.Int32Enum&`, which matches
+        //no stand-in name at all, so the slot kept a type no shipped assembly has and the whole block went.
+        if (held is ByRefTypeAnalysisContext { ElementType: { } behind } && real is ByRefTypeAnalysisContext { ElementType: { } actualBehind })
+            return IsStandInFor(behind, actualBehind);
+
         return held is GenericInstanceTypeAnalysisContext shared
             && real is GenericInstanceTypeAnalysisContext actual
             && shared.GenericType.FullName == actual.GenericType.FullName
