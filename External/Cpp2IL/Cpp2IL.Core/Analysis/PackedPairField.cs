@@ -37,8 +37,35 @@ public static class PackedPairField
 
         var halves = new Dictionary<TypeAnalysisContext, (FieldAnalysisContext Low, FieldAnalysisContext High)>();
 
+        var shifted = new Dictionary<LocalVariable, object>();
+
+        foreach (var instruction in graph.Instructions)
+            if (instruction is { OpCode: OpCode.ShiftLeft, Operands: [LocalVariable raised, { } value, { } by] }
+                && Places(by) == 32)
+            {
+                shifted[raised] = value;
+            }
+
         foreach (var instruction in graph.Instructions)
         {
+            //The construction side: `cellIndex | (subIndex << 32)` put into a place declared as the struct.
+            //`(SubCellRef)(num21 | (num20 << 32))` is not something C# will accept, and the two halves are
+            //exactly the constructor's two arguments.
+            if (instruction is { OpCode: OpCode.Or, Operands: [LocalVariable { Type: { } into } built, { } first, { } second] }
+                && Pair(into, halves) is not null)
+            {
+                var low = shifted.ContainsKey(first as LocalVariable ?? Nothing) ? second : first;
+                var high = ReferenceEquals(low, first) ? second : first;
+
+                if (high is LocalVariable carried && shifted.TryGetValue(carried, out var top)
+                    && TwoWordConstructor(into) is { } constructor)
+                {
+                    instruction.OpCode = OpCode.Call;
+                    instruction.Operands = [constructor, built, low, top];
+                    continue;
+                }
+            }
+
             for (var i = 0; i < instruction.Operands.Count; i++)
             {
                 //The top half, brought down.
@@ -61,6 +88,19 @@ public static class PackedPairField
                 }
             }
         }
+    }
+
+    /// <summary>A stand-in for "no local", so the lookup above needs no second branch.</summary>
+    private static readonly LocalVariable Nothing = new("none", new Register(null, "NONE"));
+
+    /// <summary>The constructor that takes the struct's two members, in field order.</summary>
+    private static MethodAnalysisContext? TwoWordConstructor(TypeAnalysisContext type)
+    {
+        foreach (var method in type.Methods)
+            if (method is { Name: ".ctor", IsStatic: false } && method.Parameters.Count == 2)
+                return method;
+
+        return null;
     }
 
     /// <summary>The two four-byte fields a struct of exactly two words holds, if that is what it is.</summary>

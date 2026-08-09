@@ -103,7 +103,23 @@ public static class VirtualMethodPointer
 
             Trace($"named {named.FullName}");
 
-            instruction.Operands[1] = new RuntimeMethodInfoAnalysisContext(named, assembly);
+            var pointer = new RuntimeMethodInfoAnalysisContext(named, assembly);
+            instruction.Operands[1] = pointer;
+
+            //And at the places that read it. `DelegateConstruction` fuses a constructor whose method operand
+            //*is* a runtime MethodInfo, not one that holds a local that holds one - and propagation does not
+            //fold this, because the local is versioned. Without this the delegate came out as
+            //`new UnityAction(this, method)`, which is not something C# can say.
+            foreach (var reader in graph.Instructions)
+            {
+                if (ReferenceEquals(reader, instruction))
+                    continue;
+
+                for (var i = 1; i < reader.Operands.Count; i++)
+                    if (ReferenceEquals(reader.Operands[i], held))
+                        reader.Operands[i] = pointer;
+            }
+
             changed = true;
         }
 
