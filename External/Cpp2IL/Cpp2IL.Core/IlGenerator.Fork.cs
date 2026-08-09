@@ -850,8 +850,13 @@ public static partial class IlGenerator
             //class first, while the `il2cpp_codegen_box` shape above is built by `CastHelperRecovery` with
             //the value first. Reading one site settled it - the class is at argument one and carries an
             //`Il2CppClass<...>`, the value at argument two.
-            case "il2cpp_vm_object_box" when ClassArgument(Argument(instruction, 1)) is { IsValueType: true } vmBoxed:
+            //A generic parameter as well as a value type: `box !!T` is what the language and the IL both say
+            //for boxing one, and an open parameter is not `IsValueType` because nothing yet knows whether it
+            //is. Refusing it left `Il2CppClass<T>` boxes saying only that the call could not be written.
+            case "il2cpp_vm_object_box" when ClassArgument(Argument(instruction, 1))
+                is { IsValueType: true } or GenericParameterTypeAnalysisContext:
             {
+                var vmBoxed = ClassArgument(Argument(instruction, 1))!;
                 var vmValue = Argument(instruction, 2);
                 if (vmValue is null)
                     return false;
