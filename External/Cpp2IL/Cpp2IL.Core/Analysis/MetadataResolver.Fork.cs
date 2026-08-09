@@ -543,6 +543,55 @@ public static partial class MetadataResolver
     }
 
     /// <summary>
+    /// Whether the field can be reached from here, allowing for the property Unity puts in front of it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A path to a nested member is only usable where every step of it can be named, and Unity's own fields
+    /// are <c>protected</c> with a public property over them: <c>GridLayoutGroup.m_Spacing</c> is reached as
+    /// <c>spacing</c>, and <c>PointerEventData.&lt;position&gt;k__BackingField</c> as <c>position</c>. Asking
+    /// only about the field refused both, so <c>_grid.spacing.y</c> and <c>eventData.position.y</c> stayed as
+    /// unmanaged reads and took their methods with them.
+    /// </para>
+    /// <para>
+    /// The property has to actually exist and be public - that is what the source repair renames the field
+    /// to, and without it the statement is written with a name Roslyn refuses. An earlier version of this
+    /// let <b>any</b> hidden field through and cost ninety-five statements; the difference is entirely this
+    /// test.
+    /// </para>
+    /// </remarks>
+    private static bool ReachableFrom(FieldAnalysisContext field, MethodAnalysisContext method)
+    {
+        if (IsVisibleFrom(field, method))
+            return true;
+
+        if (field.DeclaringType is not { } declaring || field.Name is not { } name)
+            return false;
+
+        //Unity's hand-written convention, and the compiler's own for an auto-property.
+        var wanted = name.StartsWith("m_") ? name[2..]
+            : name.StartsWith('<') && name.Contains('>') ? name[1..name.IndexOf('>')]
+            : null;
+
+        if (string.IsNullOrEmpty(wanted))
+            return false;
+
+        foreach (var property in declaring.Properties)
+        {
+            if (property.Name != wanted || property.Getter is not { } getter)
+                continue;
+
+            if ((getter.Attributes & System.Reflection.MethodAttributes.MemberAccessMask) == System.Reflection.MethodAttributes.Public
+                && property.PropertyType?.FullName == field.FieldType?.FullName)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
     /// Drops the operands a resolved call does not take. A call is lifted with every register the calling
     /// convention could have used, because nothing is known about the callee yet; once it is known, the surplus
     /// is not arguments at all. Il2cpp's hidden trailing argument is the usual one - a delegate invoke is handed

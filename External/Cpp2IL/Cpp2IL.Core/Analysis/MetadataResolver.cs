@@ -170,7 +170,7 @@ public static partial class MetadataResolver
                 if (field == null && i != 0
                     && PathToNestedField(staticOwner ?? local.Type, memory.Addend, staticOwner != null,
                         method.AppContext.Binary.is32Bit ? 8 : 0x10) is { Length: > 1 } path
-                    && path.All(f => IsVisibleFrom(f, method)))
+                    && path.All(f => ReachableFrom(f, method)))
                 {
                     instruction.Operands[i] = new NestedFieldReference(path, local, (int)memory.Addend);
                     changed = true;
