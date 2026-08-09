@@ -30,15 +30,18 @@ namespace Cpp2IL.Core.Analysis;
 /// </remarks>
 public static class GenericFieldLayout
 {
-    private static readonly Dictionary<TypeAnalysisContext, Dictionary<long, FieldAnalysisContext>?> Known = [];
+    //Keyed by the header as well as the type: a struct reached through a byref has none and a boxed one
+    //has sixteen, so the same type has two different layouts and caching only the first served the wrong
+    //one to the second caller.
+    private static readonly Dictionary<(TypeAnalysisContext Owner, int Header), Dictionary<long, FieldAnalysisContext>?> Known = [];
 
     /// <summary>The field of a generic type lying at that distance into an instance, if one does.</summary>
     public static FieldAnalysisContext? FieldAt(TypeAnalysisContext owner, long offset, ApplicationAnalysisContext app, int header)
     {
         lock (Known)
         {
-            if (!Known.TryGetValue(owner, out var layout))
-                Known[owner] = layout = Verified(owner, app, header);
+            if (!Known.TryGetValue((owner, header), out var layout))
+                Known[(owner, header)] = layout = Verified(owner, app, header);
 
             if (layout == null || !layout.TryGetValue(offset, out var field))
                 return null;
@@ -57,12 +60,13 @@ public static class GenericFieldLayout
         //and its own numbers are the ones to believe.
         if (owner.GenericParameters.Count == 0
             || owner.Fields.Any(f => !f.IsStatic && f.BackingData?.FieldOffset > 0)
-            || Compute(owner, app, header) is not var (offsets, end))
+            || Compute(owner, app, header) is not var (offsets, end, complete))
             return null;
 
         foreach (var derived in app.AllTypes)
         {
-            if (!DerivesFrom(derived, owner)
+            if (!complete
+                || !DerivesFrom(derived, owner)
                 || derived.Fields.FirstOrDefault(f => !f.IsStatic && f.BackingData?.FieldOffset > 0) is not { } first
                 || MetadataResolver.LaidOutSize(first.FieldType, app.Binary.is32Bit ? 4 : 8) is not { } size)
                 continue;
@@ -71,11 +75,23 @@ public static class GenericFieldLayout
             return (long)first.BackingData!.FieldOffset == end + (size - end % size) % size ? offsets : null;
         }
 
-        return null;
+        //Nothing derives from it. A **struct** deriving straight from `ValueType` still has an answer: it has
+        //no inherited fields, so its layout is its own fields in declaration order, and the one uncertainty
+        //the check above exists to remove - where the base ends - is not there to begin with. That is every
+        //compiler-generated state machine.
+        return owner.IsValueType && Definition(owner.BaseType)?.FullName == "System.ValueType" ? offsets : null;
     }
 
-    /// <summary>Where each field of the chain lands, and where the chain ends.</summary>
-    private static (Dictionary<long, FieldAnalysisContext> Offsets, long End)? Compute(TypeAnalysisContext owner, ApplicationAnalysisContext app, int header)
+    /// <summary>
+    /// Where each field of the chain lands, where it ends, and whether every field was sizeable.
+    /// </summary>
+    /// <remarks>
+    /// A field whose size is unknown - a generic struct records none - ends the walk rather than abandoning
+    /// it: everything **before** it is still at a known distance. A state machine's `<>t__builder` is the
+    /// second field of six and only the first has to be sizeable for it. Where the walk stopped early there
+    /// is no end for a derived type to be compared against, so only the value-type case can use it.
+    /// </remarks>
+    private static (Dictionary<long, FieldAnalysisContext> Offsets, long End, bool Complete)? Compute(TypeAnalysisContext owner, ApplicationAnalysisContext app, int header)
     {
         var pointerSize = app.Binary.is32Bit ? 4 : 8;
         var chain = new List<TypeAnalysisContext>();
@@ -99,15 +115,65 @@ public static class GenericFieldLayout
                 if (field.IsStatic)
                     continue;
 
-                if (MetadataResolver.LaidOutSize(field.FieldType, pointerSize) is not { } size || size <= 0)
-                    return null;
+                if ((MetadataResolver.LaidOutSize(field.FieldType, pointerSize)
+                     ?? Measured(field.FieldType, pointerSize, 0)) is not { } size || size <= 0)
+                    return offsets.Count == 0 ? null : (offsets, at, false);
 
-                at += (size - at % size) % size;
+                //Aligned to the field's **alignment**, which is its size only while that is a power of two up
+                //to the pointer. Aligning to the size itself gives a 32-byte struct 32-byte alignment, and
+                //a state machine's `<>t__builder` then lands at 0x20 where the machine reads it at 8. It went
+                //unnoticed because every field of a reference type is eight bytes, where the two agree.
+                var alignment = size is 1 or 2 or 4 or 8 ? size : pointerSize;
+
+                at += (alignment - at % alignment) % alignment;
                 offsets[at] = field;
                 at += size;
             }
 
-        return offsets.Count == 0 ? null : (offsets, at);
+        return offsets.Count == 0 ? null : (offsets, at, true);
+    }
+
+    /// <summary>
+    /// How big a struct is, by laying it out - for the ones the metadata does not measure.
+    /// </summary>
+    /// <remarks>
+    /// A generic struct records no size, and one of them in the middle of a chain used to end the walk: a
+    /// state machine's second field is <c>AsyncTaskMethodBuilder&lt;T&gt;</c>, so nothing past
+    /// <c>&lt;&gt;1__state</c> could be named. Its own fields are measurable in the same way, recursively -
+    /// that builder holds one <c>Task&lt;T&gt;</c>, which is a reference and so eight bytes - and a struct's
+    /// size is its fields at their alignments, rounded up to the widest of them.
+    /// </remarks>
+    private static long? Measured(TypeAnalysisContext type, int pointerSize, int depth)
+    {
+        if (depth > 4 || !type.IsValueType || type.IsEnumType || type.Namespace == nameof(System))
+            return null;
+
+        var declared = Definition(type);
+
+        if (declared is null || declared.Fields.All(f => f.IsStatic))
+            return null;
+
+        long at = 0, widest = 1;
+
+        foreach (var field in declared.Fields)
+        {
+            if (field.IsStatic)
+                continue;
+
+            if ((MetadataResolver.LaidOutSize(field.FieldType, pointerSize)
+                 ?? Measured(field.FieldType, pointerSize, depth + 1)) is not { } size || size <= 0)
+                return null;
+
+            //A field's alignment is its size where that is a power of two up to the pointer, and the
+            //pointer's otherwise - which is what a nested struct of several fields comes out as.
+            var alignment = size is 1 or 2 or 4 or 8 ? size : pointerSize;
+
+            at += (alignment - at % alignment) % alignment;
+            at += size;
+            widest = System.Math.Max(widest, alignment);
+        }
+
+        return at + (widest - at % widest) % widest;
     }
 
     /// <summary>The type as it was declared, which is what carries the fields.</summary>

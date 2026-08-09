@@ -72,10 +72,25 @@ public static class FieldAddressRecovery
                 continue;
             }
 
-            if (addition.Operands[1] is not LocalVariable { Type: { IsValueType: false } owner } held)
+            //A **struct** base too, and not only a reference. `this` inside a compiler-generated state
+            //machine is a byref to one, and `this + 8` is `<>t__builder` - the first statement lost in
+            //fifteen bodies. `FieldAt` already knew about value types, adding the header il2cpp records
+            //their offsets with; only this predicate kept them out. A primitive is excluded because an
+            //addition to a number is arithmetic, and a type with no instance fields has nothing to name.
+            if (addition.Operands[1] is not LocalVariable { Type: { } owner } held
+                || owner.IsEnumType
+                || (owner.IsValueType && (owner.Namespace == nameof(System)
+                    || !owner.Fields.Any(f => !f.IsStatic))))
                 continue;
 
-            if (FieldAt(owner, offset, header) is not { } field)
+            //And through the laid-out offsets where the type is generic, because a generic type records none
+            //of its own - which is every state machine, since they take the method's type parameters.
+            if ((FieldAt(owner, offset, header)
+                 //A struct reached through a byref carries **no** object header, so its computed layout
+                 //starts at nought - while the metadata records its fields as though boxed, which is why the
+                 //direct lookup above adds the header instead of subtracting it.
+                 ?? GenericFieldLayout.FieldAt(owner, offset, method.AppContext, owner.IsValueType ? 0 : header))
+                is not { } field)
                 continue;
 
             if (Uses(graph, addition, address) is not { Count: > 0 } uses)
