@@ -17,6 +17,10 @@ public static class ForkPipeline
     /// <summary>Runs on the stack slots, before single assignment form is built over them.</summary>
     public static void AfterStackAnalysis(MethodAnalysisContext method)
     {
+        // Before the pass below, which aliases an address register onto its slot and removes the move that
+        // said so - after that there is nothing left to record which slot a libm out-pointer named.
+        OutPointerSlotResult.Run(method);
+
         // A slot the callee writes through an out parameter is only telling apart from one the caller reads
         // while the registers are unversioned: once single assignment form is built, the zero the compiler
         // put in the slot beforehand has already been propagated into the read after the call, and the two

@@ -128,7 +128,21 @@ public static class ArrayInitialiserHandle
         if (usage.RawValue >= references.Length)
             return null;
 
-        if (method.AppContext.ResolveContextForField(references[usage.RawValue].FieldDefinition) is not { } field)
+        //Resolving asks the field for its declaring type, and a `<PrivateImplementationDetails>` storage field
+        //is not always in the cache that answers that - it throws rather than returning nothing, which loses
+        //the whole body over a read this pass would have declined anyway.
+        FieldAnalysisContext? field;
+
+        try
+        {
+            field = method.AppContext.ResolveContextForField(references[usage.RawValue].FieldDefinition);
+        }
+        catch (KeyNotFoundException)
+        {
+            return null;
+        }
+
+        if (field is null)
             return null;
 
         //The guard that makes taking the reference directly safe: an initialiser field is one that carries
