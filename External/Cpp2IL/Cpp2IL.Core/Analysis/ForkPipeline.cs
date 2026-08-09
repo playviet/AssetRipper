@@ -358,6 +358,12 @@ public static class ForkPipeline
         // which is what then takes the buffer the copy no longer reads.
         IndirectReturnCopy.Run(method);
 
+        // And the other half of the same import: clearing a struct to nought is `t = default`, which the
+        // generator can write, rather than a call to something no method table names. Beside the collapse
+        // above because it is the same call shape and the same question - what did this memory operation
+        // stand for.
+        ClearedStruct.Run(method);
+
         // A call recovered out of the walk il2cpp inlined to find it leaves that walk reaching nothing, and a
         // walk is a loop - so its two blocks are each other's predecessor and neither is ever left without
         // one. Nothing that counts predecessors will take them, and while they stand the comparison that ends
