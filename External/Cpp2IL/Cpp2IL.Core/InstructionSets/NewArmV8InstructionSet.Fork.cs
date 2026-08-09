@@ -825,8 +825,8 @@ public partial class NewArmV8InstructionSet
     /// Written as a shift pair because ISIL has no conversion. Where the source is a constant - which is the
     /// whole point of these instructions - <c>ConstantFolding</c> collapses it straight back to one number.
     /// </remarks>
-    internal static object WidenedSource(Arm64Instruction instruction, object source, int operand,
-        Action<OpCode, object[]> emit)
+    internal static object WidenedSource(MethodAnalysisContext context, Arm64Instruction instruction,
+        object source, int operand, Action<OpCode, object[]> emit)
     {
         var signed = instruction.Mnemonic is Arm64Mnemonic.SMADDL or Arm64Mnemonic.SMSUBL or Arm64Mnemonic.SMULL;
         var unsigned = instruction.Mnemonic is Arm64Mnemonic.UMADDL or Arm64Mnemonic.UMSUBL or Arm64Mnemonic.UMULL;
@@ -834,16 +834,17 @@ public partial class NewArmV8InstructionSet
         if (!signed && !unsigned)
             return source;
 
+        //Two conversions and not a shift pair. A shift pair says the right thing about the value and nothing
+        //about the width, and `x << 32 >> 32` on a 32-bit local is **a no-op in C#** - the language takes the
+        //count modulo the operand's width. So the sign came out right and the product stayed 32 bits, and the
+        //`asr x8, x8, #32` that follows a magic multiply then read the high word of a number that had none.
+        var types = context.AppContext.SystemTypes;
+        var narrow = new Register(null, "NARROW" + operand);
         var widened = new Register(null, "WIDE" + operand);
 
-        if (unsigned)
-        {
-            emit(OpCode.And, [widened, source, 0xFFFFFFFFL]);
-            return widened;
-        }
+        emit(OpCode.Move, [narrow, source, new ConversionTarget(unsigned ? types.SystemUInt32Type : types.SystemInt32Type)]);
+        emit(OpCode.Move, [widened, narrow, new ConversionTarget(unsigned ? types.SystemUInt64Type : types.SystemInt64Type)]);
 
-        emit(OpCode.ShiftLeft, [widened, source, 32L]);
-        emit(OpCode.ShiftRight, [widened, widened, 32L]);
         return widened;
     }
 

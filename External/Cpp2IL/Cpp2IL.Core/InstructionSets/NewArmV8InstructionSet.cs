@@ -907,8 +907,8 @@ public partial class NewArmV8InstructionSet : Cpp2IlInstructionSet
                 {
                     var product = new Register(null, "TEMP");
                     Add(address, OpCode.Multiply, product,
-                        WidenedSource(instruction, ConvertOperand(instruction, 1), 1, (o, ops) => Add(address, o, ops)),
-                        WidenedSource(instruction, ConvertOperand(instruction, 2), 2, (o, ops) => Add(address, o, ops)));
+                        WidenedSource(context, instruction, ConvertOperand(instruction, 1), 1, (o, ops) => Add(address, o, ops)),
+                        WidenedSource(context, instruction, ConvertOperand(instruction, 2), 2, (o, ops) => Add(address, o, ops)));
                     Add(address, OpCode.Negate, ConvertOperand(instruction, 0), product);
                 }
                 break;
@@ -957,7 +957,9 @@ public partial class NewArmV8InstructionSet : Cpp2IlInstructionSet
             case Arm64Mnemonic.UMSUBL:
                 {
                     var product = new Register(null, "TEMP");
-                    Add(address, OpCode.Multiply, product, ConvertOperand(instruction, 1), ConvertOperand(instruction, 2));
+                    Add(address, OpCode.Multiply, product,
+                        WidenedSource(context, instruction, ConvertOperand(instruction, 1), 1, (o, ops) => Add(address, o, ops)),
+                        WidenedSource(context, instruction, ConvertOperand(instruction, 2), 2, (o, ops) => Add(address, o, ops)));
 
                     var accumulator = ConvertOperand(instruction, 3);
                     if (instruction.Mnemonic is Arm64Mnemonic.MSUB or Arm64Mnemonic.SMSUBL or Arm64Mnemonic.UMSUBL)
@@ -970,8 +972,8 @@ public partial class NewArmV8InstructionSet : Cpp2IlInstructionSet
             case Arm64Mnemonic.SMULL:
             case Arm64Mnemonic.UMULL:
                 Add(address, OpCode.Multiply, ConvertOperand(instruction, 0),
-                    WidenedSource(instruction, ConvertOperand(instruction, 1), 1, (o, ops) => Add(address, o, ops)),
-                    WidenedSource(instruction, ConvertOperand(instruction, 2), 2, (o, ops) => Add(address, o, ops)));
+                    WidenedSource(context, instruction, ConvertOperand(instruction, 1), 1, (o, ops) => Add(address, o, ops)),
+                    WidenedSource(context, instruction, ConvertOperand(instruction, 2), 2, (o, ops) => Add(address, o, ops)));
                 break;
 
             case Arm64Mnemonic.CSET:
