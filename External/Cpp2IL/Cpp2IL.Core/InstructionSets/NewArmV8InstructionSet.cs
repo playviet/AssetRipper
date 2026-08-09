@@ -558,6 +558,14 @@ public partial class NewArmV8InstructionSet : Cpp2IlInstructionSet
                     var returnRegister2 = GetReturnRegisterForContext(context);
                     if (context.AppContext.MethodsByAddress.TryGetValue(target, out var tailCallMethods) && tailCallMethods.Count == 1)
                         AddCall(context, GetCallResultOperand(tailCallMethods[0]), address, target);
+                    //An import is a tail call as often as it is an ordinary one - `return Mathf.Atan2(y, x)`
+                    //compiles to a branch, not a call - and only the `bl` path asked. Six bodies were left
+                    //saying `Method not found` for a function the hook beside it already names.
+                    else if (ImportedCall(context, target) is { } tailImported)
+                    {
+                        foreach ((OpCode tailOpCode, object[] tailOperands) in tailImported)
+                            Add(address, tailOpCode, tailOperands);
+                    }
                     else
                         AddUnmanagedCall(address, target);
 
