@@ -889,10 +889,56 @@ public static partial class IlGenerator
                 return true;
             }
 
+            //The same call with **no class operand**, which is what is left once every pass that could name
+            //one has refused: 25 sites, 10 bodies, and each of them a statement saying only that the call
+            //could not be written. The class is not the only thing that says what these produce - the type
+            //the analysis gave the **result** says it too, and where it does the instruction is exact.
+            case "il2cpp_vm_object_is_inst" when ResultType(instruction) is { IsValueType: false } inferred:
+            {
+                if (Argument(instruction, 1) is not { } tested)
+                    return false;
+
+                LoadOperand(tested, method, locals, writeLine, stringCtor);
+                instructions.Add(CilOpCodes.Isinst, importer.ImportType(inferred.ToTypeSignature(module).ToTypeDefOrRef()));
+                StoreResult(instruction, method, locals, writeLine);
+                return true;
+            }
+
+            case Analysis.UnboxRecovery.ObjectUnbox when ResultType(instruction) is { IsValueType: true } taken:
+            {
+                if (Argument(instruction, 1) is not { } boxed)
+                    return false;
+
+                LoadOperand(boxed, method, locals, writeLine, stringCtor);
+                instructions.Add(CilOpCodes.Unbox_Any, importer.ImportType(taken.ToTypeSignature(module).ToTypeDefOrRef()));
+                StoreResult(instruction, method, locals, writeLine);
+                return true;
+            }
+
+            //Preparing a type, which managed code cannot observe: it cannot run before the type it is in has
+            //been prepared. The guarded form is already removed; this is the bare call the guard was lost from.
+            case "il2cpp_runtime_class_init_actual":
+            case "il2cpp_runtime_class_init":
+                if (instruction.OpCode == OpCode.Call && instruction.Operands.Count > 1
+                    && instruction.Operands[1] is LocalVariable { Type: { } prepared })
+                {
+                    AddDefaultValue(instructions, prepared, module, importer);
+                    StoreToOperand(instruction.Operands[1], method, locals, writeLine);
+                }
+
+                return true;
+
             default:
                 return false;
         }
     }
+
+    /// <summary>The type the analysis decided a call produces, where it decided one.</summary>
+    private static TypeAnalysisContext? ResultType(Instruction instruction)
+        => instruction.OpCode == OpCode.Call && instruction.Operands.Count > 1
+            && instruction.Operands[1] is LocalVariable { Type: { } produced }
+            ? produced
+            : null;
 
     /// <summary>
     /// The type a runtime class argument describes. The metadata load is sometimes still in a local and
