@@ -364,6 +364,11 @@ public static class ForkPipeline
         // Last, so that it sees the copies the passes before it leave behind.
         ConditionSinking.Run(method);
 
+        // One immediate broadcast into every lane of a struct of floats - `Color.white` is `FMOV V0.4S` and
+        // one store, and the lifter keeps the number and loses the broadcast. Here, where the destination has
+        // its declared type and before the generator has to write the number down as a cast.
+        FloatStructBroadcast.Run(method);
+
         // A `Nullable<bool>` is two bytes read as one number and asked one question; the answer is a field of
         // it, and the type has to be resolved before that can be seen - so, here rather than in the lifter.
         NullablePackedCompare.Run(method);

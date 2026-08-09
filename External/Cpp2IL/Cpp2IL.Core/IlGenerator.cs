@@ -460,9 +460,6 @@ public static partial class IlGenerator
                         continue;
                     }
 
-                    if (TryBuildFloatStruct(argument, method, locals, module, writeLine, stringCtor))
-                        continue;
-
                     if (argument != null)
                         LoadOperand(argument, method, locals, writeLine, stringCtor, parameterType);
                     else
@@ -687,6 +684,11 @@ public static partial class IlGenerator
         Dictionary<LocalVariable, CilLocalVariable> locals, MemberReference writeLine, MemberReference stringCtor,
         TypeAnalysisContext? expectedType = null)
     {
+        //A struct of floats put together from the registers or the immediate that carried it - see
+        //TryBuildFloatStruct. Here, because it is the one place every operand is loaded through.
+        if (TryBuildFloatStruct(operand, method, locals, method.DeclaringModule!, writeLine, stringCtor))
+            return;
+
         var instructions = method.CilMethodBody!.Instructions;
 
         var module = method.DeclaringModule!;
