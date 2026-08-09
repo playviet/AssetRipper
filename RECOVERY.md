@@ -79,7 +79,10 @@ one change  →  measure all scorers + gen-fail  →  keep or revert with the nu
   read the part you need: `grep -n` for the shape, then `sed -n` the range.
 * **Read ISIL, not exported C#, when diagnosing** — `scratchpad/probeg isil <Type> [Method]`. It is the level
   the passes operate on. `probeg asm <Type> [Method]` when the ISIL itself looks wrong.
-* Run the **full** export and the Unity gate once before staging, not every round.
+* Run the **full** export and the Unity gate once before staging, not every round. Measured at 1.0.673: the
+full export scores **identically** to `fast` on every scorer - `commented` 1907, 72 of 96 files clean, same
+markers - and compiles in Unity to a 947 KB `Assembly-CSharp.dll` with 0 `error CS`. `fast` differs only in
+prefab outlining, mesh separation, deduplication and dummy shaders, none of which touch the recovered C#.
 
 ## 5. What decides keep or revert
 
