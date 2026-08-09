@@ -238,6 +238,19 @@ public static class ListIdiomRecovery
                 {
                     instruction.OpCode = OpCode.Nop;
                     instruction.Operands = [];
+                    continue;
+                }
+
+                //And the null check arm64 puts in front of the length read. Only the writes were being taken,
+                //so `if (list._items == null)` survived - a private field of the runtime library that a game
+                //assembly cannot name, commented out, taking the recovered `Add` inside it along. A live list
+                //always has its storage, so the question has no answer to keep.
+                if (instruction is { OpCode: OpCode.CheckEqual or OpCode.CheckNotEqual, Operands: [_, FieldReference { Field.Name: "_items", Local: { } read }, { } against] }
+                    && ReferenceEquals(read, holder)
+                    && IsZero(against))
+                {
+                    instruction.OpCode = OpCode.Nop;
+                    instruction.Operands = [];
                 }
             }
 

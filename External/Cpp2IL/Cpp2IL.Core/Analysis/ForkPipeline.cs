@@ -267,6 +267,10 @@ public static class ForkPipeline
         // addressing mode - 499 additions of `this` and a constant. Nothing names the field then, and what
         // comes out is `Unsafe.AddByteOffset(ref this, 48L)` beside a call given a fresh `default(T)`. Before
         // the resolution below, so the reads it recovers are typed by it.
+        // Directly above, undoing the fold that hides an address from it: copy propagation puts a field
+        // straight into the addition, and neither the recovery nor the sinking below reads that shape.
+        FieldAddressBase.Run(method);
+
         FieldAddressRecovery.Run(method);
 
         // Directly after it, on the additions it declined: 62 of the 77 it refuses in Assembly-CSharp are
