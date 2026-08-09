@@ -72,9 +72,10 @@ public static class WholeStructAtItsOwnType
         }
 
         //And it must really be the first field, not a one-field struct's only one or a name that happens to
-        //sit at nought in something else.
+        //sit at nought in something else. By name: a field reached through a generic instantiation is not the
+        //same object as the one on the type definition, and reference equality quietly refused those.
         if (HomogeneousFloatStruct.Fields(held) is not { Count: > 1 } fields
-            || !ReferenceEquals(fields[0], ((FieldReference)instruction.Operands[operand]).Field))
+            || fields[0].Name != ((FieldReference)instruction.Operands[operand]).Field.Name)
         {
             return;
         }
