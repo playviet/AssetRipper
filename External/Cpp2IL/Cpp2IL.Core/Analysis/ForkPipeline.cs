@@ -383,6 +383,10 @@ public static class ForkPipeline
         // two instructions this does not match.
         RgctxGuardFolding.Run(method);
 
+        // A read at a distance from a slot's address is a read of the slot that distance away - both are
+        // frame offsets and adding them names it. Late, where every slot the frame uses has been named.
+        SlotAddressRead.Run(method);
+
         // A mask to thirty-two bits on something that has no more than thirty-two is the register's width and
         // not arithmetic, and it makes a `Color32` stop looking like one. Late, where the value has its type.
         WidthMaskIsIdentity.Run(method);
