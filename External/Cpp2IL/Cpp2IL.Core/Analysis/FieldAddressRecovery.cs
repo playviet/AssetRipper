@@ -131,15 +131,16 @@ public static class FieldAddressRecovery
 
     /// <summary>The instance field lying at that distance into the type, if one does.</summary>
     /// <remarks>
-    /// il2cpp records a field's offset as the type is laid out boxed, so a reference type's fields already
-    /// carry the object header and match the addend directly.
+    /// The addend and the recorded offset are the same number for both kinds. A reference type's fields are
+    /// recorded past the object header and are reached past it too; a **struct's are recorded from its own
+    /// start** - `&lt;InstantiateFromAddressables&gt;d__10` puts `&lt;&gt;t__builder` at 8, which is where
+    /// `this + 8` reads it - and a struct reached through a byref has no header either.
+    ///
+    /// This used to add the header for a value type. That branch was unreachable while the caller refused
+    /// value-type bases, so nothing had ever tested it, and it was wrong.
     /// </remarks>
     private static FieldAnalysisContext? FieldAt(TypeAnalysisContext owner, long offset, int header)
-    {
-        var wanted = owner.IsValueType ? offset + header : offset;
-
-        return owner.Fields.FirstOrDefault(f => !f.IsStatic && f.BackingData?.FieldOffset == wanted);
-    }
+        => owner.Fields.FirstOrDefault(f => !f.IsStatic && f.BackingData?.FieldOffset == offset);
 
     /// <summary>Every place the address is used, or null where one of them is not a use this can name.</summary>
     private static List<(Instruction Instruction, int Operand)>? Uses(Graphs.ISILControlFlowGraph graph,
