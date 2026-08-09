@@ -1234,6 +1234,43 @@ public static partial class IlGenerator
             or Il2CppTypeEnum.IL2CPP_TYPE_BOOLEAN or Il2CppTypeEnum.IL2CPP_TYPE_CHAR;
 
     /// <summary>
+    /// Converts a value already on the stack to the integer width of the place it is going to.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ISIL holds values, not registers, and has no width - so a local whose type was settled as
+    /// <c>System.Int64</c> is pushed as one wherever it goes, including into an <c>int</c>. That is not
+    /// verifiable IL, and the decompiler writes the mismatch out in place of the statement: after the enum
+    /// constants were fixed, <b>822</b> of its notes were still one integer width meeting another.
+    /// </para>
+    /// <para>
+    /// Only where both sides are a known fixed-width integer. A native integer is deliberately left alone -
+    /// it is what an untyped value lowers to, so converting to or from one would be acting on the absence of
+    /// a type rather than on a type. And only a local, because the constants above already choose their own
+    /// width from the same question.
+    /// </para>
+    /// </remarks>
+    private static void ConvertToWidthOf(CilInstructionCollection instructions, object operand,
+        TypeAnalysisContext? expectedType)
+    {
+        if (expectedType is null || operand is not LocalVariable { Type: { } declared })
+            return;
+
+        var from = StoredAs(declared);
+        var to = StoredAs(expectedType);
+
+        //Widening only. Narrowing to 32 bits was built and measured: it took `Corpus::Mix` from 321186724655
+        //to -935822545, because the width being narrowed to is one the analysis *inferred* and the value was
+        //really 64 bits. A conversion that cannot lose anything needs no such confidence; one that can is a
+        //wrong answer wherever the inference was wrong, and the marker it replaces was the better outcome.
+        if (IsSixtyFourBitInteger(to) && IsThirtyTwoBitInteger(from))
+            instructions.Add(CilOpCodes.Conv_I8);
+    }
+
+    private static bool IsSixtyFourBitInteger(TypeAnalysisContext? type) =>
+        StoredAs(type)?.Type is Il2CppTypeEnum.IL2CPP_TYPE_I8 or Il2CppTypeEnum.IL2CPP_TYPE_U8;
+
+    /// <summary>
     /// The integer a value is actually held as - which for an enum is what it derives from, not itself.
     /// </summary>
     /// <remarks>

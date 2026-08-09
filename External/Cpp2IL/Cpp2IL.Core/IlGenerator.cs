@@ -833,6 +833,10 @@ public static partial class IlGenerator
                 instructions.Add(CilOpCodes.Ldnull);
                 break;
         }
+
+        //The value is on the stack now, and an integer that is not the width of the place it is going to
+        //makes the IL unverifiable - see ConvertToWidthOf in the fork.
+        ConvertToWidthOf(instructions, operand, expectedType);
     }
 
     /// <summary>
