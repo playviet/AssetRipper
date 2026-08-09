@@ -84,6 +84,7 @@ public static class ArrayAccessRecovery
                 definitions[destination] = instruction;
 
         var changed = false;
+        var biasedAccesses = new List<(Instruction At, int Operand, object Array, LocalVariable Index, long Bias, int Scale)>();
 
         foreach (var instruction in method.ControlFlowGraph.Instructions)
         {
@@ -99,12 +100,24 @@ public static class ArrayAccessRecovery
                 //had propagated across the addition - which is most of them, since it is an addition - was
                 //left as a read through a pointer, and the subscript with it.
                 if (instruction.Operands[i] is MemoryOperand { Index: not null, Base: LocalVariable indexed } addressed
-                    && definitions.GetValueOrDefault(indexed) is { OpCode: OpCode.Add, Operands.Count: 3 } offsetting
-                    && ElementsOf(offsetting, elements) is { } indexedArray)
+                    && definitions.GetValueOrDefault(indexed) is { OpCode: OpCode.Add, Operands.Count: 3 } offsetting)
                 {
-                    instruction.Operands[i] = new MemoryOperand(indexedArray, addressed.Index, elements, addressed.Scale);
-                    changed = true;
-                    continue;
+                    if (ElementsOf(offsetting, elements) is { } indexedArray)
+                    {
+                        instruction.Operands[i] = new MemoryOperand(indexedArray, addressed.Index, elements, addressed.Scale);
+                        changed = true;
+                        continue;
+                    }
+
+                    //And where the pointer starts past element zero, the subscript is that many higher. The
+                    //bias cannot go in the addressing mode - the addend there is what says "this is an
+                    //element" - so it is added to the index, which is what the source said anyway.
+                    if (BiasedElementsOf(offsetting, elements, addressed.Scale) is { } biased
+                        && addressed.Index is LocalVariable subscriptLocal)
+                    {
+                        biasedAccesses.Add((instruction, i, biased.Array, subscriptLocal, biased.Bias, addressed.Scale));
+                        continue;
+                    }
                 }
 
                 //The header can be folded into the subscript instead of into the base: `mov w22, #4` and
@@ -159,6 +172,29 @@ public static class ArrayAccessRecovery
             }
         }
 
+        //The subscripts that had to be raised, applied last so that inserting instructions cannot disturb the
+        //walk above. The bias is a number the compiler had already worked out; what is added here is only the
+        //place to keep the sum, which the source had as the subscript itself.
+        foreach (var (at, operand, array, index, bias, scale) in biasedAccesses)
+        {
+            foreach (var block in method.ControlFlowGraph.Blocks)
+            {
+                var position = block.Instructions.IndexOf(at);
+
+                if (position < 0)
+                    continue;
+
+                var raised = new LocalVariable($"index{method.Locals.Count}", new Register(null, "BIASED"),
+                    index.Type ?? method.AppContext.SystemTypes.SystemInt32Type);
+
+                method.Locals.Add(raised);
+                block.Instructions.Insert(position, new Instruction(at.Index, OpCode.Add, raised, index, bias));
+                at.Operands[operand] = new MemoryOperand(array, raised, elements, scale);
+                changed = true;
+                break;
+            }
+        }
+
         return changed;
     }
 
@@ -193,6 +229,45 @@ public static class ArrayAccessRecovery
 
             if (taken == offset)
                 return local;
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// The array and the subscript this elements pointer starts at, where it starts past element zero.
+    /// </summary>
+    /// <remarks>
+    /// A loop that begins at element one gets its pointer as <c>array + 36</c> rather than <c>array + 32</c>,
+    /// and reads <c>[p + i*4]</c> - which is <c>array[i + 1]</c>. The bias is the difference divided by the
+    /// width of an element, and it only means anything when the difference is a whole number of elements.
+    /// </remarks>
+    private static (object Array, long Bias)? BiasedElementsOf(Instruction sum, int elements, int scale)
+    {
+        if (scale <= 0)
+            return null;
+
+        for (var side = 1; side <= 2; side++)
+        {
+            var array = sum.Operands[side];
+
+            if (!IsArray(array switch
+                {
+                    LocalVariable local => local.Type,
+                    FieldReference field => field.Field.FieldType,
+                    _ => null,
+                }))
+                continue;
+
+            var addend = sum.Operands[side == 1 ? 2 : 1];
+
+            if (addend is not (int or long or uint or ulong))
+                continue;
+
+            var distance = System.Convert.ToInt64(addend) - elements;
+
+            if (distance > 0 && distance % scale == 0)
+                return (array, distance / scale);
         }
 
         return null;
