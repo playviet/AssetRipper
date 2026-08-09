@@ -130,7 +130,15 @@ public static class HomogeneousFloatArguments
             //`new Vector3(num * 1067366482L, num, ((Vector3*)num)->z)`, which is worse than the cast it
             //replaced. Three of the 96 files lost a method to exactly that.
             if (parts.Count == floats && parts.TrueForAll(IsAFloat))
+            {
+                //An integral zero that got here is a cleared lane; the constructor takes floats, and an int
+                //reaching it would be written as `ldc.i4.0` where `ldc.r4` belongs.
+                for (var part = 0; part < parts.Count; part++)
+                    if (parts[part] is int or long or uint or ulong)
+                        parts[part] = 0f;
+
                 instruction.Operands[first + i] = new FloatStructAssembly(constructor, parts);
+            }
         }
     }
 
@@ -149,6 +157,10 @@ public static class HomogeneousFloatArguments
         FieldReference field => field.Field.FieldType.FullName == "System.Single",
         LocalVariable { Type: { } type } => type.FullName == "System.Single",
         LocalVariable { Type: null, Register.Name: { Length: > 1 } name } => name[0] is 'V' or 'S' or 'D',
+        //A lane cleared with `movi d0, #0` arrives as an integral zero, and zero bits are 0f whichever way
+        //they are read - the same premise as a broadcast immediate. Only zero: any other integral constant in
+        //a vector register would be a bit pattern this has no reason to reinterpret.
+        int or long or uint or ulong => System.Convert.ToInt64(part) == 0,
         _ => false,
     };
 

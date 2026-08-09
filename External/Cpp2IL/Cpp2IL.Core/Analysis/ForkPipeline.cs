@@ -256,6 +256,11 @@ public static class ForkPipeline
         // A lambda is a delegate built from a target and a method, and il2cpp generates one constructor per
         // delegate type which no method table names - so the allocation beside it had nothing to fuse with
         // and came out as `DOGetter<Color> getter = null;`. Here, where the allocation's local is typed.
+        // A delegate over a `virtual` method reaches it through the vtable, so the constructor was handed an
+        // unnamed pointer rather than a method. Directly above, because this is what gives it one - and above
+        // the resolution that would otherwise make the vtable read look like a field.
+        VirtualMethodPointer.Run(method);
+
         DelegateConstruction.Run(method);
 
         // A field whose address the compiler worked out into a register rather than leaving the offset in the
@@ -275,6 +280,12 @@ public static class ForkPipeline
         // moved to where the addresses are made and the choice picks between values instead. Straight after
         // the pass above, which has already taken every address that is wanted as one.
         FieldAddressSinking.Run(method);
+
+        // The same question one level down: not two addresses chosen between, but two *offsets* - which is
+        // what `show ? highLightStarSprite : hideStarSprite` compiles to, a select of 40 and 48 and one load
+        // at `this + <register>`. Here, where the base is typed and before the resolution below turns the two
+        // constant reads this leaves behind into the fields they name.
+        SelectedFieldOffset.Run(method);
 
         // unmanaged memory, so the index tested against it learns nothing from the test, and an untyped index
         // is written out as an object - which makes the bounds check a comparison between unrelated things,
@@ -337,6 +348,12 @@ public static class ForkPipeline
         // collection below, which is what then finds the array read it went through dead too.
         UnusedLengthRead.Run(method);
 
+        // A struct bigger than sixteen bytes comes back through a buffer and is then copied out of it, so
+        // `Touch t = Input.GetTouch(i)` is a call whose answer was discarded and a `default(Touch)` beside it.
+        // Here, where the call is resolved and the destination has its type - and above the collection below,
+        // which is what then takes the buffer the copy no longer reads.
+        IndirectReturnCopy.Run(method);
+
         // A call recovered out of the walk il2cpp inlined to find it leaves that walk reaching nothing, and a
         // walk is a loop - so its two blocks are each other's predecessor and neither is ever left without
         // one. Nothing that counts predecessors will take them, and while they stand the comparison that ends
@@ -350,6 +367,16 @@ public static class ForkPipeline
         // A class pointer and the static storage taken out of it have no way of being written down, so left
         // behind they are placeholders in the middle of statements that were otherwise recovered.
         DeadCodeEliminator.Run(method);
+
+        // And the values that keep each other alive. Counting uses proves a definition dead only while every
+        // local has one definition; taking that form apart turns a phi into a copy per edge, and a value
+        // carried round a loop is copied back to itself, so a closed cycle of copies is never collected.
+        // Directly after, on what the counting could not take.
+        // And the values that keep each other alive. Counting uses proves a definition dead only while every
+        // local has one definition; taking that form apart turns a phi into a copy per edge, and a value
+        // carried round a loop is copied back to itself, so a closed cycle of copies is never collected.
+        // Directly after, on what the counting could not take.
+        DeadCopyCycles.Run(method);
 
         // A lambda that captures nothing is cached in a static field, and the decompiler only puts the lambda
         // back when it sees that field used directly. Runs here, on the copies phi removal leaves behind.

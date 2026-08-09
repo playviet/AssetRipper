@@ -33,13 +33,32 @@ public static class WidthMaskIsIdentity
         foreach (var instruction in graph.Instructions)
         {
             if (instruction is not { OpCode: OpCode.And, Operands: [{ } into, LocalVariable source, { } mask] }
-                || !IsWord(mask)
-                || source.Type is not { } type
-                || Aapcs64.SizeOf(type) is not { } size || size > 4)
+                || source.Type is not { } type)
+                continue;
+
+            //A `bool` holds nought or one, so masking it to its low bit changes nothing - and the mask is what
+            //made the two arms of a merged return an `int` and a `bool`, which ILSpy bridged with `(int?)`.
+            var identity = type.FullName == "System.Boolean"
+                ? IsOne(mask) || IsWord(mask)
+                : IsWord(mask) && Aapcs64.SizeOf(type) is { } size && size <= 4;
+
+            if (!identity)
                 continue;
 
             instruction.OpCode = OpCode.Move;
             instruction.Operands = [into, source];
+        }
+    }
+
+    private static bool IsOne(object mask)
+    {
+        try
+        {
+            return mask is not string && System.Convert.ToInt64(mask) == 1;
+        }
+        catch (System.Exception)
+        {
+            return false;
         }
     }
 

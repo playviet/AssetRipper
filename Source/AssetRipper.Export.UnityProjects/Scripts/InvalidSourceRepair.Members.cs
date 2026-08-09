@@ -125,8 +125,18 @@ internal static partial class InvalidSourceRepair
 		//Whatever the compiler made of it. Where the declaring assembly is one this export decompiled too, the
 		//field is not merely inaccessible - it is **not there at all**: a decompiler reconstructs
 		//`{ get; set; }` and writes no field, so the reference resolves to nothing.
-		if (model.GetSymbolInfo(access).Symbol is not null
-			|| PropertyBehind(access.Name.Identifier.ValueText) is not { } name
+		//Either the field is not there at all - a decompiler reconstructing `{ get; set; }` writes no field,
+		//so the reference resolves to nothing - or it is there and **out of reach**, which is every serialized
+		//field Unity declares `protected`. `gridLayoutGroup.m_Spacing.y` is the second kind, and the property
+		//over it is `spacing`.
+		ISymbol? resolved = model.GetSymbolInfo(access).Symbol;
+
+		if (resolved is not null && model.IsAccessible(access.SpanStart, resolved))
+		{
+			return null;
+		}
+
+		if (PropertyBehind(access.Name.Identifier.ValueText) is not { } name
 			|| model.GetTypeInfo(access.Expression).Type is not { } receiver)
 		{
 			return null;
@@ -140,7 +150,12 @@ internal static partial class InvalidSourceRepair
 			{
 				if (member is IPropertySymbol { IsIndexer: false } property
 					&& (written ? property.SetMethod : property.GetMethod) is { } accessor
-					&& model.IsAccessible(access.SpanStart, accessor))
+					&& model.IsAccessible(access.SpanStart, accessor)
+					//Where the field is reachable enough to have a type, the property must hold the same
+					//thing. Two members whose names differ only by Unity's prefix are not automatically the
+					//same value, and saying so where they are not would be a wrong read that compiles.
+					&& (resolved is not IFieldSymbol hidden
+						|| SymbolEqualityComparer.Default.Equals(hidden.Type, property.Type)))
 				{
 					return $"{access.Expression}.{property.Name}";
 				}
@@ -155,6 +170,14 @@ internal static partial class InvalidSourceRepair
 	{
 		const string Escaped = "_003C", EscapedEnd = "_003E";
 		const string Tail = "k__BackingField";
+
+		//Unity's own convention for a serialized field, which is `protected` on nearly every component it
+		//ships: `m_Spacing` is read through the property `spacing`. The name alone is not the argument - the
+		//caller checks with Roslyn that such a property exists, is reachable and holds the same type.
+		if (field.Length > 2 && field[0] == 'm' && field[1] == '_' && char.IsUpper(field[2]))
+		{
+			return char.ToLowerInvariant(field[2]) + field[3..];
+		}
 
 		if (!field.EndsWith(Tail, StringComparison.Ordinal))
 		{

@@ -347,7 +347,10 @@ public static partial class LocalVariables
             if (instruction.OpCode != OpCode.Move || instruction.Operands.Count < 2)
                 continue;
 
-            if (instruction.Operands[0] is LocalVariable destination && instruction.Operands[1] is RuntimeMethodInfoAnalysisContext methodInfo)
+            //Not an edge copy - see StandsForOneValue in the fork. A phi merging a MethodInfo with anything
+            //else is not a MethodInfo, and saying it is spreads a native int through the copy chain.
+            if (instruction.Operands[0] is LocalVariable destination && instruction.Operands[1] is RuntimeMethodInfoAnalysisContext methodInfo
+                && StandsForOneValue(method, instruction))
                 destination.Type = methodInfo;
         }
     }

@@ -615,4 +615,38 @@ public static partial class LocalVariables
         => type is RuntimeMethodInfoAnalysisContext or RuntimeClassTypeAnalysisContext
             or StaticFieldStorageTypeAnalysisContext or RgctxTableTypeAnalysisContext
             or MethodRgctxTableTypeAnalysisContext;
+
+    /// <summary>
+    /// Whether this is the only place its destination is given a value.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Taking single assignment form apart turns every phi into a copy on each incoming edge, so a local
+    /// written once in the source is written several times here - and a seed that stamps a type on a
+    /// destination cannot tell those apart from a real definition. <c>SeedMethodInfoTypes</c> did not, and
+    /// stamped <c>Il2CppMethodInfo</c> on a phi that merged a <c>methodof</c> edge with an ordinary
+    /// <c>int</c>:
+    /// </para>
+    /// <code>
+    /// -1 Move v143 (Il2CppMethodInfo), rows @ X1 (System.Int32)
+    /// -1 Move v143 (Il2CppMethodInfo), methodof(HashSet`1&lt;Int32&gt;::Clear)
+    /// </code>
+    /// <para>
+    /// A runtime <c>MethodInfo</c> lowers to a native int, so every local the propagation then reached was
+    /// declared <c>nint</c> and every real assignment to it became an invalid cast: <b>111</b> statements of
+    /// the form <c>num = (nint)array</c> across the export, and one of them made a whole array come out as
+    /// <c>Il2CppMethodInfo[]</c> because the element type was read off the poisoned local.
+    /// </para>
+    /// </remarks>
+    internal static bool StandsForOneValue(MethodAnalysisContext method, Instruction instruction)
+    {
+        if (instruction.Destination is not LocalVariable destination || method.ControlFlowGraph is not { } graph)
+            return true;
+
+        foreach (var other in graph.Instructions)
+            if (!ReferenceEquals(other, instruction) && ReferenceEquals(other.Destination, destination))
+                return false;
+
+        return true;
+    }
 }

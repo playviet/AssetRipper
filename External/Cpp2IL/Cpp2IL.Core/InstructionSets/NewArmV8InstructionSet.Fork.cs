@@ -1199,6 +1199,79 @@ public partial class NewArmV8InstructionSet
         };
     }
 
+    /// <summary>
+    /// The shift an instruction folds into its last operand, done at the width the instruction works in and
+    /// bringing in what it really brings in.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <see cref="LogicalShift"/> settled that arm64's two right shifts are different operations, and marked
+    /// the ones it could see - but only the shifts that are instructions of their own. A shift <b>folded into
+    /// an operand</b> went through a different path and was never marked, so <c>add w8, w9, w8, lsr #31</c>
+    /// came out arithmetic. That is clang's sign fixup for a magic division, and getting it wrong makes the
+    /// division wrong for every negative dividend - silently, with no marker and no statement lost.
+    /// </para>
+    /// <para>
+    /// The width matters for the same reason and at the same sites. A <c>w</c>-form shift works on the low
+    /// thirty-two bits; done at sixty-four the sign extension above them shifts down into the answer, so
+    /// <c>lsr #31</c> yields a whole word rather than the one bit the fixup wanted. Both have to be right
+    /// together: measured on <c>Corpus::Bits</c>, either one alone is wrong in essentially every case
+    /// (3995 and 3999 of 4000 random inputs) and the two together are wrong in none.
+    /// </para>
+    /// <para>
+    /// Only a right shift is narrowed. A folded left shift is how an array element is addressed, its result
+    /// is used as a full-width address, and the <c>w</c>-form's truncation is somebody else's question.
+    /// </para>
+    /// </remarks>
+    private static object FoldedShift(MethodAnalysisContext context, Arm64Instruction instruction, object value,
+        OpCode direction, Func<OpCode, object[], Instruction> emit)
+    {
+        var logical = direction == OpCode.ShiftRight && BringsInZeroes(context, instruction);
+
+        if (direction == OpCode.ShiftRight && WorksInThirtyTwoBits(context, instruction))
+        {
+            var types = context.AppContext.SystemTypes;
+
+            var narrowed = new Register(null, "SHIFTED");
+            emit(OpCode.Move, [narrowed, value, new ConversionTarget(logical ? types.SystemUInt32Type : types.SystemInt32Type)]);
+            value = narrowed;
+        }
+
+        var shifted = new Register(null, "SHIFTED");
+        var emitted = emit(direction, [shifted, value, instruction.Op3Imm]);
+
+        if (logical)
+            LogicalShift.Mark(emitted);
+
+        return shifted;
+    }
+
+    /// <summary>Whether the folded shift brings in zeroes rather than the sign bit.</summary>
+    private static bool BringsInZeroes(MethodAnalysisContext context, Arm64Instruction instruction)
+    {
+        if (instruction.FinalOpShiftType != Arm64ShiftType.NONE)
+            return instruction.FinalOpShiftType == Arm64ShiftType.LSR;
+
+        //The same two bits ShiftDirection reads: 1 is LSR, 2 is ASR.
+        return RawWord(context, instruction) is { } word && (word >> 22 & 3) == 1;
+    }
+
+    /// <summary>Whether the instruction is the thirty-two bit form, which is bit 31 of its encoding.</summary>
+    private static bool WorksInThirtyTwoBits(MethodAnalysisContext context, Arm64Instruction instruction)
+        => RawWord(context, instruction) is { } word && (word >> 31 & 1) == 0;
+
+    private static uint? RawWord(MethodAnalysisContext context, Arm64Instruction instruction)
+    {
+        var binary = context.AppContext.Binary;
+
+        if (!binary.TryMapVirtualAddressToRaw(instruction.Address, out var raw) || raw <= 0)
+            return null;
+
+        var content = binary.GetRawBinaryContent();
+
+        return raw + 4 > content.Length ? null : BitConverter.ToUInt32(content.Slice((int)raw, 4));
+    }
+
     // add Xd, sp, #imm - the address of a slot in the frame, not an arithmetic result.
     private static bool IsStackSlotAddress(Arm64Instruction instruction) =>
         instruction.Mnemonic == Arm64Mnemonic.ADD

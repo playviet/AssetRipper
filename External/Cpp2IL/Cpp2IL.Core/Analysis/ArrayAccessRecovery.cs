@@ -337,6 +337,17 @@ public static class ArrayAccessRecovery
         return null;
     }
 
+    /// <summary>
+    /// What may stand as an array's subscript: a local, a field, or an element of another array.
+    /// </summary>
+    /// <remarks>
+    /// The last is `outer[inner[i]]`, where the inner access has already been recovered and is in the operand
+    /// as a memory read carrying its own index. Nothing downstream needs telling - the generator writes such
+    /// an operand as `inner[i]` wherever else it appears.
+    /// </remarks>
+    private static bool CanBeASubscript(object offset)
+        => offset is LocalVariable or FieldReference or MemoryOperand { Index: not null };
+
     private static (object Array, object Index, int Scale)? ArrayAndOffset(
         Instruction sum, Dictionary<LocalVariable, Instruction> definitions)
     {
@@ -357,7 +368,9 @@ public static class ArrayAccessRecovery
             //The subscript is as often a field as a local - a loop that keeps its counter in the state it
             //carries, which is what a compiled iterator does with every one of its variables. Reading only
             //locals left every array access in a coroutine as arithmetic on a pointer.
-            if (offset is not (LocalVariable or FieldReference))
+            //And as often an element of another array: `highlighted[cat.subIndices[i]]` is an access whose
+            //subscript is an access, already recovered and sitting in the operand as one.
+            if (!CanBeASubscript(offset))
                 continue;
 
             //A one-byte element is indexed without a shift at all.
@@ -367,7 +380,7 @@ public static class ArrayAccessRecovery
 
             var index = shift.Operands[1];
 
-            if (index is not (LocalVariable or FieldReference) || Shift(shift.Operands[2]) is not { } by)
+            if (!CanBeASubscript(index) || Shift(shift.Operands[2]) is not { } by)
                 return null;
 
             return (array, index, 1 << by);

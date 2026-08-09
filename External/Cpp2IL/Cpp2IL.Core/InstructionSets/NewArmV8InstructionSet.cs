@@ -171,9 +171,9 @@ public partial class NewArmV8InstructionSet : Cpp2IlInstructionSet
             if (direction is not { } shiftDirection)
                 return value;
 
-            var shifted = new Register(null, "SHIFTED");
-            Add(address, shiftDirection, shifted, value, instruction.Op3Imm);
-            return shifted;
+            //A folded shift is done at the instruction's own width, and arm64's two right shifts differ on
+            //every negative value - see FoldedShift in the fork.
+            return FoldedShift(context, instruction, value, shiftDirection, (opCode, operands) => Add(address, opCode, operands));
         }
 
         void AddCall(MethodAnalysisContext context, object? returnRegister2, ulong address, ulong target)
@@ -270,8 +270,13 @@ public partial class NewArmV8InstructionSet : Cpp2IlInstructionSet
                     break;
                 }
 
-                if (instruction.Op1Kind == Arm64OperandKind.Memory && adrpOffsets.TryGetValue(instruction.MemBase, out var page) && instruction.MemOffset != 0 && instruction.MemAddendReg == Arm64Register.INVALID)
+                if (instruction.Op1Kind == Arm64OperandKind.Memory && adrpOffsets.TryGetValue(instruction.MemBase, out var page) && instruction.MemAddendReg == Arm64Register.INVALID)
                 {
+                    //A displacement of nought is as much a paged load as any other: `adrpOffsets` is only
+                    //written by a real ADRP and cleared the moment the register is rewritten, so `ldr x8, [x8]`
+                    //straight after one is the same shape with the offset already in the page. Refusing it left
+                    //323 metadata usages in this game as arithmetic on a raw address, and every call through one
+                    //came out as `Method not found`.
                     //Maybe this is a bit hacky? But I really don't want to write paged load handling into ISIL itself, it's an Arm64 quirk
                     //LDR X0, [X1, #0x1000], where X1 was previously loaded with a page address via an ADRP instruction
                     //We just return the final address, it makes ISIL happier.
