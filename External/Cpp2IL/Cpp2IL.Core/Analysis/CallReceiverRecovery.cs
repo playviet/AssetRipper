@@ -54,7 +54,22 @@ public static class CallReceiverRecovery
                     continue;
 
                 if (NullCheckedValue(block, i, declaring) is { } receiver)
+                {
                     instruction.Operands[receiverIndex] = receiver;
+                    continue;
+                }
+
+                //And where there is no check at all, because the callee dereferences nothing. `SetCoin`
+                //writes a singleton's field and raises a static event, so the compiler neither passed the
+                //receiver nor checked it - and `AddCoin(v) => SetCoin(GetCoin() + v)` came out calling
+                //`SetCoin` on the *number* `GetCoin` had left in x0.
+                //
+                //Only from an instance method of the very type the callee is declared on. Another instance
+                //of that type would still be in the register, properly typed, and never reach here; what is
+                //here is a value that cannot be the object at all, and inside such a method there is exactly
+                //one object it can be.
+                if (method.DeclaringType is { } caller && CanBe(caller, declaring) && Self(method) is { } self)
+                    instruction.Operands[receiverIndex] = self;
             }
         }
     }
@@ -86,6 +101,10 @@ public static class CallReceiverRecovery
 
         return null;
     }
+
+    /// <summary>The method's own <c>this</c>, where it has one.</summary>
+    private static LocalVariable? Self(MethodAnalysisContext method)
+        => method.IsStatic ? null : method.Locals.FirstOrDefault(local => local.IsThis);
 
     /// <summary>The reference an instruction tests against null, if that is what it does.</summary>
     private static LocalVariable? Subject(Instruction instruction)
