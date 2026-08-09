@@ -148,6 +148,12 @@ public static class Aapcs64
 
         var parameters = new List<object>(callee.Parameters.Count);
 
+        //Every vector register beyond the first that a struct of floats occupies, handed on after all the
+        //parameters - the same layout the lifter gives a call whose target it did know, so that
+        //`HomogeneousFloatArguments` reads both kinds the same way. Without it a virtual call taking a
+        //`Color` kept only its `r`: `bgImage.color = ...` is `set_color`, and `Graphic.color` is virtual.
+        var alsoOccupied = new List<object>();
+
         foreach (var parameter in callee.Parameters)
         {
             var type = parameter.ParameterType;
@@ -163,6 +169,15 @@ public static class Aapcs64
                 //A struct whose every field is a float travels in one vector register per field, and is named
                 //by the first of them - the same shape the lifter gives a call whose target it did know.
                 index = VectorRegister(vector);
+
+                for (var beyond = 1; beyond < floats; beyond++)
+                {
+                    var also = VectorRegister(vector + beyond);
+
+                    if (also < callOperands.Count)
+                        alsoOccupied.Add(callOperands[also]);
+                }
+
                 vector += floats;
             }
             else
@@ -175,6 +190,9 @@ public static class Aapcs64
 
             parameters.Add(callOperands[index]);
         }
+
+        //After every parameter, so that nothing counting operands off the parameter list sees them.
+        parameters.AddRange(alsoOccupied);
 
         return parameters;
     }

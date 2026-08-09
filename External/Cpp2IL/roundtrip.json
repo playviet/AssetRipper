@@ -22,27 +22,27 @@
 "Assembly-CSharp::FullScreenTouchHandler::OnBeginDrag": [
 2,
 3,
-3
+2
 ],
 "Assembly-CSharp::FullScreenTouchHandler::OnDrag": [
 2,
 3,
-3
+2
 ],
 "Assembly-CSharp::FullScreenTouchHandler::OnEndDrag": [
 2,
 3,
-3
+2
 ],
 "Assembly-CSharp::FullScreenTouchHandler::OnPointerDown": [
 2,
 3,
-3
+2
 ],
 "Assembly-CSharp::FullScreenTouchHandler::OnPointerUp": [
 2,
 3,
-3
+2
 ],
 "Assembly-CSharp::Joystick::Awake": [
 2,
@@ -1190,7 +1190,7 @@
 2
 ],
 "Assembly-CSharp::UnityEngine.UI.ProceduralImage.ProceduralImage::CalculateInfo": [
-3,
+4,
 6,
 5
 ],
