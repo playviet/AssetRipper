@@ -121,6 +121,25 @@ public static class ArrayAccessRecovery
                     continue;
                 }
 
+                //The header added in an addition of its own rather than folded into the read. `_colorByEnum[c]`
+                //compiles to `add x8, array, c, lsl #2` and then `add x8, x8, #0x20`, so the read is at
+                //distance nought and neither shape above sees it - the one below wants the header *in* the
+                //addressing mode. **Ten** of the sixty-five methods still short in the 96 originals wait on
+                //exactly this, across eight files, which is the largest thing left in them.
+                if (instruction.Operands[i] is MemoryOperand { Index: null, Scale: 0, Addend: 0, Base: LocalVariable reached }
+                    && Defining(definitions, reached) is { OpCode: OpCode.Add, Operands.Count: 3 } adding
+                    && adding.Operands[2] is long or int or ulong or uint
+                    && System.Convert.ToInt64(adding.Operands[2]) == elements
+                    && adding.Operands[1] is LocalVariable scaledBase
+                    && Defining(definitions, scaledBase) is { OpCode: OpCode.Add, Operands.Count: 3 } indexing
+                    && ArrayAndOffset(indexing, definitions) is { } reachedElement)
+                {
+                    instruction.Operands[i] = new MemoryOperand(reachedElement.Array, reachedElement.Index,
+                        elements, reachedElement.Scale);
+                    changed = true;
+                    continue;
+                }
+
                 if (instruction.Operands[i] is not MemoryOperand { Index: null, Scale: 0, Base: LocalVariable address } memory
                     || memory.Addend != elements)
                     continue;
@@ -213,6 +232,36 @@ public static class ArrayAccessRecovery
     /// as a typed local does. Reading only locals left <c>this.cells[i]</c>, which needs no local at all, as
     /// an addition to a field followed by a read of unmanaged memory.
     /// </remarks>
+    /// <summary>
+    /// What really wrote a local, following the plain copies that carry a value from one register to another.
+    /// </summary>
+    /// <remarks>
+    /// The elements pointer reaches the read through a move as often as not - a phi edge, or the copy that
+    /// takes it out of the block that computed it - and stopping at the move loses the addition behind it.
+    /// Bounded, so a copy that goes round a loop cannot spin.
+    /// </remarks>
+    private static Instruction? Defining(Dictionary<LocalVariable, Instruction> definitions, LocalVariable local)
+    {
+        for (var depth = 0; depth < 4; depth++)
+        {
+            //A local written on more than one path keeps whichever definition came last, as everywhere else in
+            //this pass. **Refusing those was measured and is wrong**: the elements pointer of a loop is written
+            //once outside it and once round the back edge, and both are the same array - `RefillGridInto` gave
+            //`src[num4]` and `dst[num4]`, which is what the source says, and guarding took it away again.
+            //What a guard would have to compare is the array and index each definition resolves to, not the
+            //number of them; until something needs that, this reads the map the way its neighbours do.
+            if (definitions.GetValueOrDefault(local) is not { } written)
+                return null;
+
+            if (written is not { OpCode: OpCode.Move, Operands: [_, LocalVariable copied] })
+                return written;
+
+            local = copied;
+        }
+
+        return null;
+    }
+
     private static (object Array, object Index, int Scale)? ArrayAndOffset(
         Instruction sum, Dictionary<LocalVariable, Instruction> definitions)
     {
