@@ -379,6 +379,11 @@ public static class ForkPipeline
         // has already taken them - and it runs three times inside `Analyze`, before any of this. Running
         // this earlier to catch them is therefore not possible without moving elimination itself, and was
         // measured: byte-identical, because the divide computing the second field is gone by then either way.
+        // Before the assembly below, and after everything that types a place: the first field of a struct
+        // put where that whole struct is declared is the struct being handed on unchanged, and naming the
+        // vector registers a call's answer lands in is what makes that shape appear at all.
+        WholeStructAtItsOwnType.Run(method);
+
         HomogeneousFloatArguments.Run(method);
 
         // A shared generic body opens by asking whether its own runtime context is filled in yet. It is, by

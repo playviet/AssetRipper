@@ -905,6 +905,47 @@ public partial class NewArmV8InstructionSet
     }
 
     /// <summary>
+    /// Says where a struct of floats actually lands, for a call that returns one.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <see cref="GetReturnRegisterForContext"/> names every non-primitive return <c>x0</c>, and for a struct
+    /// whose every field is a float that is a register the callee never touched: aapcs64 returns it one field
+    /// per vector register, exactly as it passes one. Nothing recorded that, so single assignment form never
+    /// gave <c>v0..v7</c> a new value at a call - and the *caller's own* parameters, which arrive in those
+    /// same registers, went on reaching every read below it. <c>worldPos - _camTransform.position</c> came out
+    /// as <c>worldPos.x - worldPos.x</c>, which is zero.
+    /// </para>
+    /// <para>
+    /// Each register is named as the field of the answer that is in it. Written as a <b>read of the answer</b>
+    /// rather than a copy of it, and that is the whole reason this works: a copy is folded away by the
+    /// propagation in single assignment form, which puts the caller's parameter back where it was and loses
+    /// the distinction all over again. A read is not folded, and field recovery already turns
+    /// <c>[x0 + 4]</c> on a <c>Vector3</c> into <c>x0.y</c> - so this needs no naming of its own.
+    /// </para>
+    /// <para>
+    /// Only where the callee is known and returns more than one float. A single <c>float</c> already comes
+    /// back in <c>s0</c>, which the return register names correctly.
+    /// </para>
+    /// </remarks>
+    private static IEnumerable<(OpCode, object[])> VectorReturnFields(ApplicationAnalysisContext application,
+        ulong target, object? result)
+    {
+        if (result is not Register
+            || !application.MethodsByAddress.TryGetValue(target, out var called) || called.Count != 1
+            || Analysis.HomogeneousFloatStruct.Count(called[0].ReturnType) is not { } floats || floats < 2)
+        {
+            yield break;
+        }
+
+        for (var field = 0; field < floats; field++)
+        {
+            yield return (OpCode.Move,
+                [RegisterFor(Arm64Register.V0 + field), new MemoryOperand(result, addend: field * 4)]);
+        }
+    }
+
+    /// <summary>
     /// The name a register is known by. Arm64 gives one physical register several names according to
     /// the width in use: w1 is the low half of x1, and s0, d0 and q0 are all v0. Naming them apart made
     /// each width a variable of its own, so a value written as a 32-bit integer and read as a pointer -

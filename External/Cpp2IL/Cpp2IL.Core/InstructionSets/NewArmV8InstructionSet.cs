@@ -183,6 +183,11 @@ public partial class NewArmV8InstructionSet : Cpp2IlInstructionSet
                 Add(address, OpCode.Call, target, returnRegister2);
 
             call.Operands.AddRange(GetArgumentOperandsForCall(context, target));
+
+            //A struct of floats does not arrive in the register the result names - it arrives one field to a
+            //vector register - and nothing said so. See VectorReturnFields in the fork.
+            foreach ((OpCode landedOpCode, object[] landedOperands) in VectorReturnFields(context.AppContext, target, returnRegister2))
+                Add(address, landedOpCode, landedOperands);
         }
 
         //A call to something that is not a managed method, so nothing is known about its signature. Under aapcs64 the

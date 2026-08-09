@@ -365,7 +365,7 @@
 11
 ],
 "Assembly-CSharp::EpicToonFX.ETFXFireProjectile::UpdateGunPositionAndRotation": [
-4,
+5,
 19,
 7
 ],
@@ -430,7 +430,7 @@
 15
 ],
 "Assembly-CSharp::EpicToonFX.ETFXMouseOrbit::FixedUpdate": [
-9,
+10,
 17,
 10
 ],
@@ -460,7 +460,7 @@
 9
 ],
 "Assembly-CSharp::EpicToonFX.ETFXProjectileScript::FixedUpdate": [
-8,
+7,
 39,
 22
 ],
@@ -1175,7 +1175,7 @@
 0
 ],
 "Assembly-CSharp::UnityEngine.UI.ProceduralImage.ProceduralImage::FixRadius": [
-4,
+1,
 6,
 4
 ],
@@ -3415,7 +3415,7 @@
 2
 ],
 "Assembly-CSharp::CFramework.DragHandler::OnBeginDrag": [
-4,
+3,
 7,
 4
 ],
@@ -3455,7 +3455,7 @@
 1
 ],
 "Assembly-CSharp::CFramework.SwipeControl::Update": [
-9,
+6,
 15,
 9
 ],
@@ -4890,7 +4890,7 @@
 7
 ],
 "Assembly-CSharp::CFramework.Pool::Init": [
-11,
+12,
 16,
 12
 ],
@@ -6740,7 +6740,7 @@
 2
 ],
 "Assembly-CSharp::CFramework.HighlightUITutorialStep::SetupInteraction": [
-7,
+6,
 9,
 7
 ],
@@ -7015,7 +7015,7 @@
 3
 ],
 "Assembly-CSharp::CFramework.MultiCutoutOverlay::RebuildLocalCutouts": [
-6,
+4,
 8,
 6
 ],
@@ -7040,7 +7040,7 @@
 1
 ],
 "Assembly-CSharp::CFramework.MultiCutoutOverlay::MergeIntervals": [
-1,
+0,
 3,
 1
 ],
@@ -7075,7 +7075,7 @@
 15
 ],
 "Assembly-CSharp::CFramework.SlicedFilledImage::GetAdjustedBorders": [
-3,
+0,
 6,
 3
 ],
@@ -7100,7 +7100,7 @@
 4
 ],
 "Assembly-CSharp::CFramework.SwipeZone::OnPointerDown": [
-1,
+0,
 2,
 1
 ],
@@ -8545,7 +8545,7 @@
 2
 ],
 "Assembly-CSharp::CFramework.VectorExtensions::RotatePointAroundPivot": [
-1,
+0,
 1,
 1
 ],
@@ -9310,7 +9310,7 @@
 4
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenModulePhysics::DOLookAt": [
-6,
+4,
 8,
 6
 ],
@@ -9930,7 +9930,7 @@
 7
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenProShortcuts::DOSpiral": [
-5,
+6,
 9,
 6
 ],
@@ -10125,7 +10125,7 @@
 4
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenTMPAnimator::SetCharRotation": [
-3,
+2,
 9,
 5
 ],
@@ -10215,7 +10215,7 @@
 4
 ],
 "Assembly-CSharp::CF.BoardController+<HammerAnimation>d__155::MoveNext": [
-25,
+26,
 45,
 27
 ],
@@ -10545,7 +10545,7 @@
 1
 ],
 "Assembly-CSharp::CF.BoardGridAutoSize::Recalc": [
-6,
+5,
 14,
 6
 ],
@@ -10920,7 +10920,7 @@
 18
 ],
 "Assembly-CSharp::CF.CellDraggable::AnimateOverlayTo": [
-13,
+11,
 19,
 13
 ],
@@ -10935,9 +10935,9 @@
 7
 ],
 "Assembly-CSharp::CF.CellDraggable::RaycastBoardCell": [
-15,
+14,
 30,
-19
+18
 ],
 "Assembly-CSharp::CF.CellVisualOffset::GetEyebrowLeft": [
 1,
@@ -11020,7 +11020,7 @@
 12
 ],
 "Assembly-CSharp::CF.SubCellVisual::Setup": [
-18,
+17,
 27,
 19
 ],
@@ -11065,9 +11065,9 @@
 12
 ],
 "Assembly-CSharp::CF.SubCellVisual::UpdateEyeTracking": [
-13,
+11,
 20,
-13
+11
 ],
 "Assembly-CSharp::CF.SubCellVisual::UpdateFaceTracking": [
 20,
@@ -11195,7 +11195,7 @@
 12
 ],
 "Assembly-CSharp::CF.SubCellVisual::ApplyFacePart": [
-20,
+22,
 46,
 27
 ],
