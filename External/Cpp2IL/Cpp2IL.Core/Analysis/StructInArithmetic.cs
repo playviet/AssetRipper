@@ -64,7 +64,7 @@ public static class StructInArithmetic
             //and a struct is an ordinary thing to compute an address from - narrowing to the shape that has
             //a number on the other side is what tells the two apart. Left broad, this cost three whole
             //methods in the game to gain one in the corpus.
-            if (!BesideANumber(instruction))
+            if (!BesideANumber(instruction) && !ProducesANumber(instruction))
                 continue;
 
             //From one, because operand nought is what the instruction writes.
@@ -98,6 +98,20 @@ public static class StructInArithmetic
     }
 
     /// <summary>Whether one of the values this instruction reads is a plain number.</summary>
+    /// <summary>
+    /// Whether what the instruction writes is a number, which says as much as a number beside it.
+    /// </summary>
+    /// <remarks>
+    /// `Subtract v143 (Single), v144 (Vector2), this._lastOwnerSize (Vector2)` has a struct on **both**
+    /// sides, so there is no number beside either of them - and it is still arithmetic, because a `Single`
+    /// is what it produces and no subtraction of one struct from another was ever compiled. That is the
+    /// shape the generator gives up on with "Part of a struct used as a value".
+    /// </remarks>
+    private static bool ProducesANumber(Instruction instruction)
+        => instruction.Operands.Count > 0
+            && instruction.Operands[0] is LocalVariable { Type: { } written }
+            && IsNumber(written);
+
     private static bool BesideANumber(Instruction instruction)
     {
         for (var operand = 1; operand < instruction.Operands.Count; operand++)
