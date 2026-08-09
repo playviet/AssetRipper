@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using System.Linq;
+using Cpp2IL.Core.Graphs;
 using Cpp2IL.Core.ISIL;
 using Cpp2IL.Core.Model.Contexts;
 
@@ -46,29 +47,106 @@ public static class HomogeneousFloatParameters
         if (fieldOf.Count == 0)
             return;
 
-        foreach (var instruction in method.ControlFlowGraph.Instructions)
-        {
-            if (!ReadsAValue(instruction.OpCode))
-                continue;
+        var overwrittenBefore = OverwrittenBefore(method.ControlFlowGraph.Blocks);
 
-            //Operand 0 is where the result goes, and a result is never one of these.
-            for (var i = 1; i < instruction.Operands.Count; i++)
+        foreach (var block in method.ControlFlowGraph.Blocks)
+        {
+            //How many vector registers an answer has already been returned into, on any path arriving here.
+            var overwritten = overwrittenBefore.GetValueOrDefault(block);
+
+            foreach (var instruction in block.Instructions)
             {
-                if (instruction.Operands[i] is LocalVariable local
-                    && fieldOf.TryGetValue(local, out var held))
-                    instruction.Operands[i] = new FieldReference(held.Field, held.Struct, held.Offset);
+                if (ReadsAValue(instruction.OpCode))
+                {
+                    //Operand 0 is where the result goes, and a result is never one of these.
+                    for (var i = 1; i < instruction.Operands.Count; i++)
+                    {
+                        if (instruction.Operands[i] is not LocalVariable local
+                            || !fieldOf.TryGetValue(local, out var held))
+                            continue;
+
+                        //A struct of floats comes back one field to a vector register, so a call returning one
+                        //leaves the caller's parameter nowhere - and naming it after the parameter is a
+                        //confident wrong answer: `endValue - target.color` came out as
+                        //`endValue.a - endValue.a`, which is zero.
+                        //
+                        //`VectorReturnFields` says what a **direct** call put there instead, and where it has,
+                        //single assignment form has already given the register a new value and this never
+                        //matches. What is left is the call whose callee is not known while lifting - a virtual
+                        //or interface call, resolved long after - and for that nothing can say what is in the
+                        //register, so it keeps its own name and the statement is marked rather than decided.
+                        if (held.Register < overwritten)
+                            continue;
+
+                        instruction.Operands[i] = new FieldReference(held.Field, held.Struct, held.Offset);
+                    }
+                }
+
+                overwritten = System.Math.Max(overwritten, ReturnedInVectorRegisters(instruction));
             }
         }
+    }
+
+    /// <summary>
+    /// How many vector registers a call fills with its answer, which is one per field of a struct of floats.
+    /// </summary>
+    private static int ReturnedInVectorRegisters(Instruction instruction)
+        => instruction.IsCall && instruction.Operands.Count > 0
+            && instruction.Operands[0] is MethodAnalysisContext callee
+            && HomogeneousFloatStruct.Count(callee.ReturnType) is { } floats and > 1
+            ? floats
+            : 0;
+
+    /// <summary>
+    /// For each block, the widest struct of floats returned into the vector registers on any path from the
+    /// method's entry to the start of it.
+    /// </summary>
+    /// <remarks>
+    /// A "may" question, so the widest on any path in is the answer - taking a parameter's name back is the
+    /// safe direction. Run to a fixpoint so a call anywhere in a loop covers the whole loop, including the
+    /// blocks above it that the back edge reaches.
+    /// </remarks>
+    private static Dictionary<Block, int> OverwrittenBefore(List<Block> blocks)
+    {
+        var within = blocks.ToDictionary(block => block,
+            block => block.Instructions.Count == 0 ? 0 : block.Instructions.Max(ReturnedInVectorRegisters));
+
+        var before = blocks.ToDictionary(block => block, _ => 0);
+
+        for (var changed = true; changed;)
+        {
+            changed = false;
+
+            foreach (var block in blocks)
+            {
+                foreach (var predecessor in block.Predecessors)
+                {
+                    if (!before.TryGetValue(predecessor, out var reached))
+                        continue;
+
+                    var through = System.Math.Max(reached, within.GetValueOrDefault(predecessor));
+
+                    if (through <= before[block])
+                        continue;
+
+                    before[block] = through;
+                    changed = true;
+                }
+            }
+        }
+
+        return before;
     }
 
     /// <summary>
     /// The entry value of each vector register a float struct was passed in, and which field of which
     /// parameter it holds.
     /// </summary>
-    private static Dictionary<LocalVariable, (FieldAnalysisContext Field, LocalVariable Struct, int Offset)>
+    private static Dictionary<LocalVariable,
+        (FieldAnalysisContext Field, LocalVariable Struct, int Offset, int Register)>
         FieldsByRegister(MethodAnalysisContext method)
     {
-        var found = new Dictionary<LocalVariable, (FieldAnalysisContext, LocalVariable, int)>();
+        var found = new Dictionary<LocalVariable, (FieldAnalysisContext, LocalVariable, int, int)>();
         var vectorCount = 0;
 
         foreach (var parameter in method.Parameters)
@@ -98,7 +176,7 @@ public static class HomogeneousFloatParameters
             for (var i = 0; i < floats; i++)
             {
                 if (LocalForVector(method, first + i) is { } register)
-                    found[register] = (fields[i], held, i * 4);
+                    found[register] = (fields[i], held, i * 4, first + i);
             }
         }
 
