@@ -40,11 +40,17 @@ namespace Cpp2IL.Core.Analysis;
 public static class ArrayWalkerTyping
 {
     /// <summary>Where a walk starts from, and what it is walking over.</summary>
-    private readonly struct Walk(object array, TypeAnalysisContext element, LocalVariable subscript)
+    private readonly struct Walk(object array, TypeAnalysisContext element, LocalVariable subscript, int width, long start)
     {
         public readonly object Array = array;
         public readonly TypeAnalysisContext Element = element;
         public readonly LocalVariable Subscript = subscript;
+
+        /// <summary>How many bytes one element takes, so a distance can be read as a number of them.</summary>
+        public readonly int Width = width;
+
+        /// <summary>Which element the walk begins at - not always the first.</summary>
+        public readonly long Start = start;
     }
 
     public static void Run(MethodAnalysisContext method)
@@ -68,14 +74,31 @@ public static class ArrayWalkerTyping
 
                 for (var operand = 0; operand < instruction.Operands.Count; operand++)
                 {
-                    if (instruction.Operands[operand] is not MemoryOperand { Addend: 0, Base: LocalVariable through } read
-                        || !walking.TryGetValue(through, out var walk))
+                    if (instruction.Operands[operand] is not MemoryOperand { Base: LocalVariable through } read
+                        || !walking.TryGetValue(through, out var walk)
+                        || walk.Width <= 0 || read.Addend % walk.Width != 0)
                         continue;
 
-                    //A pointer read with no index is at the element its own subscript names.
+                    //How far from the pointer's own element the read is. A walk the compiler stepped ahead of
+                    //its reads has them at negative distances - `[p - 8]`, `[p - 4]`, `[p]` is three adjacent
+                    //elements read through one pointer already two on.
+                    var away = (int)(read.Addend / walk.Width);
+
+                    //A pointer read with no index is at the element its own subscript names, that far along.
                     if (read.Index is null)
                     {
-                        instruction.Operands[operand] = new MemoryOperand(walk.Array, walk.Subscript, header);
+                        var at = walk.Subscript;
+
+                        if (away != 0)
+                        {
+                            at = new LocalVariable($"at{method.Locals.Count}", new Register(null, "WALK"), method.AppContext.SystemTypes.SystemInt32Type);
+                            method.Locals.Add(at);
+
+                            block.Instructions.Insert(i, new Instruction(instruction.Index, OpCode.Add, at, walk.Subscript, away));
+                            i++;
+                        }
+
+                        instruction.Operands[operand] = new MemoryOperand(walk.Array, at, header);
                     }
                     //And one read with an index is that many elements further on - the inner loop of a walk
                     //over a jagged array indexes rather than steps, because the pointer it indexes from is set
@@ -87,6 +110,16 @@ public static class ArrayWalkerTyping
 
                         block.Instructions.Insert(i, new Instruction(instruction.Index, OpCode.Add, at, walk.Subscript, offset));
                         i++;
+
+                        if (away != 0)
+                        {
+                            var further = new LocalVariable($"at{method.Locals.Count}", new Register(null, "WALK"), method.AppContext.SystemTypes.SystemInt32Type);
+                            method.Locals.Add(further);
+
+                            block.Instructions.Insert(i, new Instruction(instruction.Index, OpCode.Add, further, at, away));
+                            i++;
+                            at = further;
+                        }
 
                         instruction.Operands[operand] = new MemoryOperand(walk.Array, at, header);
                     }
@@ -166,28 +199,34 @@ public static class ArrayWalkerTyping
 
                 object array;
                 TypeAnalysisContext element;
+                int width;
+                long start;
 
                 //Copying a walker, or stepping it: still the same walk, over the same array.
                 if (instruction.OpCode == OpCode.Move && instruction.Operands is [_, LocalVariable copied]
                     && walking is not null && walking.TryGetValue(copied, out var same))
                 {
-                    (array, element) = (same.Array, same.Element);
+                    (array, element, width, start) = (same.Array, same.Element, same.Width, same.Start);
                 }
                 else if (instruction.OpCode == OpCode.Add && instruction.Operands.Count == 3 && Amount(instruction.Operands[2]) is not null
                          && instruction.Operands[1] is LocalVariable stepped
                          && walking is not null && walking.TryGetValue(stepped, out var stillWalking))
                 {
-                    (array, element) = (stillWalking.Array, stillWalking.Element);
+                    (array, element, width, start) = (stillWalking.Array, stillWalking.Element, stillWalking.Width, stillWalking.Start);
                 }
-                //Or the start of one: an array plus exactly the header is the first element.
+                //Or the start of one: an array plus the header is the first element, and the header plus a
+                //whole number of elements is that element - clang starts a walk part-way in whenever the
+                //source does, and `CellData::ComputeCats` begins at `grid[2]`.
                 else if (instruction.OpCode == OpCode.Add && instruction.Operands.Count == 3
-                         && Amount(instruction.Operands[2]) == header
+                         && Amount(instruction.Operands[2]) is { } from0 && from0 >= header
                          && ElementOf(instruction.Operands[1]) is { } starts
+                         && WidthOf(starts, method) is { } elementWidth
+                         && (from0 - header) % elementWidth == 0
                          && (instruction.Operands[1] is not MemoryOperand nested
                              ? instruction.Operands[1]
                              : Holding(graph, nested)) is { } from)
                 {
-                    (array, element) = (from, starts);
+                    (array, element, width, start) = (from, starts, elementWidth, (from0 - header) / elementWidth);
                 }
                 else
                 {
@@ -202,7 +241,7 @@ public static class ArrayWalkerTyping
                 var subscript = new LocalVariable($"index{method.Locals.Count}", new Register(null, "WALK"), method.AppContext.SystemTypes.SystemInt32Type);
                 method.Locals.Add(subscript);
 
-                (walking ??= [])[destination] = new Walk(array, element, subscript);
+                (walking ??= [])[destination] = new Walk(array, element, subscript, width, start);
                 learnt = true;
             }
         }
@@ -237,22 +276,45 @@ public static class ArrayWalkerTyping
                 if (instruction.OpCode != OpCode.Add || instruction.Operands.Count != 3 || Amount(instruction.Operands[2]) is not { } by)
                     continue;
 
-                //A step is one element, however many bytes that took.
+                //A step is however many elements the distance covers - usually one, but a loop unrolled by the
+                //compiler steps by several at a time.
                 if (instruction.Operands[1] is LocalVariable stepped && walking.TryGetValue(stepped, out var before))
                 {
-                    block.Instructions.Insert(i + 1, new Instruction(instruction.Index, OpCode.Add, walk.Subscript, before.Subscript, 1));
+                    if (before.Width <= 0 || by % before.Width != 0)
+                        continue;
+
+                    block.Instructions.Insert(i + 1, new Instruction(instruction.Index, OpCode.Add, walk.Subscript, before.Subscript, (int)(by / before.Width)));
                     i++;
                     continue;
                 }
 
-                //And the start of the walk, where the subscript is nought.
-                if (by == header)
+                //And the start of the walk, at whichever element it begins from.
+                if (walk.Width > 0 && by == header + walk.Start * walk.Width)
                 {
-                    block.Instructions.Insert(i + 1, new Instruction(instruction.Index, OpCode.Move, walk.Subscript, 0));
+                    block.Instructions.Insert(i + 1, new Instruction(instruction.Index, OpCode.Move, walk.Subscript, (int)walk.Start));
                     i++;
                 }
             }
         }
+    }
+
+    /// <summary>How many bytes one element of an array of this takes.</summary>
+    private static int? WidthOf(TypeAnalysisContext element, MethodAnalysisContext method)
+    {
+        if (!element.IsValueType)
+            return method.AppContext.Binary.is32Bit ? 4 : 8;
+
+        if (element.IsEnumType)
+            return 4;
+
+        return element.FullName switch
+        {
+            "System.Boolean" or "System.SByte" or "System.Byte" => 1,
+            "System.Int16" or "System.UInt16" or "System.Char" => 2,
+            "System.Int32" or "System.UInt32" or "System.Single" => 4,
+            "System.Int64" or "System.UInt64" or "System.Double" or "System.IntPtr" or "System.UIntPtr" => 8,
+            _ => Aapcs64.SizeOf(element) is { } size and > 0 and < int.MaxValue ? (int)size : null,
+        };
     }
 
     /// <summary>The element type of whatever holds an array, where it is one.</summary>
