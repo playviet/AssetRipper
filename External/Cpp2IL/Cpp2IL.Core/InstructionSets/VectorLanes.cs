@@ -148,14 +148,20 @@ internal sealed class VectorLanes
             return true;
 
         if (Store(instruction, emit))
+        {
+            Stage(address, Word(context, address), "store");
             return true;
+        }
 
         reading = context;
 
         var word = Word(context, address);
 
         if (word is { } decodable && Decode(context, decodable, emit))
+        {
+            Stage(address, word, "decode");
             return true;
+        }
 
         if (Reporting && word is { } refused && (refused >> 25 & 0x7) == 0b111 && instruction.Op0Reg == Arm64Register.INVALID)
         {
@@ -165,11 +171,18 @@ internal sealed class VectorLanes
         }
 
         if (word is { } loaded && (Load(loaded, instruction) || LoadPair(loaded, instruction)))
+        {
+            Stage(address, word, "load");
             return false;
+        }
 
         if (Replicate(instruction, emit))
+        {
+            Stage(address, word, "replicate");
             return false;
+        }
 
+        Stage(address, word, $"invalidate {instruction.Mnemonic}");
         Invalidate(instruction, word);
         return false;
     }
@@ -177,7 +190,7 @@ internal sealed class VectorLanes
     private bool Decode(MethodAnalysisContext context, uint word, Action<OpCode, object[]> emit)
         => Copy(word, emit) || Immediate(word, emit) || Arithmetic(context, word, emit) || Integer(word, emit)
            || Scaled(word, emit) || Permute(word, emit) || Reduce(word, emit) || Pairwise(word, emit)
-           || Shifted(word, emit);
+           || Bitwise(word, emit) || Shifted(word, emit);
 
     /// <summary>
     /// The same constant put into every lane, which is how a vector of a literal is made.
@@ -839,6 +852,79 @@ internal sealed class VectorLanes
     /// the answers are taken.
     /// </remarks>
     /// <summary>
+    /// A vector masked by a comparison is a choice against nought, not a bitwise and.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <c>Mathf.Clamp01</c>'s lower half over two lanes is <c>fcmlt v0.2s, v0.2s, #0</c> then
+    /// <c>bic v0.8b, v1.8b, v0.8b</c> - keep the value where it is not negative, and nought where it is.
+    /// <see cref="Arithmetic"/> owns the rest of this opcode group but has no entry for <c>bic</c> or
+    /// <c>orn</c>, so the instruction fell through to <see cref="Invalidate"/>, which forgets the destination -
+    /// and that threw away every lane the divides and multiplies above it had built. The <c>faddp</c> four
+    /// instructions later then had nothing to add, and the whole expression was lost.
+    /// </para>
+    /// <para>
+    /// Written as the choice it is rather than as the bits it is made of. Lifting it bitwise compiles to
+    /// <c>num12 &amp; !(num8 &lt; 0f)</c> - an <c>and</c> of a float and a bool - which Roslyn refuses, so the
+    /// statement is commented out and nothing is gained over refusing it.
+    /// </para>
+    /// <para>
+    /// Only where the second operand is a lane a comparison wrote. Anything else is a bit pattern this model
+    /// has nothing to say about, and saying something anyway is how a plausible wrong number gets in.
+    /// </para>
+    /// </remarks>
+    private bool Bitwise(uint word, Action<OpCode, object[]> emit)
+    {
+        if (word >> 31 != 0 || (word >> 24 & 0x1F) != 0b01110
+            || (word >> 21 & 1) != 1 || (word >> 10 & 1) != 1
+            || (word >> 11 & 0x1F) != 0b00011 || (word >> 29 & 1) != 0)
+        {
+            return false;
+        }
+
+        var size = (int)(word >> 22 & 3);
+
+        //`and` where the mask is the second operand, and `bic`, which is the same the other way round.
+        if (size is not (0b00 or 0b01))
+            return false;
+
+        var destination = (int)(word & 0x1F);
+        var left = (int)(word >> 5 & 0x1F);
+        var right = (int)(word >> 16 & 0x1F);
+
+        //The mask has to be a comparison's answer, and the value has to have a width to be chosen at.
+        if (!masks.Contains(right) || masks.Contains(left) || !width.TryGetValue(left, out var elementWidth))
+            return false;
+
+        var lanes = LanesIn(elementWidth, (int)(word >> 30 & 1));
+
+        if (Readable(0, lanes, elementWidth, [(left, null), (right, null)], emit) < lanes)
+            return false;
+
+        object nothing = elementWidth == 4 ? 0f : 0d;
+
+        var lifted = new List<object[]>();
+
+        for (var lane = 0; lane < lanes; lane++)
+        {
+            var at = lane * elementWidth;
+
+            //`and` keeps the value where the mask holds; `bic` keeps it where the mask does not.
+            lifted.Add(size == 0b00
+                ? [Lane(destination, at), Lane(right, at), Lane(left, at), nothing]
+                : [Lane(destination, at), Lane(right, at), nothing, Lane(left, at)]);
+        }
+
+        Forget(destination);
+
+        foreach (var operands in lifted)
+            emit(OpCode.Select, operands);
+
+        Note(destination, elementWidth, lanes, false, emit);
+        return true;
+    }
+
+    /// <summary>
     /// Adds the two halves of a register together, which is how a vectorised sum ends.
     /// </summary>
     /// <remarks>
@@ -1465,11 +1551,54 @@ internal sealed class VectorLanes
             return true;
 
         if (!zeroAbove.TryGetValue(register, out var above) || offset < above)
+        {
+            Unanswered(register, offset, elementWidth);
             return false;
+        }
 
         emit(OpCode.Move, [Lane(register, offset), 0]);
         written.Add((register, offset));
         return true;
+    }
+
+    /// <summary>Which stage of the lane model claimed an instruction, for one named method.</summary>
+    private void Stage(ulong address, uint? word, string what)
+    {
+        if (Environment.GetEnvironmentVariable("LANE_TRACE") != "1")
+            return;
+
+        var wanted = Environment.GetEnvironmentVariable("LANE_METHOD");
+        var where = $"{reading?.DeclaringType?.Name}::{reading?.Name}";
+
+        if (!string.IsNullOrEmpty(wanted) && !where.Contains(wanted, StringComparison.OrdinalIgnoreCase))
+            return;
+
+        Console.Error.WriteLine($"STAGE 0x{address:X} {word:X8} {what}");
+    }
+
+    /// <summary>
+    /// Says which lane could not be answered, and what was known at the time.
+    /// </summary>
+    /// <remarks>
+    /// The one measurement that works on this family. <see cref="Emit"/> refuses an operation unless every
+    /// lane it reads is known, so what is printed here is the *head* of the chain that is lost - never the
+    /// instruction being refused. Two rounds were spent decoding mnemonics that turned out not to be the
+    /// block; this names it instead. `LANE_TRACE=1` and, optionally, `LANE_METHOD=&lt;substring&gt;`.
+    /// </remarks>
+    private void Unanswered(int register, int offset, int elementWidth)
+    {
+        if (Environment.GetEnvironmentVariable("LANE_TRACE") != "1")
+            return;
+
+        var wanted = Environment.GetEnvironmentVariable("LANE_METHOD");
+        var where = $"{reading?.DeclaringType?.Name}::{reading?.Name}";
+
+        if (!string.IsNullOrEmpty(wanted) && !where.Contains(wanted, StringComparison.OrdinalIgnoreCase))
+            return;
+
+        Console.Error.WriteLine($"LANE {where}\tV{register} lane at +{offset} of {elementWidth}\t"
+            + $"written=[{string.Join(",", written)}]\twidth=[{string.Join(",", width)}]\t"
+            + $"pending=[{string.Join(",", pending.Keys)}]\tzero=[{string.Join(",", zeroAbove)}]");
     }
 
     /// <summary>Splits a whole-register load into lanes, now that something has said how wide they are.</summary>
