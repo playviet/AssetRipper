@@ -280,8 +280,12 @@ public static partial class LocalVariables
             if (instruction.OpCode != OpCode.Move || instruction.Operands.Count < 2)
                 continue;
 
+            //Not an edge copy - the same rule the MethodInfo seed needs, and for the same reason. A phi
+            //merging `typeof(BoardLogic)` with the `CellData[]` parameter is not a class pointer, and saying
+            //it is takes the array with it: `nint num9 = (nint)board`.
             if (instruction.Operands[0] is LocalVariable destination
-                && instruction.Operands[1] is TypeAnalysisContext type and not RuntimeMethodInfoAnalysisContext)
+                && instruction.Operands[1] is TypeAnalysisContext type and not RuntimeMethodInfoAnalysisContext
+                && StandsForOneValue(method, instruction))
                 destination.Type = new RuntimeClassTypeAnalysisContext(type, type.DeclaringAssembly);
         }
     }
