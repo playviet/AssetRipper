@@ -65,12 +65,36 @@ public static partial class LocalVariables
     /// </summary>
     private static bool SharpenFromReturn(LocalVariable value, TypeAnalysisContext? produced)
     {
-        if (produced == null || value.Type is not { FullName: "System.Object" } || produced.FullName == "System.Object")
+        if (produced == null)
             return false;
 
-        value.Type = produced;
-        return true;
+        if (value.Type is { FullName: "System.Object" } && produced.FullName != "System.Object")
+        {
+            value.Type = produced;
+            return true;
+        }
+
+        //A struct of floats travels in the vector registers, and where the compiler read a whole one out of
+        //static storage - `ldur v1, [x8, #0xc]` for `Vector3.one` - the register was typed by the *width* of
+        //that load and came out `System.Int64`. The read is then resolved into the property call it stands
+        //for, and the callee says outright what it produces, so the guess from the width has nothing to
+        //recommend it: `Vector3.one * 0.85f` came out as `(long)(Vector3.one * 1062836634L)`, which C# will
+        //quietly compile because a `long` converts to a `float`.
+        if (IsABareInteger(value.Type) && HomogeneousFloatStruct.Count(produced) is > 1)
+        {
+            value.Type = produced;
+            return true;
+        }
+
+        return false;
     }
+
+    /// <summary>
+    /// Whether a type is what a value of unknown kind ends up as - the width of the register it was in, and
+    /// nothing more. Only these are overruled, so a type that says something is never thrown away.
+    /// </summary>
+    private static bool IsABareInteger(TypeAnalysisContext? type)
+        => type?.FullName is "System.Int64" or "System.UInt64" or "System.IntPtr" or "System.UIntPtr";
 
     /// <summary>
     /// Types the method's own runtime method parameter as what it is.

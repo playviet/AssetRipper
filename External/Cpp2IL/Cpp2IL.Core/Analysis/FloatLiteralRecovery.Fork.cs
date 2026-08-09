@@ -92,6 +92,14 @@ public static partial class FloatLiteralRecovery
                     return local;
                 case FieldReference { Field.FieldType: { } field } when IsFloatingPoint(field):
                     return field;
+
+                //A struct whose every field is a float is evidence too, and the plainest kind: the only
+                //arithmetic C# defines between a `Vector3` and a number is with a `float`. Until the vector
+                //registers were named this shape barely reached here at all - now `Vector3.one * 0.86f` does,
+                //and without this it comes out as `Vector3.one * 1062836634L`.
+                case LocalVariable { Type: { } held } when HomogeneousFloatStruct.Count(held) is > 1:
+                case FieldReference { Field.FieldType: { } holding } when HomogeneousFloatStruct.Count(holding) is > 1:
+                    return types.SystemSingleType;
             }
         }
 
