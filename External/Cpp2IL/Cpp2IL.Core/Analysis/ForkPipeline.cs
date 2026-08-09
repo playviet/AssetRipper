@@ -364,6 +364,10 @@ public static class ForkPipeline
         // Last, so that it sees the copies the passes before it leave behind.
         ConditionSinking.Run(method);
 
+        // A `Nullable<bool>` is two bytes read as one number and asked one question; the answer is a field of
+        // it, and the type has to be resolved before that can be seen - so, here rather than in the lifter.
+        NullablePackedCompare.Run(method);
+
         // A struct of floats travels in one register per field and the lifter named only the first, so an
         // argument reached the generator as a float where a Vector3 belongs. **After everything**, because
         // the operand it leaves is not a value anything else can reason about, and because the registers it
