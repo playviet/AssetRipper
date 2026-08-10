@@ -505,5 +505,10 @@ public static class ForkPipeline
         // it, and the type has to be resolved before that can be seen - so, here rather than in the lifter.
         NullablePackedCompare.Run(method);
 
+        // Last of all, and only about what a copy says: a register that once held a class pointer keeps that
+        // stand-in for the rest of the method, and where the same register later carries a managed value the
+        // copies between the two come out as `array = (CellData[])num17;`. Here, so that everything which
+        // resolves against a stand-in has already run and only the generator sees the correction.
+        StandInCopyType.Run(method);
     }
 }

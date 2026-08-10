@@ -217,7 +217,12 @@ public static class ArithmeticProducesANumber
 
         foreach (var (local, _) in flows)
         {
-            if (local.Type != null || addressed.Contains(local))
+            //A reference type here is no reason to refuse. A counter whose register carried an object earlier
+            //in the method wears that object's type - the backward phi rule stamps it while the counter is
+            //still untyped, so nothing has evidence to refuse with - and `BuildInitialBoard`'s `for` counter
+            //came out `CF.CellData`, taking the whole loop with it. Only a **value type** is left alone: a
+            //struct in arithmetic is `StructInArithmetic`'s question, not this one.
+            if (local.Type is { IsValueType: true } || addressed.Contains(local))
                 continue;
 
             //Everything the value in this local came from, which for a total includes the local itself.

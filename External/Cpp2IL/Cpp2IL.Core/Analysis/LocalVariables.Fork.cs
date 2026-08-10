@@ -611,7 +611,7 @@ public static partial class LocalVariables
     }
 
     /// <summary>Whether the type is one of the runtime's own structures rather than anything a program names.</summary>
-    private static bool IsRuntimeStandIn(TypeAnalysisContext? type)
+    internal static bool IsRuntimeStandIn(TypeAnalysisContext? type)
         => type is RuntimeMethodInfoAnalysisContext or RuntimeClassTypeAnalysisContext
             or StaticFieldStorageTypeAnalysisContext or RgctxTableTypeAnalysisContext
             or MethodRgctxTableTypeAnalysisContext;

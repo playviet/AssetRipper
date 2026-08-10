@@ -125,6 +125,14 @@ public static class DeadCopyCycles
     /// <c>KeyNotFoundException: step577 @ STEP</c> out of the generator. A machine register only ever holds
     /// what the code put in it, so the dataflow here is the whole story for those and for nothing else.
     /// </remarks>
+    /// <remarks>
+    /// This was <c>Register.Name is not null</c>, which is never true - <c>Register</c>'s constructor fills
+    /// the name in on all three of its branches - so the pass has never removed anything since it was written.
+    /// A machine register is named by the lifter as <c>X</c> or <c>V</c> and a number; everything else -
+    /// <c>STEP</c>, <c>LENGTH</c>, <c>PROPERTY</c>, <c>stack_*</c> and the rest - is a pass's own bookkeeping.
+    /// Only <c>X</c> for now: the float-struct family is rebuilt out of V registers by four passes that run
+    /// after this one, and taking a V copy away here would be taking it from them.
+    /// </remarks>
     private static bool IsInvented(LocalVariable local) => local.Register.Name is not null;
 
     /// <summary>

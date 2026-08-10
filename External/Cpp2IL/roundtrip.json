@@ -655,9 +655,9 @@
 5
 ],
 "Assembly-CSharp::EpicToonFX.ETFXTarget::SpawnTarget": [
-11,
+10,
 16,
-11
+10
 ],
 "Assembly-CSharp::EpicToonFX.ETFXTarget::Respawn": [
 0,
@@ -665,9 +665,9 @@
 0
 ],
 "Assembly-CSharp::EpicToonFX.ETFXTarget::OnHit": [
-10,
+9,
 13,
-10
+9
 ],
 "Assembly-CSharp::EpicToonFX.ETFXTarget::SquashAndStretch": [
 0,
@@ -675,9 +675,9 @@
 0
 ],
 "Assembly-CSharp::EpicToonFX.ETFXTarget::DestroyTarget": [
-11,
+10,
 17,
-11
+10
 ],
 "Assembly-CSharp::EpicToonFX.ETFXLightFade::Start": [
 3,
@@ -3645,9 +3645,9 @@
 2
 ],
 "Assembly-CSharp::CFramework.AbilityManager::BindSaveData": [
+1,
 2,
-2,
-2
+1
 ],
 "Assembly-CSharp::CFramework.AbilityManager::TryApplyLoadoutAbilities": [
 3,
@@ -3745,14 +3745,14 @@
 1
 ],
 "Assembly-CSharp::CFramework.BaseAbilityBuyPopup::HandleBuyClick": [
-12,
+10,
 13,
-12
+10
 ],
 "Assembly-CSharp::CFramework.BaseAbilityBuyPopup::GrantPurchase": [
-7,
+5,
 11,
-7
+5
 ],
 "Assembly-CSharp::CFramework.BaseAbilityBuyPopup::HandleAdsCompleted": [
 3,
@@ -3760,9 +3760,9 @@
 3
 ],
 "Assembly-CSharp::CFramework.BaseAbilityBuyPopup::GetPrice": [
+2,
 3,
-3,
-3
+2
 ],
 "Assembly-CSharp::CFramework.BaseAbilityPickup::OnTriggerEnter": [
 3,
@@ -3810,14 +3810,14 @@
 4
 ],
 "Assembly-CSharp::CFramework.BaseAbilitySlotUI::ValidateTutorial": [
-13,
+12,
 14,
-13
+12
 ],
 "Assembly-CSharp::CFramework.BaseAbilitySlotUI::IsTriggerTutorial": [
+6,
 7,
-7,
-7
+6
 ],
 "Assembly-CSharp::CFramework.BaseAbilitySlotUI::GetInventory": [
 1,
@@ -3825,14 +3825,14 @@
 1
 ],
 "Assembly-CSharp::CFramework.BaseAbilitySlotUI::GetPrice": [
+1,
 2,
-2,
-2
+1
 ],
 "Assembly-CSharp::CFramework.BaseAbilitySlotUI::GetAmount": [
+4,
 5,
-5,
-5
+4
 ],
 "Assembly-CSharp::CFramework.BaseAbilitySlotUI::IsUnlocked": [
 5,
@@ -5065,7 +5065,7 @@
 11
 ],
 "Assembly-CSharp::CFramework.RemoteConfigManager::UpdateFromRemote": [
-3,
+4,
 14,
 9
 ],
@@ -5690,7 +5690,7 @@
 3
 ],
 "Assembly-CSharp::CFramework.FirebaseTracking::ToParams": [
-5,
+6,
 9,
 6
 ],
@@ -5967,7 +5967,7 @@
 "Assembly-CSharp::CFramework.TrackingEvents::AdImpressionRevenue": [
 9,
 13,
-12
+11
 ],
 "Assembly-CSharp::CFramework.TrackingEvents::LoadBegin": [
 4,
@@ -10220,7 +10220,7 @@
 27
 ],
 "Assembly-CSharp::CF.BoardController+<ProcessCascades>d__137::MoveNext": [
-50,
+51,
 70,
 53
 ],
@@ -10320,9 +10320,9 @@
 11
 ],
 "Assembly-CSharp::CF.BoardController::BuildLevelPool": [
-7,
+6,
 8,
-7
+6
 ],
 "Assembly-CSharp::CF.BoardController::RebuildTargetReqMap": [
 7,
@@ -10330,14 +10330,14 @@
 7
 ],
 "Assembly-CSharp::CF.BoardController::BuildInitialBoard": [
-38,
+39,
 48,
 39
 ],
 "Assembly-CSharp::CF.BoardController::PrepareCtxInitial": [
+31,
 32,
-32,
-32
+31
 ],
 "Assembly-CSharp::CF.BoardController::IsShellCellInit": [
 8,
@@ -10360,9 +10360,9 @@
 4
 ],
 "Assembly-CSharp::CF.BoardController::CreateFallbackLevelData": [
+13,
 14,
-14,
-14
+13
 ],
 "Assembly-CSharp::CF.BoardController::ClearChildren": [
 2,
@@ -10575,7 +10575,7 @@
 5
 ],
 "Assembly-CSharp::CF.BoardLogic::GenerateSmartBlock": [
-46,
+0,
 52,
 46
 ],
@@ -10885,7 +10885,7 @@
 1
 ],
 "Assembly-CSharp::CF.CellDraggable::BeginDragInternal": [
-22,
+23,
 37,
 23
 ],
@@ -10935,7 +10935,7 @@
 7
 ],
 "Assembly-CSharp::CF.CellDraggable::RaycastBoardCell": [
-18,
+19,
 30,
 19
 ],
@@ -12105,9 +12105,9 @@
 3
 ],
 "Assembly-CSharp::CF.DebugMenu::Awake": [
-21,
+18,
 23,
-21
+18
 ],
 "Assembly-CSharp::CF.DebugMenu::OnEnable": [
 17,
