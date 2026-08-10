@@ -150,6 +150,14 @@ internal static partial class InvalidSourceRepair
 			}
 		}
 
+		//C# forbids `unsafe` on an iterator outright, and nothing above can find it: the method only becomes
+		//one on the last attempt, where emptying a body that would not settle leaves a bare `yield` behind,
+		//and no compile follows that. So it is not a diagnostic to answer but a shape to sweep for - and the
+		//rule needs no compiler, because the two are never legal together. `AllDesignConfig.CRPullAll` is the
+		//case: declared `unsafe IEnumerator`, every statement commented out, and the three errors it raised
+		//were the only thing between this export and an assembly that builds.
+		RemoveUnsafeFromIterators(outputFolder, fileSystem, parseOptions, repairedFiles);
+
 		if (widened > 0)
 		{
 			Logger.Info(LogCategory.Export, $"Widened {widened} members another type in the same assembly reads but could not reach");
@@ -1329,8 +1337,15 @@ internal static partial class InvalidSourceRepair
 			//setter alone is out of reach. il2cpp inlines the method that would have done the writing -
 			//`LevelManager.LoseOutOfTime()` sets `levelEndReason { get; private set; }` - so the recovered
 			//write is correct and only the accessor's protection stands in the way.
-			if (diagnostic.Id is not ("CS0122" or "CS0271" or "CS0272") || diagnostic.Location.SourceTree is not { } tree
-				|| !byTree.TryGetValue(tree, out SourceFile? seenIn))
+			if (diagnostic.Location.SourceTree is not { } tree || !byTree.TryGetValue(tree, out SourceFile? seenIn))
+			{
+				continue;
+			}
+
+			//CS0122 is a member that cannot be seen at all; CS0271 and CS0272 are a property whose getter or
+			//setter alone is out of reach. il2cpp inlines the method that would have done the writing, so the
+			//recovered write is correct and only the accessor's protection stands in the way.
+			if (diagnostic.Id is not ("CS0122" or "CS0271" or "CS0272"))
 			{
 				continue;
 			}
