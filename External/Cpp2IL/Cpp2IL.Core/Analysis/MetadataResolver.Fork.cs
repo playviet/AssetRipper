@@ -560,7 +560,7 @@ public static partial class MetadataResolver
     /// test.
     /// </para>
     /// </remarks>
-    private static bool ReachableFrom(FieldAnalysisContext field, MethodAnalysisContext method)
+    internal static bool ReachableFrom(FieldAnalysisContext field, MethodAnalysisContext method)
     {
         if (IsVisibleFrom(field, method))
             return true;

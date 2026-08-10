@@ -71,9 +71,17 @@ public static class StaticStructMember
                         is not { Length: > 1 } path)
                         continue;
 
-                    if (path[0].BackingData?.FieldOffset is not { } start
-                        || StaticPropertyRecovery.FindGetter(storage.OwnerType, path[0].FieldType, start, storageOffset)
-                            is not { } getter)
+                    if (path[0].BackingData?.FieldOffset is not { } start)
+                        continue;
+
+                    //A getter is only needed where the field cannot be said. `Vector3.zero` is another
+                    //assembly's private static and there is nothing else to write - but `MergeEffect`'s own
+                    //`private static readonly ParticleSystem.MinMaxCurve AttractorLerp` is written in the very
+                    //file being recovered, so the members read out of it can name it directly. Four reads in
+                    //`MergeEffect::Play` had no getter to find and were left as unmanaged memory.
+                    var getter = StaticPropertyRecovery.FindGetter(storage.OwnerType, path[0].FieldType, start, storageOffset);
+
+                    if (getter == null && !MetadataResolver.ReachableFrom(path[0], method))
                         continue;
 
                     //A property is not something an operand can be, so the call has to go in front of the
@@ -88,7 +96,12 @@ public static class StaticStructMember
                         method.Locals.Add(value);
                         called[path[0]] = value;
 
-                        block.Instructions.Insert(0, new Instruction(instruction.Index, OpCode.Call, getter, value));
+                        block.Instructions.Insert(0, getter != null
+                            ? new Instruction(instruction.Index, OpCode.Call, getter, value)
+                            //The static field itself. A static reference carries no owner - the generator
+                            //emits `ldsfld` and never looks at one - so the holder stands in for it.
+                            : new Instruction(instruction.Index, OpCode.Move, value, new FieldReference(path[0], value, 0)));
+
                         i++;
                     }
 
