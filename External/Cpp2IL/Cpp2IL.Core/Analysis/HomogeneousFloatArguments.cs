@@ -101,8 +101,22 @@ public static class HomogeneousFloatArguments
             //Where the first register already holds the struct itself - the untouched result of a call that
             //returned one - there is nothing to assemble, and assembling anyway puts a `Vector3` where the
             //constructor wants its `x`. Without this guard the same design cost 49 whole bodies.
+            //
+            //**But only where it is the same struct.** A `Rect` parameter occupies v0..v3, and a call in the
+            //same method whose first vector argument is also v0 is handed a `Vector3` - so the register holds
+            //a struct, and not this one. `MultiCutoutOverlay::AddQuad` calls `vh.AddVert(new Vector3(x, y, 0),
+            //…)` four times and two of them came out passing `rect` whole. The first lane of the argument is
+            //then the member at the front of whatever the register does hold.
             if (whole is LocalVariable { Type: { } already } && HomogeneousFloatStruct.Count(already) is > 1)
-                continue;
+            {
+                if (already.FullName == type.FullName)
+                    continue;
+
+                if (StructInArithmetic.Front(already) is not { } lane)
+                    continue;
+
+                whole = new FieldReference(lane, (LocalVariable)instruction.Operands[first + i], 0);
+            }
 
             var parts = new List<object> { whole };
 

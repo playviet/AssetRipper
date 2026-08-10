@@ -683,4 +683,46 @@ public static partial class LocalVariables
 
         return false;
     }
+
+    /// <summary>
+    /// Whether the register a return was read from is carrying a value of its own, so that stamping the
+    /// method's return type on it is a lie the rest of the inference cannot recover from.
+    /// </summary>
+    /// <remarks>
+    /// AAPCS64 returns a struct whose every field is a float in v0..vn, one field per register, and the
+    /// return register is named as x0 regardless - so for such a method the return operand is whatever x0
+    /// last held. <c>BoardController::ComputeMergeCenter</c> reloads <c>comp.subCells</c> into x0 on the
+    /// loop's back edge, and the stamp made that local a <c>Vector3</c>: every use of the list then needed
+    /// <c>(List&lt;SubCellRef&gt;)someVector3</c>, which is not a cast C# has, and the whole loop was refused.
+    /// The stamp is a plain assignment applied before the fixpoint, so nothing revises it.
+    ///
+    /// Only where the value is used for something besides being returned. Where x0 is dead at the return -
+    /// which is nearly every such method, its return operand being the entry version of the register - there
+    /// is nothing to contradict, and taking the type away would cost the bodies that compile whole around it.
+    /// The generator already turns a reference returned where a struct belongs into <c>default(T)</c>, so the
+    /// return statement stays legal either way.
+    /// </remarks>
+    private static bool ReturnRegisterCarriesSomethingElse(MethodAnalysisContext method, LocalVariable local)
+    {
+        if (method.ControlFlowGraph is not { } graph || !HomogeneousFloatStruct.SpansSeveralRegisters(method.ReturnType))
+            return false;
+
+        foreach (var instruction in graph.Instructions)
+        {
+            if (instruction.OpCode == OpCode.Return)
+                continue;
+
+            foreach (var operand in instruction.Operands)
+            {
+                if (ReferenceEquals(operand, local))
+                    return true;
+
+                if (operand is MemoryOperand memory
+                    && (ReferenceEquals(memory.Base, local) || ReferenceEquals(memory.Index, local)))
+                    return true;
+            }
+        }
+
+        return false;
+    }
 }

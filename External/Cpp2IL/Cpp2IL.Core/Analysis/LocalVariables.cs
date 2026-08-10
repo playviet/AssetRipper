@@ -626,7 +626,8 @@ public static partial class LocalVariables
 
         foreach (var instruction in returns)
         {
-            if (instruction.Operands.Count == 1 && instruction.Operands[0] is LocalVariable local)
+            if (instruction.Operands.Count == 1 && instruction.Operands[0] is LocalVariable local
+                && !ReturnRegisterCarriesSomethingElse(method, local)) //A struct of floats does not come back in x0.
                 local.Type = method.ReturnType;
         }
     }
