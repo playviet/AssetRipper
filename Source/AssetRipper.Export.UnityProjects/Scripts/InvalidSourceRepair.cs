@@ -6,6 +6,7 @@ using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.Text;
+using System.Collections.Immutable;
 using System.Text;
 
 namespace AssetRipper.Export.UnityProjects.Scripts;
@@ -1324,7 +1325,11 @@ internal static partial class InvalidSourceRepair
 
 		foreach (Diagnostic diagnostic in compilation.GetDiagnostics())
 		{
-			if (diagnostic.Id != "CS0122" || diagnostic.Location.SourceTree is not { } tree
+			//CS0122 is a member that cannot be seen at all; CS0271 and CS0272 are a property whose getter or
+			//setter alone is out of reach. il2cpp inlines the method that would have done the writing -
+			//`LevelManager.LoseOutOfTime()` sets `levelEndReason { get; private set; }` - so the recovered
+			//write is correct and only the accessor's protection stands in the way.
+			if (diagnostic.Id is not ("CS0122" or "CS0271" or "CS0272") || diagnostic.Location.SourceTree is not { } tree
 				|| !byTree.TryGetValue(tree, out SourceFile? seenIn))
 			{
 				continue;
@@ -1332,9 +1337,23 @@ internal static partial class InvalidSourceRepair
 
 			SemanticModel model = compilation.GetSemanticModel(tree);
 			SyntaxNode node = seenIn.Root.FindNode(diagnostic.Location.SourceSpan, getInnermostNodeForTie: true);
+			SymbolInfo about = model.GetSymbolInfo(node);
 
-			foreach (ISymbol symbol in model.GetSymbolInfo(node).CandidateSymbols)
+			//For an inaccessible accessor the property itself binds, so there are no candidates to look at -
+			//the symbol is simply the one that was found.
+			ImmutableArray<ISymbol> named = about.CandidateSymbols.IsEmpty && about.Symbol is { } bound
+				? [bound]
+				: about.CandidateSymbols;
+
+			foreach (ISymbol found in named)
 			{
+				//A write to a property binds to the property, whose own declaration is `public` and has
+				//nothing to widen. What the compiler objected to is the accessor, and that is a symbol of its
+				//own with its own declaration - `private set;`.
+				ISymbol symbol = found is IPropertySymbol property
+					? (diagnostic.Id == "CS0271" ? property.GetMethod : property.SetMethod) ?? found
+					: found;
+
 				if (!done.Add(symbol))
 				{
 					continue;
@@ -1375,6 +1394,27 @@ internal static partial class InvalidSourceRepair
 	/// <summary>The edit that makes one declaration reachable from the rest of the assembly.</summary>
 	private static Edit? WideningEdit(SyntaxNode declaration)
 	{
+		//An accessor carries its own protection, and the property around it is usually already public - so
+		//walking out to the member would find nothing to widen and give up. `private set;` becomes
+		//`internal set;` and the write compiles.
+		if (declaration is AccessorDeclarationSyntax accessor)
+		{
+			foreach (SyntaxToken modifier in accessor.Modifiers)
+			{
+				if (modifier.IsKind(SyntaxKind.PrivateKeyword))
+				{
+					return new Edit(modifier.Span, "internal", Rewritten: true);
+				}
+
+				if (modifier.IsKind(SyntaxKind.ProtectedKeyword))
+				{
+					return new Edit(modifier.Span, "protected internal", Rewritten: true);
+				}
+			}
+
+			return null;
+		}
+
 		//A field's declaring reference is the variable, and the modifiers belong to the declaration around it.
 		MemberDeclarationSyntax? member = declaration as MemberDeclarationSyntax
 			?? declaration.FirstAncestorOrSelf<MemberDeclarationSyntax>();
