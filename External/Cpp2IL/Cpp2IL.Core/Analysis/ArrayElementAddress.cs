@@ -124,8 +124,9 @@ public static class ArrayElementAddress
 
         //One subscript, and only at the element's own width. A second scaled term is not an access to this
         //array at all, and neither is a step of some other size that happens to rest on it.
-        if (running.Index != null || Scaled(added, definitions) is not { } scaled
-            || ArrayTypeInference.Width(running.Element, pointerSize) != scaled.Width)
+        if (ArrayTypeInference.Width(running.Element, pointerSize) is not { } stride
+            || running.Index != null || Scaled(added, definitions, stride) is not { } scaled
+            || stride != scaled.Width)
         {
             return null;
         }
@@ -134,19 +135,39 @@ public static class ArrayElementAddress
     }
 
     /// <summary>What an array of these holds, where the operand is one.</summary>
-    private static TypeAnalysisContext? ElementOf(object operand) => operand switch
+    private static TypeAnalysisContext? ElementOf(object operand) => Holds(operand switch
     {
-        LocalVariable { Type: SzArrayTypeAnalysisContext array } => array.ElementType,
-        LocalVariable { Type: ArrayTypeAnalysisContext { Rank: 1 } single } => single.ElementType,
-        FieldReference { Field.FieldType: SzArrayTypeAnalysisContext array } => array.ElementType,
-        FieldReference { Field.FieldType: ArrayTypeAnalysisContext { Rank: 1 } single } => single.ElementType,
+        LocalVariable { Type: { } held } => held,
+        FieldReference { Field.FieldType: { } declared } => declared,
+        _ => null,
+    });
+
+    /// <summary>
+    /// The element type behind an array, through a by-reference to one. A parameter declared <c>ref T[]</c>
+    /// arrives as <c>System.Boolean[]&amp;</c> and is indexed exactly as the array it refers to -
+    /// <c>BoardController::ComputeHighlights</c> reaches its highlight buffer that way.
+    /// </summary>
+    private static TypeAnalysisContext? Holds(TypeAnalysisContext? type) => type switch
+    {
+        SzArrayTypeAnalysisContext array => array.ElementType,
+        ArrayTypeAnalysisContext { Rank: 1 } single => single.ElementType,
+        ByRefTypeAnalysisContext { ElementType: { } referenced } => Holds(referenced),
         _ => null,
     };
 
     /// <summary>A subscript and the width it was scaled by, out of the shift or the multiply that scaled it.</summary>
-    private static (object Index, int Width)? Scaled(object operand, Dictionary<LocalVariable, Instruction> definitions)
+    private static (object Index, int Width)? Scaled(object operand, Dictionary<LocalVariable, Instruction> definitions,
+        int elementWidth)
     {
-        if (operand is not LocalVariable offset || !definitions.TryGetValue(offset, out var made))
+        if (operand is not LocalVariable offset)
+            return null;
+
+        //An array of bytes is indexed by the subscript itself: there is nothing to scale it by, so no shift
+        //and no multiply were emitted and there is nothing to recognise except the width of the element.
+        if (elementWidth == 1)
+            return (offset, 1);
+
+        if (!definitions.TryGetValue(offset, out var made))
             return null;
 
         return made switch

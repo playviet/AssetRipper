@@ -570,6 +570,7 @@ public static partial class MetadataResolver
 
         //Unity's hand-written convention, and the compiler's own for an auto-property.
         var wanted = name.StartsWith("m_") ? name[2..]
+            : name.StartsWith('_') ? name[1..]
             : name.StartsWith('<') && name.Contains('>') ? name[1..name.IndexOf('>')]
             : null;
 
@@ -578,8 +579,15 @@ public static partial class MetadataResolver
 
         foreach (var property in declaring.Properties)
         {
-            if (property.Name != wanted || property.Getter is not { } getter)
+            //Ignoring case, which is the whole of the convention: Unity writes `m_Spacing` for `spacing`,
+            //`m_CellSize` for `cellSize`, `m_Padding` for `padding`. Asking for an exact match found none of
+            //them, so `_grid.spacing.y` in `BoardGridAutoSize::Recalc` was read as unmanaged memory and the
+            //row height came out computed without it.
+            if (!string.Equals(property.Name, wanted, System.StringComparison.OrdinalIgnoreCase)
+                || property.Getter is not { } getter)
+            {
                 continue;
+            }
 
             if ((getter.Attributes & System.Reflection.MethodAttributes.MemberAccessMask) == System.Reflection.MethodAttributes.Public
                 && property.PropertyType?.FullName == field.FieldType?.FullName)
