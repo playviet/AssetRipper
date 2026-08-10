@@ -423,6 +423,13 @@ public static class ForkPipeline
         // Immediately above the collection, so what it leaves is taken with everything else.
         DeadRgctxRead.Run(method);
 
+        // And the copies single assignment form left claiming a struct too big for a register is what a
+        // register held. `SsaForm` refuses the ones it can tell apart, but it asks while the graph is being
+        // destructed - before the passes that settle what a local holds - so a local that only becomes an
+        // enumerator later keeps its copy. Here, where every typing pass has run, and above the collection so
+        // what it orphans is taken with the rest.
+        WiderThanARegister.Run(method);
+
         DeadCodeEliminator.Run(method);
 
         // And the values that keep each other alive. Counting uses proves a definition dead only while every
