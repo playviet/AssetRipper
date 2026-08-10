@@ -101,6 +101,18 @@ public static class HomogeneousFloatParameters
                             continue;
 
                         instruction.Operands[i] = new FieldReference(held.Field, held.Struct, held.Offset);
+
+                        //A select answers with whichever arm it took, so once an arm is one field of the
+                        //struct the answer is that field and not the struct. Its destination was typed from
+                        //the arm before this pass touched it - `LocalVariables.PropagateSelect` reads the
+                        //first typed operand - and `SetTypeIfUnknown` only fills nulls, so nothing would
+                        //correct it. `FindOverlapCell`'s `Mathf.Max(dragWorldRect.xMin, cornersBuf[0].x)`
+                        //came out choosing between a `Rect` and a number.
+                        if (instruction.OpCode == OpCode.Select && instruction.Operands[0] is LocalVariable answer
+                            && answer.Type?.FullName == held.Struct.Type?.FullName)
+                        {
+                            answer.Type = held.Field.FieldType;
+                        }
                     }
                 }
 
