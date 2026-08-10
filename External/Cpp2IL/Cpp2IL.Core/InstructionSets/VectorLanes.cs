@@ -247,6 +247,28 @@ internal sealed class VectorLanes
             return true;
         }
 
+        //The sixty-four bit form - `op` set with cmode 1110 - where each bit of the immediate stands for a
+        //whole byte rather than being one. Only the all-clear immediate is taken: `movi d3, #0` is how clang
+        //clears the register it is about to build a pair of floats in, and every other immediate in this form
+        //is a byte mask, which is not a number any lane holds. Leaving it undecoded forgot the register, so
+        //lane one was never established and the `fdiv`/`fcmgt` two instructions later had nothing to read -
+        //which is all `BoardController::ComputeMergeCenter` and `ProceduralImage::CalculateInfo` lost.
+        if (cmode == 0b1110 && inverted)
+        {
+            if (immediate != 0)
+                return false;
+
+            var cleared = LanesIn(4, q);
+
+            Forget(destination);
+
+            for (var lane = 0; lane < cleared; lane++)
+                emit(OpCode.Move, [Lane(destination, lane * 4), 0f]);
+
+            Note(destination, 4, cleared, false, emit);
+            return true;
+        }
+
         var (elementWidth, value) = (cmode & 0b1001, cmode & 0b1101) switch
         {
             //Thirty-two bit lanes, the immediate shifted by whole bytes.
@@ -878,20 +900,46 @@ internal sealed class VectorLanes
     {
         if (word >> 31 != 0 || (word >> 24 & 0x1F) != 0b01110
             || (word >> 21 & 1) != 1 || (word >> 10 & 1) != 1
-            || (word >> 11 & 0x1F) != 0b00011 || (word >> 29 & 1) != 0)
+            || (word >> 11 & 0x1F) != 0b00011)
         {
             return false;
         }
 
         var size = (int)(word >> 22 & 3);
+        var destination = (int)(word & 0x1F);
+        var left = (int)(word >> 5 & 0x1F);
+        var right = (int)(word >> 16 & 0x1F);
+
+        //`bsl`, `bit` and `bif`: the same space with `op` set, and the same Select the `and`/`bic` pair below
+        //lifts to - what differs is only which of the three registers carries the mask. clang writes them
+        //wherever a pair of floats is chosen between without a branch, which is what a clamp becomes.
+        //  bsl Vd, Vn, Vm : Vd = Vd ? Vn : Vm   - the destination is the mask, read before it is written
+        //  bit Vd, Vn, Vm : Vd = Vm ? Vn : Vd
+        //  bif Vd, Vn, Vm : Vd = Vm ? Vd : Vn
+        if ((word >> 29 & 1) == 1)
+        {
+            //size 00 is `eor`, which is not a choice at all.
+            var (chooser, whenSet, whenClear) = size switch
+            {
+                0b01 => (destination, left, right),
+                0b10 => (right, left, destination),
+                0b11 => (right, destination, left),
+                _ => (-1, -1, -1),
+            };
+
+            //These name no lane width - they are `8b` or `16b` whatever they select between - so the width has
+            //to come from the mask, and the mask has to be a comparison's answer: over lanes the architecture
+            //did not set to all-ones or none, a Select is a plausible wrong answer where a marker is now.
+            if (chooser < 0 || !masks.Contains(chooser) || !width.TryGetValue(chooser, out var chosenWidth))
+                return false;
+
+            return Choose(destination, chooser, whenSet, whenClear, chosenWidth,
+                LanesIn(chosenWidth, (int)(word >> 30 & 1)), emit);
+        }
 
         //`and` where the mask is the second operand, and `bic`, which is the same the other way round.
         if (size is not (0b00 or 0b01))
             return false;
-
-        var destination = (int)(word & 0x1F);
-        var left = (int)(word >> 5 & 0x1F);
-        var right = (int)(word >> 16 & 0x1F);
 
         //The mask has to be a comparison's answer, and the value has to have a width to be chosen at.
         if (!masks.Contains(right) || masks.Contains(left) || !width.TryGetValue(left, out var elementWidth))

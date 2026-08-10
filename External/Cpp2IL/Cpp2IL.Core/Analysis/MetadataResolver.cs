@@ -233,7 +233,14 @@ public static partial class MetadataResolver
 
             var keyFunctionAddresses = method.AppContext.GetOrCreateKeyFunctionAddresses();
 
-            if (keyFunctionAddresses.IsKeyFunctionAddress(target))
+            //A key function is a runtime C entry point, never a managed method. `il2cpp_vm_object_is_inst` is
+            //located by taking the last `bl` in Type::IsInstanceOfType, and in this corlib that method is
+            //managed - `o != null && IsAssignableFrom(o.GetType())` - so the last call is Object::GetType and
+            //every `x.GetType()` in the game was renamed to a helper the generator cannot write. Of the 25 key
+            //function addresses this binary resolves, that is the only one `MethodsByAddress` names; where the
+            //metadata names the address, the metadata is right.
+            if (keyFunctionAddresses.IsKeyFunctionAddress(target)
+                && !method.AppContext.MethodsByAddress.ContainsKey(target))
             {
                 HandleKeyFunction(method.AppContext, callInstruction, target, keyFunctionAddresses);
                 continue;
@@ -244,7 +251,7 @@ public static partial class MetadataResolver
             {
                 // Not a managed method at all. It may be one of the runtime helpers that exist purely to
                 // throw, in which case restore the throw itself
-                if (ThrowHelperRecovery.GetThrownException(method.AppContext, target) is { } thrown)
+                if (ThrownExceptionAt(method, callInstruction, target) is { } thrown)
                 {
                     callInstruction.OpCode = OpCode.Throw;
                     callInstruction.Operands = [thrown];

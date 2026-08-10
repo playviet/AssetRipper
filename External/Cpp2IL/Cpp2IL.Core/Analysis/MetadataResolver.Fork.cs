@@ -705,4 +705,97 @@ public static partial class MetadataResolver
 
         return null;
     }
+
+    /// <summary>
+    /// The exception a call raises, where the call really is a throw helper and not a function whose answer
+    /// the caller goes on to read.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <see cref="ThrowHelperRecovery.GetThrownException"/> names an address by walking it and, failing that,
+    /// walking everything it calls, five deep. That reaches past helpers that come back. <c>0x2183F6C</c> is
+    /// the veneer for <c>IsInst</c> - the check il2cpp makes before storing a reference into an array, which
+    /// reads <c>element_class</c> at <c>[klass + 0x40]</c> and answers yes or no - and five hops below it is
+    /// something that raises <c>OutOfMemoryException</c>. All <b>17995</b> of its call sites in this binary
+    /// were rewritten into an unconditional throw.
+    /// </para>
+    /// <para>
+    /// The damage is not the lost check. A throw ends the block, so the store the check guards and everything
+    /// after it become unreachable: <c>ColorExtension.ToHex</c> and the whole of <c>InterstitialGate</c> throw
+    /// on entry - and score <c>full</c>, because a body that throws carries no marker. The polarity is the
+    /// proof: <c>NullReferenceException</c> is guarded by <c>if (x == null)</c> 80 times and by
+    /// <c>if (x != null)</c> never, while <c>OutOfMemoryException</c> is guarded by <c>if (x != null)</c> 94
+    /// times and by <c>if (x == null)</c> never - 49 of those testing a box, which cannot be null.
+    /// <see cref="ArrayStoreCheckRemover"/> exists to delete exactly this shape and its first condition is
+    /// that the call is <i>still an address</i>; it has never been able to fire, because this runs long before
+    /// it and leaves no call behind.
+    /// </para>
+    /// <para>
+    /// A throw helper does not come back, so nothing can read what it returned. One instruction of look-ahead
+    /// settles it. Deliberately narrow - the call's own block, then the single block that follows it, since a
+    /// call ends a block here and the branch reading its answer is the next one along, the same two-block shape
+    /// <see cref="ArrayStoreCheckRemover"/> has to look through. The scan stops the moment the register is
+    /// written again, so a helper whose result register is merely reused later is still recognised.
+    /// </para>
+    /// </remarks>
+    public static TypeAnalysisContext? ThrownExceptionAt(MethodAnalysisContext method, Instruction call, ulong target)
+        => AnswerIsRead(method.ControlFlowGraph!, call)
+            ? null
+            : ThrowHelperRecovery.GetThrownException(method.AppContext, target);
+
+    private static bool AnswerIsRead(ISILControlFlowGraph graph, Instruction call)
+    {
+        if (Named(call.Destination) is not { } answer)
+            return false;
+
+        foreach (var block in graph.Blocks)
+        {
+            var at = block.Instructions.IndexOf(call);
+
+            if (at < 0)
+                continue;
+
+            //The call's own block and no further. A helper that does not come back still has a fall-through
+            //successor in the graph - the block after it in address order - and that block reads the answer
+            //register for its own reasons, so hopping into it says every throw helper answers something.
+            //Measured: `Corpus::Diagonal` lost its bounds check and `Areas` its cast check for exactly that.
+            return ReadsFirst(block.Instructions.Skip(at + 1), answer) ?? false;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// True where the register is read, false where it is written again first, null where neither happens.
+    /// </summary>
+    private static bool? ReadsFirst(IEnumerable<Instruction> instructions, string answer)
+    {
+        foreach (var instruction in instructions)
+        {
+            foreach (var source in instruction.Sources)
+                if (Mentions(source, answer))
+                    return true;
+
+            //Overwritten without ever being read: whatever the call left there was not wanted.
+            if (Named(instruction.Destination) == answer)
+                return false;
+        }
+
+        return null;
+    }
+
+    /// <summary>What a register operand is called, whichever form it has taken by now.</summary>
+    private static string? Named(object? operand) => operand switch
+    {
+        Register register => register.Name,
+        LocalVariable local => local.Register.Name,
+        _ => null,
+    };
+
+    /// <summary>Whether an operand names this register, on its own or as part of an address.</summary>
+    private static bool Mentions(object? operand, string answer) => operand switch
+    {
+        MemoryOperand memory => Mentions(memory.Base, answer) || Mentions(memory.Index, answer),
+        _ => Named(operand) == answer,
+    };
 }
