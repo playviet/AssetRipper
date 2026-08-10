@@ -22,27 +22,27 @@
 "Assembly-CSharp::FullScreenTouchHandler::OnBeginDrag": [
 2,
 3,
-3
+2
 ],
 "Assembly-CSharp::FullScreenTouchHandler::OnDrag": [
 2,
 3,
-3
+2
 ],
 "Assembly-CSharp::FullScreenTouchHandler::OnEndDrag": [
 2,
 3,
-3
+2
 ],
 "Assembly-CSharp::FullScreenTouchHandler::OnPointerDown": [
 2,
 3,
-3
+2
 ],
 "Assembly-CSharp::FullScreenTouchHandler::OnPointerUp": [
 2,
 3,
-3
+2
 ],
 "Assembly-CSharp::Joystick::Awake": [
 2,
@@ -60,7 +60,7 @@
 5
 ],
 "Assembly-CSharp::Joystick::OnDrag": [
-12,
+13,
 20,
 13
 ],
@@ -75,7 +75,7 @@
 1
 ],
 "Assembly-CSharp::Joystick::SnapFloat": [
-3,
+4,
 5,
 4
 ],
@@ -360,12 +360,12 @@
 0
 ],
 "Assembly-CSharp::EpicToonFX.ETFXFireProjectile::ShootProjectile": [
-9,
+11,
 17,
 11
 ],
 "Assembly-CSharp::EpicToonFX.ETFXFireProjectile::UpdateGunPositionAndRotation": [
-5,
+7,
 19,
 7
 ],
@@ -385,7 +385,7 @@
 8
 ],
 "Assembly-CSharp::EpicToonFX.ETFXFireProjectile::CleanUpMissileName": [
-2,
+20,
 20,
 20
 ],
@@ -470,7 +470,7 @@
 11
 ],
 "Assembly-CSharp::EpicToonFX.ETFXProjectileScript::RotateTowardsDirection": [
-3,
+5,
 12,
 5
 ],
@@ -1180,9 +1180,9 @@
 4
 ],
 "Assembly-CSharp::UnityEngine.UI.ProceduralImage.ProceduralImage::OnPopulateMesh": [
-2,
+3,
 4,
-4
+3
 ],
 "Assembly-CSharp::UnityEngine.UI.ProceduralImage.ProceduralImage::OnTransformParentChanged": [
 2,
@@ -1190,7 +1190,7 @@
 2
 ],
 "Assembly-CSharp::UnityEngine.UI.ProceduralImage.ProceduralImage::CalculateInfo": [
-3,
+4,
 6,
 5
 ],
@@ -2775,7 +2775,7 @@
 2
 ],
 "Assembly-CSharp::Common.GameHubFlow::Apply": [
-1,
+2,
 3,
 2
 ],
@@ -2980,19 +2980,19 @@
 1
 ],
 "Assembly-CSharp::Common.SaveManager::LevelUp": [
-1,
+2,
 2,
 2
 ],
 "Assembly-CSharp::Common.SaveManager::SynSaveLevel": [
-1,
+3,
 3,
 3
 ],
 "Assembly-CSharp::Common.SaveManager::SetLevel": [
-4,
+3,
 5,
-4
+3
 ],
 "Assembly-CSharp::Common.SaveManager::GetFinishLevel": [
 1,
@@ -3005,7 +3005,7 @@
 1
 ],
 "Assembly-CSharp::Common.SaveManager::AddCoin": [
-1,
+2,
 2,
 2
 ],
@@ -3255,12 +3255,12 @@
 2
 ],
 "Assembly-CSharp::CFramework.AssetLoader::InstantiateFromAddressables": [
-2,
+1,
 3,
 2
 ],
 "Assembly-CSharp::CFramework.AssetLoader::LoadPrefabFromAddressablesSync": [
-5,
+4,
 11,
 6
 ],
@@ -3455,7 +3455,7 @@
 1
 ],
 "Assembly-CSharp::CFramework.SwipeControl::Update": [
-7,
+9,
 15,
 9
 ],
@@ -3715,7 +3715,7 @@
 1
 ],
 "Assembly-CSharp::CFramework.BaseAbilityBuyPopup::Awake": [
-3,
+4,
 5,
 4
 ],
@@ -3770,7 +3770,7 @@
 3
 ],
 "Assembly-CSharp::CFramework.BaseAbilitySelectPopup::Awake": [
-3,
+4,
 5,
 4
 ],
@@ -3800,7 +3800,7 @@
 1
 ],
 "Assembly-CSharp::CFramework.BaseAbilitySlotUI::Awake": [
-1,
+2,
 3,
 2
 ],
@@ -3810,12 +3810,12 @@
 4
 ],
 "Assembly-CSharp::CFramework.BaseAbilitySlotUI::ValidateTutorial": [
-7,
+13,
 14,
 13
 ],
 "Assembly-CSharp::CFramework.BaseAbilitySlotUI::IsTriggerTutorial": [
-2,
+7,
 7,
 7
 ],
@@ -3990,12 +3990,12 @@
 7
 ],
 "Assembly-CSharp::CFramework.AdsManager::HideBanner": [
-5,
+6,
 7,
 6
 ],
 "Assembly-CSharp::CFramework.AdsManager::DestroyBanner": [
-5,
+6,
 7,
 6
 ],
@@ -4120,7 +4120,7 @@
 4
 ],
 "Assembly-CSharp::CFramework.AdsManager::LaunchTestSuite": [
-4,
+5,
 5,
 5
 ],
@@ -4817,7 +4817,7 @@
 "Assembly-CSharp::CFramework.GoogleSheetHelper::ConvertTSVTextToJsonListObject": [
 12,
 21,
-13
+12
 ],
 "Assembly-CSharp::CFramework.GoogleSheetHelper::DeserializeSheetJsonToList": [
 8,
@@ -4902,7 +4902,7 @@
 "Assembly-CSharp::CFramework.Pool::Spawn": [
 3,
 15,
-11
+10
 ],
 "Assembly-CSharp::CFramework.Pool::Despawn": [
 7,
@@ -5067,7 +5067,7 @@
 "Assembly-CSharp::CFramework.RemoteConfigManager::UpdateFromRemote": [
 3,
 14,
-10
+9
 ],
 "Assembly-CSharp::CFramework.RemoteConfigManager::FetchRemote": [
 1,
@@ -5250,9 +5250,9 @@
 3
 ],
 "Assembly-CSharp::CFramework.Timer::DiminishTimer": [
-3,
+2,
 4,
-3
+2
 ],
 "Assembly-CSharp::CFramework.Timer::EndTimer": [
 1,
@@ -5425,9 +5425,9 @@
 1
 ],
 "Assembly-CSharp::CFramework.AdjustTracking::Initialize": [
-11,
+10,
 30,
-11
+10
 ],
 "Assembly-CSharp::CFramework.AdjustTracking::OnAllNetworksInitialized": [
 4,
@@ -5440,7 +5440,7 @@
 3
 ],
 "Assembly-CSharp::CFramework.AdjustTracking::LogEvent": [
-2,
+3,
 4,
 3
 ],
@@ -6422,7 +6422,7 @@
 "Assembly-CSharp::CFramework.TrackingManager::SyncSessionIdentity": [
 3,
 15,
-4
+3
 ],
 "Assembly-CSharp::CFramework.TrackingManager::InitNetworksAndSession": [
 9,
@@ -6825,7 +6825,7 @@
 2
 ],
 "Assembly-CSharp::CFramework.BaseButton::Awake": [
-1,
+2,
 3,
 2
 ],
@@ -7100,7 +7100,7 @@
 4
 ],
 "Assembly-CSharp::CFramework.SwipeZone::OnPointerDown": [
-0,
+1,
 2,
 1
 ],
@@ -7190,9 +7190,9 @@
 5
 ],
 "Assembly-CSharp::CFramework.UIManager::DestroyAllUICanDestroy": [
-9,
+10,
 19,
-16
+15
 ],
 "Assembly-CSharp::CFramework.UIManager::IsPointerOverUIObject": [
 4,
@@ -7330,9 +7330,9 @@
 3
 ],
 "Assembly-CSharp::CFramework.SegmentRuleEvaluator::ParseComparison": [
-7,
+8,
 11,
-10
+8
 ],
 "Assembly-CSharp::CFramework.SegmentRuleEvaluator::ParseInList": [
 7,
@@ -7342,7 +7342,7 @@
 "Assembly-CSharp::CFramework.SegmentRuleEvaluator::ParseValue": [
 7,
 10,
-9
+8
 ],
 "Assembly-CSharp::CFramework.SegmentRuleEvaluator::ResolveIdent": [
 8,
@@ -7487,7 +7487,7 @@
 "Assembly-CSharp::CFramework.FPSCounter::Update": [
 7,
 13,
-10
+9
 ],
 "Assembly-CSharp::CFramework.FPSCounter::OnGUI": [
 7,
@@ -7540,7 +7540,7 @@
 6
 ],
 "Assembly-CSharp::CFramework.GizmosDrawer::DrawArrowEnd": [
-4,
+5,
 8,
 5
 ],
@@ -7655,9 +7655,9 @@
 1
 ],
 "Assembly-CSharp::CFramework.AnimatorExtension::IsPlaying": [
-1,
+2,
 4,
-3
+2
 ],
 "Assembly-CSharp::CFramework.ArrayExtension::RandomInArray": [
 1,
@@ -8085,7 +8085,7 @@
 1
 ],
 "Assembly-CSharp::CFramework.ScrollRectExtension::CalculateFocusedScrollPosition": [
-1,
+3,
 7,
 3
 ],
@@ -8535,7 +8535,7 @@
 1
 ],
 "Assembly-CSharp::CFramework.VectorExtensions::GetRandomDirVector2": [
-1,
+2,
 4,
 2
 ],
@@ -9290,7 +9290,7 @@
 4
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenModulePhysics::DOMoveX": [
-1,
+4,
 4,
 4
 ],
@@ -9335,7 +9335,7 @@
 4
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenModulePhysics2D::DOMoveX": [
-1,
+4,
 4,
 4
 ],
@@ -9375,7 +9375,7 @@
 3
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenModuleSprite::DOGradientColor": [
-2,
+6,
 9,
 6
 ],
@@ -9405,7 +9405,7 @@
 3
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenModuleUI::DOGradientColor": [
-2,
+6,
 9,
 6
 ],
@@ -9435,7 +9435,7 @@
 4
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenModuleUI::DOAnchorPosX": [
-1,
+4,
 4,
 4
 ],
@@ -9450,7 +9450,7 @@
 4
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenModuleUI::DOAnchorPos3DX": [
-1,
+4,
 4,
 4
 ],
@@ -9480,7 +9480,7 @@
 3
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenModuleUI::DOPivotX": [
-1,
+4,
 4,
 4
 ],
@@ -9505,7 +9505,7 @@
 5
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenModuleUI::DOJumpAnchorPos": [
-10,
+11,
 11,
 11
 ],
@@ -9610,7 +9610,7 @@
 1
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenModuleUnityVersion::DOGradientColor": [
-2,
+7,
 9,
 7
 ],
@@ -9655,32 +9655,32 @@
 6
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenModuleUnityVersion::AsyncWaitForCompletion": [
-2,
+1,
 3,
 2
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenModuleUnityVersion::AsyncWaitForRewind": [
-2,
+1,
 3,
 2
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenModuleUnityVersion::AsyncWaitForKill": [
-2,
+1,
 3,
 2
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenModuleUnityVersion::AsyncWaitForElapsedLoops": [
-2,
+1,
 3,
 2
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenModuleUnityVersion::AsyncWaitForPosition": [
-2,
+1,
 3,
 2
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenModuleUnityVersion::AsyncWaitForStart": [
-2,
+1,
 3,
 2
 ],
@@ -9930,7 +9930,7 @@
 7
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenProShortcuts::DOSpiral": [
-6,
+5,
 9,
 6
 ],
@@ -9940,12 +9940,12 @@
 3
 ],
 "Assembly-CSharp::DG.Tweening.ShortcutExtensionsTMPText::DOFaceColor": [
-1,
+3,
 3,
 3
 ],
 "Assembly-CSharp::DG.Tweening.ShortcutExtensionsTMPText::DOOutlineColor": [
-1,
+3,
 3,
 3
 ],
@@ -10035,9 +10035,9 @@
 3
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenTMPAnimator+CharTransform::UpdateGeometry": [
-16,
+17,
 20,
-18
+17
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenTMPAnimator+CharTransform::ShiftVertices": [
 10,
@@ -10062,7 +10062,7 @@
 "Assembly-CSharp::DG.Tweening.DOTweenTMPAnimator::Refresh": [
 10,
 17,
-11
+10
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenTMPAnimator::Reset": [
 5,
@@ -10087,12 +10087,12 @@
 "Assembly-CSharp::DG.Tweening.DOTweenTMPAnimator::SkewSpanX": [
 4,
 6,
-5
+4
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenTMPAnimator::SkewSpanY": [
 6,
 9,
-8
+6
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenTMPAnimator::GetCharColor": [
 4,
@@ -10140,12 +10140,12 @@
 3
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenTMPAnimator::SkewCharX": [
-3,
+4,
 8,
 4
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenTMPAnimator::SkewCharY": [
-4,
+5,
 11,
 5
 ],
@@ -10215,14 +10215,14 @@
 4
 ],
 "Assembly-CSharp::CF.BoardController+<HammerAnimation>d__155::MoveNext": [
-25,
+26,
 45,
 27
 ],
 "Assembly-CSharp::CF.BoardController+<ProcessCascades>d__137::MoveNext": [
-49,
+50,
 70,
-54
+53
 ],
 "Assembly-CSharp::CF.BoardController+<ProcessMergeQueue>d__135::MoveNext": [
 2,
@@ -10312,7 +10312,7 @@
 "Assembly-CSharp::CF.BoardController::InitBoard": [
 50,
 55,
-51
+50
 ],
 "Assembly-CSharp::CF.BoardController::CacheLevelOverrides": [
 11,
@@ -10330,9 +10330,9 @@
 7
 ],
 "Assembly-CSharp::CF.BoardController::BuildInitialBoard": [
-40,
+38,
 48,
-40
+39
 ],
 "Assembly-CSharp::CF.BoardController::PrepareCtxInitial": [
 32,
@@ -10435,7 +10435,7 @@
 5
 ],
 "Assembly-CSharp::CF.BoardController::CountUniqueCats": [
-4,
+8,
 11,
 8
 ],
@@ -10450,9 +10450,9 @@
 3
 ],
 "Assembly-CSharp::CF.BoardController::UpdateTargetProgress": [
-5,
+4,
 7,
-5
+4
 ],
 "Assembly-CSharp::CF.BoardController::UpdateStuckTurnsExcluding": [
 12,
@@ -10460,7 +10460,7 @@
 12
 ],
 "Assembly-CSharp::CF.BoardController::ComputeMergeCenter": [
-2,
+4,
 8,
 4
 ],
@@ -10470,7 +10470,7 @@
 3
 ],
 "Assembly-CSharp::CF.BoardController::SpawnMergeEffect": [
-12,
+13,
 21,
 13
 ],
@@ -10485,7 +10485,7 @@
 3
 ],
 "Assembly-CSharp::CF.BoardController::PowerUp_Shuffle": [
-14,
+12,
 15,
 14
 ],
@@ -10545,7 +10545,7 @@
 1
 ],
 "Assembly-CSharp::CF.BoardGridAutoSize::Recalc": [
-5,
+6,
 14,
 6
 ],
@@ -10575,14 +10575,14 @@
 5
 ],
 "Assembly-CSharp::CF.BoardLogic::GenerateSmartBlock": [
-42,
+46,
 52,
-48
+46
 ],
 "Assembly-CSharp::CF.BoardLogic::PickTargetColor": [
-8,
+9,
 13,
-10
+9
 ],
 "Assembly-CSharp::CF.BoardLogic::EnsureWeights": [
 1,
@@ -10632,7 +10632,7 @@
 "Assembly-CSharp::CF.BoardLogic::RefillGridInto": [
 1,
 3,
-2
+1
 ],
 "Assembly-CSharp::CF.BoardLogic::IsValidFill": [
 0,
@@ -10645,9 +10645,9 @@
 4
 ],
 "Assembly-CSharp::CF.BoardLogic::CheckAndMergeAll": [
-17,
+19,
 23,
-20
+19
 ],
 "Assembly-CSharp::CF.BoardLogic::ProcessSeed": [
 14,
@@ -10760,7 +10760,7 @@
 12
 ],
 "Assembly-CSharp::CF.Cell::SetStatic": [
-5,
+6,
 7,
 6
 ],
@@ -10935,7 +10935,7 @@
 7
 ],
 "Assembly-CSharp::CF.CellDraggable::RaycastBoardCell": [
-16,
+18,
 30,
 19
 ],
@@ -10987,7 +10987,7 @@
 "Assembly-CSharp::CF.MergeEffect::TintExplosion": [
 3,
 9,
-4
+3
 ],
 "Assembly-CSharp::CF.MergeEffect::OnDisable": [
 3,
@@ -11020,17 +11020,17 @@
 12
 ],
 "Assembly-CSharp::CF.SubCellVisual::Setup": [
-18,
+19,
 27,
 19
 ],
 "Assembly-CSharp::CF.SubCellVisual::PlayHighlightAccent": [
-10,
+13,
 15,
 13
 ],
 "Assembly-CSharp::CF.SubCellVisual::StartHighlightBlinkLoop": [
-10,
+12,
 12,
 12
 ],
@@ -11190,12 +11190,12 @@
 4
 ],
 "Assembly-CSharp::CF.SubCellVisual::ApplyFaceParts": [
-1,
+12,
 12,
 12
 ],
 "Assembly-CSharp::CF.SubCellVisual::ApplyFacePart": [
-24,
+27,
 46,
 27
 ],
@@ -11245,7 +11245,7 @@
 15
 ],
 "Assembly-CSharp::CF.LevelMetadataDesignConfig::ApplyOverrides": [
-8,
+10,
 14,
 10
 ],
@@ -11375,7 +11375,7 @@
 2
 ],
 "Assembly-CSharp::CF.LevelMetadataDesignData::GetLogicBool": [
-0,
+2,
 2,
 2
 ],
@@ -11805,9 +11805,9 @@
 8
 ],
 "Assembly-CSharp::CF.LevelStateStart::LoadLevel": [
-8,
+7,
 12,
-8
+7
 ],
 "Assembly-CSharp::CF.LevelStateStart::BeginSession": [
 8,
@@ -11920,12 +11920,12 @@
 1
 ],
 "Assembly-CSharp::CF.SaveManager::LevelUp": [
-1,
+2,
 2,
 2
 ],
 "Assembly-CSharp::CF.SaveManager::SynSaveLevel": [
-1,
+3,
 3,
 3
 ],
@@ -11945,7 +11945,7 @@
 1
 ],
 "Assembly-CSharp::CF.SaveManager::AddCoin": [
-1,
+2,
 2,
 2
 ],
@@ -12295,7 +12295,7 @@
 4
 ],
 "Assembly-CSharp::CF.IngameMenu::RebuildTargetHUD": [
-6,
+7,
 12,
 7
 ],
@@ -12350,7 +12350,7 @@
 9
 ],
 "Assembly-CSharp::CF.IngameMenu::GetIntroWorldPos": [
-2,
+3,
 5,
 3
 ],
@@ -12380,7 +12380,7 @@
 6
 ],
 "Assembly-CSharp::CF.IngameMenu::CompleteAndRemoveSlot": [
-11,
+13,
 16,
 13
 ],
@@ -12540,7 +12540,7 @@
 4
 ],
 "Assembly-CSharp::CF.WinMenu::ComputeBeatPercent": [
-2,
+4,
 8,
 4
 ],
@@ -12635,7 +12635,7 @@
 6
 ],
 "Assembly-CSharp::CF.PowerUpBuyPopup::Awake": [
-4,
+5,
 6,
 5
 ],
@@ -12900,7 +12900,7 @@
 2
 ],
 "Assembly-CSharp::CF.ButtonGroup::Awake": [
-3,
+4,
 5,
 4
 ],

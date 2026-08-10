@@ -310,6 +310,12 @@ public static class ForkPipeline
         DelegateInvokeRecovery.RunOnFoldedLoads(method);
         MetadataResolver.TrimResolvedCallArguments(method);
 
+        // Directly after the trim, which is what makes these dead: a shared generic body reads the MethodInfo
+        // its call needs out of the runtime generic context, and once the call is resolved and that argument
+        // is gone, nothing wants the load. It is a memory read, so the collection will not take it on its own,
+        // and it stayed beside a perfectly recovered call as an unmanaged-memory statement.
+        DeadRgctxRead.Run(method);
+
         // And the same for a runtime helper, which never becomes a managed method and so is never trimmed:
         // it keeps all eight argument registers and every load that filled one, however few it reads.
         KeyFunctionArguments.Run(method);
@@ -466,6 +472,12 @@ public static class ForkPipeline
         // brings the top one down, and an array subscript in such a register is the bottom one. Late, beside
         // the mask above, where the local carries the struct's type and the accesses are already recovered.
         PackedPairField.Run(method);
+
+        // And the same register read the other way: a call answers with a small struct in `w0`, and every
+        // field of it is a shift and a mask off that number. Beside the pass above because it is the same
+        // fact about the same register, and here rather than earlier because it needs the callee resolved to
+        // know what the struct is.
+        PackedStructFieldRead.Run(method);
 
         // Again, and last. A struct of floats standing where a number belongs is only recognisable once
         // something beside it *is* a number, and several passes below the first run are what make one: the
