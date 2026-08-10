@@ -342,6 +342,14 @@ public static class ForkPipeline
         // that then has the whole access in one operand to work with.
         ArrayElementAddress.Run(method);
 
+        // And the elements the fold above only just made readable. `SeedArrayElements` types the value an
+        // element read produces, and it wants `[array + index*width + 0x20]` - but where the compiler added
+        // the header **last** the operand is `[<address> + 0x20]` with no index until the line above puts it
+        // back, and by then the last resolution has run. `GenerateSmartBlock` reaches `selectedLayout` that
+        // way, and everything downstream of it - the length test, the indexed read - fell over.
+        LocalVariables.ResolveTypesAndFields(method);
+        ArrayElementAddress.Run(method);
+
         ArrayAccessRecovery.Run(method);
 
         // Last of all, and only what nothing else could name: what arithmetic produces is a number, whatever
