@@ -61,22 +61,42 @@ public static class ArrayElementAddress
         var header = method.AppContext.Binary.is32Bit ? 0x10 : 0x20;
 
         Dictionary<LocalVariable, Instruction> definitions = new();
+        Dictionary<LocalVariable, List<Instruction>> everyDefinition = new();
+        Dictionary<Instruction, int> inBlock = new();
         Dictionary<LocalVariable, Address> chains = new();
 
-        foreach (var instruction in graph.Instructions)
+        var index = 0;
+
+        foreach (var block in graph.Blocks)
         {
-            if (instruction.Operands.Count > 0 && instruction.Operands[0] is LocalVariable written)
-                definitions.TryAdd(written, instruction);
+            foreach (var instruction in block.Instructions)
+            {
+                inBlock[instruction] = index;
+
+                if (instruction.Operands.Count > 0 && instruction.Operands[0] is LocalVariable written)
+                {
+                    definitions.TryAdd(written, instruction);
+
+                    if (!everyDefinition.TryGetValue(written, out var places))
+                        everyDefinition[written] = places = [];
+
+                    places.Add(instruction);
+                }
+            }
+
+            index++;
         }
+
+        var walk = new Walkers(everyDefinition, inBlock);
 
         foreach (var instruction in graph.Instructions)
         {
             switch (instruction)
             {
                 case { OpCode: OpCode.Add, Operands: [LocalVariable made, { } left, { } right] }:
-                    if (Extend(left, right, chains, definitions, pointerSize) is { } forwards)
+                    if (Extend(left, right, chains, definitions, walk, pointerSize) is { } forwards)
                         chains[made] = forwards;
-                    else if (Extend(right, left, chains, definitions, pointerSize) is { } backwards)
+                    else if (Extend(right, left, chains, definitions, walk, pointerSize) is { } backwards)
                         chains[made] = backwards;
                     break;
 
@@ -94,6 +114,20 @@ public static class ArrayElementAddress
         {
             for (var i = 0; i < instruction.Operands.Count; i++)
             {
+                //An index that is really a byte offset. Where the compiler kept one instead of a subscript the
+                //addressing mode already names the array, so nothing here has a chain to fold - but the index
+                //still steps by the element's width and still is not a subscript. `ArrayAccessRecovery` takes
+                //it for one, which is why `_cornersCache[c].x` read elements 0, 12, 24 and 36 of a four-element
+                //array: it compiled, it scored whole, and it was wrong.
+                if (instruction.Operands[i] is MemoryOperand { Index: LocalVariable stepping, Scale: 0 or 1 } stepped
+                    && ElementOf(stepped.Base ?? "") is { } walked
+                    && ArrayTypeInference.Width(walked, pointerSize) is { } wide && wide > 1
+                    && walk.Subscript(stepping, wide) is { } counter)
+                {
+                    instruction.Operands[i] = new MemoryOperand(stepped.Base, counter, stepped.Addend, wide);
+                    continue;
+                }
+
                 if (instruction.Operands[i] is not MemoryOperand { Index: null, Base: LocalVariable through } read)
                     continue;
 
@@ -102,11 +136,18 @@ public static class ArrayElementAddress
 
                 var addend = address.Constant + read.Addend;
 
-                //With the subscript in a register there is nowhere left to put a distance into the element, so
-                //only an access to the element itself can be written; with a constant subscript the addend
-                //carries both and the generator takes it apart again.
-                if (address.Index != null ? addend != header : addend < header)
+                //With a constant subscript the addend carries both the element and the distance into it, and
+                //the generator takes them apart again. With the subscript in a register the scale has already
+                //carried the element, so what is left over is the distance - and it has to stay inside one
+                //element, and inside a struct, or it is not a member of anything.
+                var within = addend - header;
+
+                if (within < 0
+                    || (address.Index != null && within > 0
+                        && (!address.Element.IsValueType || within >= address.Scale)))
+                {
                     continue;
+                }
 
                 instruction.Operands[i] = new MemoryOperand(address.Array, address.Index, addend, address.Scale);
             }
@@ -118,7 +159,7 @@ public static class ArrayElementAddress
     /// still an address into the same array.
     /// </summary>
     private static Address? Extend(object onto, object added, Dictionary<LocalVariable, Address> chains,
-        Dictionary<LocalVariable, Instruction> definitions, int pointerSize)
+        Dictionary<LocalVariable, Instruction> definitions, Walkers walk, int pointerSize)
     {
         Address running;
 
@@ -134,14 +175,18 @@ public static class ArrayElementAddress
 
         //One subscript, and only at the element's own width. A second scaled term is not an access to this
         //array at all, and neither is a step of some other size that happens to rest on it.
-        if (ArrayTypeInference.Width(running.Element, pointerSize) is not { } stride
-            || running.Index != null || Scaled(added, definitions, stride) is not { } scaled
-            || stride != scaled.Width)
-        {
+        if (ArrayTypeInference.Width(running.Element, pointerSize) is not { } stride || running.Index != null)
             return null;
-        }
 
-        return running with { Index = scaled.Index, Scale = scaled.Width };
+        if (Scaled(added, definitions, stride) is { } scaled && stride == scaled.Width)
+            return running with { Index = scaled.Index, Scale = scaled.Width };
+
+        //Or the subscript is not there at all, because the compiler kept a byte offset instead and stepped it
+        //by the element's width once round the loop. The counter it moves with is the subscript.
+        if (walk.Subscript(added, stride) is { } counted)
+            return running with { Index = counted, Scale = stride };
+
+        return null;
     }
 
     /// <summary>What an array of these holds, where the operand is one.</summary>
@@ -164,6 +209,83 @@ public static class ArrayElementAddress
         ByRefTypeAnalysisContext { ElementType: { } referenced } => Holds(referenced),
         _ => null,
     };
+
+    /// <summary>
+    /// Pairs a byte offset stepped once round a loop with the counter that moves beside it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Where the subscript is not free at the load, the compiler keeps a byte offset instead and steps it by
+    /// the element's width. <c>Cell::GetCatBoundsInContainer</c> walks <c>_cornersCache</c> that way: X21 is
+    /// seeded nought and stepped by twelve, X24 is seeded nought and stepped by one, so
+    /// <c>X21 == 12 * X24</c> exactly and the reads at <c>+0x24</c> and <c>+0x28</c> are
+    /// <c>_cornersCache[c].y</c> and <c>.z</c>.
+    /// </para>
+    /// <para>
+    /// <b>Both same-block constraints are load-bearing.</b> The same method has a decoy - X23, the index over
+    /// <c>subIndices</c>, is also seeded nought and also stepped by one, but its seed is in the outer
+    /// preheader and its step in another block. A search that only looks for "some local seeded nought and
+    /// stepped by one" picks it, and the result compiles, scores whole, and reads the wrong element. Only an
+    /// execution oracle would ever catch that, so the constraints stay.
+    /// </para>
+    /// </remarks>
+    private sealed class Walkers(Dictionary<LocalVariable, List<Instruction>> definitions, Dictionary<Instruction, int> inBlock)
+    {
+        public object? Subscript(object operand, int stride)
+        {
+            if (operand is not LocalVariable offset || Steps(offset, stride) is not { } mine)
+                return null;
+
+            foreach (var (candidate, places) in definitions)
+            {
+                if (ReferenceEquals(candidate, offset) || Steps(candidate, 1) is not { } theirs)
+                    continue;
+
+                //The two have to move together - seeded in one block and stepped in another single block -
+                //and the offset has to be the counter scaled by the element.
+                if (inBlock[mine.Seed] == inBlock[theirs.Seed] && inBlock[mine.Step] == inBlock[theirs.Step]
+                    && mine.Start == theirs.Start * stride)
+                {
+                    return candidate;
+                }
+
+                _ = places;
+            }
+
+            return null;
+        }
+
+        /// <summary>The two writes of a local that is seeded once and then stepped by a constant, and the seed.</summary>
+        private (Instruction Seed, Instruction Step, long Start)? Steps(LocalVariable local, long by)
+        {
+            if (!definitions.TryGetValue(local, out var places) || places.Count != 2)
+                return null;
+
+            Instruction? seed = null, step = null;
+            long start = 0;
+
+            foreach (var place in places)
+            {
+                if (place is { OpCode: OpCode.Move, Operands: [_, { } from] } && Constant(from) is { } settled)
+                {
+                    seed = place;
+                    start = settled;
+                    continue;
+                }
+
+                //The step is written back through a copy, which is how single assignment form was taken apart.
+                if (place is { OpCode: OpCode.Move, Operands: [_, LocalVariable stepped] }
+                    && definitions.TryGetValue(stepped, out var made) && made.Count == 1
+                    && made[0] is { OpCode: OpCode.Add, Operands: [_, LocalVariable again, { } amount] }
+                    && ReferenceEquals(again, local) && Constant(amount) == by)
+                {
+                    step = made[0];
+                }
+            }
+
+            return seed != null && step != null ? (seed, step, start) : null;
+        }
+    }
 
     /// <summary>A subscript and the width it was scaled by, out of the shift or the multiply that scaled it.</summary>
     private static (object Index, int Width)? Scaled(object operand, Dictionary<LocalVariable, Instruction> definitions,

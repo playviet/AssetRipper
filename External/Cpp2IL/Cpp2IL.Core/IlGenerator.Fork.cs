@@ -71,6 +71,17 @@ public static partial class IlGenerator
         if (memory.Addend == elements)
             return (array, memory.Index, element, FrontMember(memory, element, context));
 
+        //A register subscript *and* a distance into the element. The scale already carried the element, so
+        //what is left over is the member - `_cornersCache[c].y` is `[array + c*12 + 0x24]`, which is what a
+        //loop that walks a `Vector3[]` by a stepped byte offset comes to once the offset is paired with its
+        //counter. The constant-subscript path below has a subscript to divide out first; here there is none.
+        if (memory.Index != null && memory.Scale > 0 && element.IsValueType
+            && memory.Addend > elements && memory.Addend - elements < memory.Scale
+            && FieldAt(element, (int)(memory.Addend - elements)) is { } member)
+        {
+            return (array, memory.Index, element, member);
+        }
+
         //A constant subscript is folded into the one offset the load already had, so there is no index
         //register left to read it from - the distance past the first element is the subscript.
         if (memory.Index != null || memory.Addend < elements
