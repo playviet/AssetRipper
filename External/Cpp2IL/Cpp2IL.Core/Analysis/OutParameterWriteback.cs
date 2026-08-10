@@ -59,8 +59,15 @@ public static class OutParameterWriteback
 
         foreach (var instruction in graph.Instructions)
         {
+            //Except the one operand `OutPointerSlotResult` has just written: a libm out-pointer's answer sent
+            //to the slot it names. See IsTheAnswer there for why the exception is that narrow.
+            var answered = OutPointerSlotResult.IsTheAnswer(instruction) ? 1 : -1;
+
             for (var i = 0; i < instruction.Operands.Count; i++)
             {
+                if (i == answered)
+                    continue;
+
                 if (instruction.Operands[i] is Register register
                     && register.Name.StartsWith(StackSlots.ValuePrefix)
                     && slots.Contains(Suffix(register.Name, StackSlots.ValuePrefix)))

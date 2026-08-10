@@ -48,6 +48,31 @@ public static class OutPointerSlotResult
     /// </remarks>
     private static readonly HashSet<string> ThroughAPointer = ["Sin", "Cos", "Truncate"];
 
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Instruction, object> Answered = new();
+
+    private static readonly object Yes = new();
+
+    /// <summary>
+    /// Whether this call's result operand is a slot this pass sent an answer to.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <see cref="OutParameterWriteback"/> runs immediately below and renames every <c>stack_N</c> operand to
+    /// <c>stackaddr_N</c> where that slot's address was taken - which is always true here, since handing the
+    /// address over is how the callee was given somewhere to write. That renames the answer straight back,
+    /// nothing then reads the slot, <c>RemoveUnused</c> drops it, and whatever wanted the value reads through
+    /// the address instead and gets unmanaged memory. <c>SubCellVisual::UpdateFaceTracking</c> lost its
+    /// <c>Mathf.Sin</c> exactly so.
+    /// </para>
+    /// <para>
+    /// Refusing the rename for *every* destination is what suggests itself and it is wrong: the writeback
+    /// pass renames destinations on purpose, and doing that cost five of the corpus's forty-three methods -
+    /// `Steps`, `SumSteps`, `Format`, `Words` and `Boxed`, every one of them an `out` parameter. So the
+    /// exception is exactly this pass's own rewrite and nothing else.
+    /// </para>
+    /// </remarks>
+    internal static bool IsTheAnswer(Instruction instruction) => Answered.TryGetValue(instruction, out _);
+
     public static void Run(MethodAnalysisContext method)
     {
         if (method.ControlFlowGraph is not { } graph)
@@ -76,7 +101,10 @@ public static class OutPointerSlotResult
                 //A pointer is used once. Taking it out keeps a later call with the same destination register
                 //from being sent to a slot whose address was handed over long ago.
                 if (instruction.Operands is [_, Register answer, ..] && pointing.Remove(answer.Name, out var slot))
+                {
                     instruction.Operands[1] = new Register(null, StackSlots.ValuePrefix + slot);
+                    Answered.AddOrUpdate(instruction, Yes);
+                }
 
                 continue;
             }

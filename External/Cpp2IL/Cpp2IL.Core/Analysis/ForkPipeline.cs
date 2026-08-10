@@ -395,6 +395,15 @@ public static class ForkPipeline
         // A field loaded well above the one thing that reads it has to travel in a local, and the local is
         // what gets a name. Runs after the lambda cache is folded, so what lies between the two is settled.
         FieldReadSinking.Run(method);
+
+        // A read at a distance from a slot's address is a read of the slot that distance away - both are
+        // frame offsets and adding them names it. Late, where every slot the frame uses has been named -
+        // but **before** the collection below, because joining the read to the slot is what gives the slot a
+        // reader. `sincosf` writes two of them; the sine's only consumer reads through the address, so with
+        // this after the collection the slot had been dropped by the time there was anything to point at,
+        // and `SubCellVisual::UpdateFaceTracking` lost it.
+        SlotAddressRead.Run(method);
+
         LocalVariables.RemoveUnused(method);
 
         // Again, now that a receiver read from a field is the field itself rather than a copy of it: what
@@ -441,9 +450,6 @@ public static class ForkPipeline
         // two instructions this does not match.
         RgctxGuardFolding.Run(method);
 
-        // A read at a distance from a slot's address is a read of the slot that distance away - both are
-        // frame offsets and adding them names it. Late, where every slot the frame uses has been named.
-        SlotAddressRead.Run(method);
 
         // A mask to thirty-two bits on something that has no more than thirty-two is the register's width and
         // not arithmetic, and it makes a `Color32` stop looking like one. Late, where the value has its type.
