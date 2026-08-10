@@ -27,6 +27,17 @@ namespace Cpp2IL.Core.Analysis;
 /// </remarks>
 public static class ArrayStoreCheckRemover
 {
+    private static readonly bool Trace = System.Environment.GetEnvironmentVariable("STORECHECK_TRACE") is not null;
+
+    /// <summary>How a local was defined, for the trace only.</summary>
+    private static string DefinedBy(LocalVariable local, Dictionary<LocalVariable, Instruction> definitions)
+        => definitions.GetValueOrDefault(local) is { } definition
+            ? definition.OpCode == OpCode.Move && definition.Operands.Count > 1
+                && definition.Operands[1] is MemoryOperand memory
+                    ? $"read+{memory.Addend:X}"
+                    : definition.OpCode.ToString()
+            : "undefined";
+
     /// <summary>Where a class records the class of the elements it holds, when it is an array.</summary>
     private const long ElementClassOffset = 0x40;
 
@@ -47,15 +58,33 @@ public static class ArrayStoreCheckRemover
         {
             if (block.BlockType != BlockType.TwoWay || block.Successors.Count != 2
                 || block.Instructions.Count == 0 || block.Instructions[^1] is not { OpCode: OpCode.ConditionalJump } branch)
+            {
+                if (Trace && block.Instructions.Any(i => i.OpCode == OpCode.Call && i.Operands.Count >= 4 && i.Operands[0].IsNumeric()))
+                    System.Console.Error.WriteLine($"STAGE block-not-twoway type={block.BlockType} succ={block.Successors.Count}");
+
                 continue;
+            }
 
             if (Check(block, definitions) is not { } check)
+            {
+                if (Trace)
+                    System.Console.Error.WriteLine("STAGE no-check-found");
+
                 continue;
+            }
 
             //The branch is taken when the answer is no, which is the path that throws. The value really is
             //going into the array, so what is left is the store, which is already there.
             if (branch.Operands is not [Block refused, _] || !ReferenceEquals(refused, block.Successors[0]) && !ReferenceEquals(refused, block.Successors[1]))
+            {
+                if (Trace)
+                    System.Console.Error.WriteLine("STAGE branch-target-not-a-successor");
+
                 continue;
+            }
+
+            if (Trace)
+                System.Console.Error.WriteLine("STAGE removed");
 
             var kept = ReferenceEquals(refused, block.Successors[0]) ? block.Successors[1] : block.Successors[0];
 
@@ -101,6 +130,11 @@ public static class ArrayStoreCheckRemover
             if (instruction.OpCode != OpCode.Call || instruction.Operands.Count < 4 || !instruction.Operands[0].IsNumeric())
                 continue;
 
+            if (Trace)
+                System.Console.Error.WriteLine($"STORECHECK @{instruction.Operands[0]} args={instruction.Operands.Count} "
+                    + $"answer={(instruction.Operands[1] is LocalVariable ? "local" : instruction.Operands[1].GetType().Name)} "
+                    + $"class={(instruction.Operands[3] is LocalVariable c ? DefinedBy(c, definitions) : instruction.Operands[3].GetType().Name)}");
+
             if (instruction.Operands[1] is not LocalVariable answer || instruction.Operands[3] is not LocalVariable elementClass)
                 continue;
 
@@ -112,7 +146,16 @@ public static class ArrayStoreCheckRemover
 
             if (definitions.GetValueOrDefault(arrayClass) is not
                 { OpCode: OpCode.Move, Operands: [_, MemoryOperand { Index: null, Scale: 0, Addend: 0, Base: LocalVariable }] })
+            {
+                if (Trace)
+                    System.Console.Error.WriteLine($"STAGE arrayClass-not-read-at-0 {DefinedBy(arrayClass, definitions)}");
+
                 continue;
+            }
+
+            if (Trace && !branching.Instructions.Any(other => other.OpCode is OpCode.CheckEqual or OpCode.CheckNotEqual
+                    && other.Operands.Count > 2 && ReferenceEquals(other.Operands[1], answer) && IsZero(other.Operands[2])))
+                System.Console.Error.WriteLine("STAGE answer-not-tested-against-zero");
 
             //The answer decides one thing only: whether to throw.
             if (!branching.Instructions.Any(other => other.OpCode is OpCode.CheckEqual or OpCode.CheckNotEqual
