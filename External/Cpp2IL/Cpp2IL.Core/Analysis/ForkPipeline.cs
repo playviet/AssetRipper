@@ -399,6 +399,12 @@ public static class ForkPipeline
         // array's length, a list's count - and what those reads were reached through is then read by nothing.
         // A class pointer and the static storage taken out of it have no way of being written down, so left
         // behind they are placeholders in the middle of statements that were otherwise recovered.
+        // And again on the context reads that only became dead just now: the refusal at the first run is a
+        // liveness that later folding and unreachable-block removal have since made stale, so a MethodInfo
+        // load whose only reader has gone stays as an unmanaged-memory statement beside a recovered call.
+        // Immediately above the collection, so what it leaves is taken with everything else.
+        DeadRgctxRead.Run(method);
+
         DeadCodeEliminator.Run(method);
 
         // And the values that keep each other alive. Counting uses proves a definition dead only while every

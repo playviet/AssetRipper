@@ -457,7 +457,8 @@ public static partial class IlGenerator
                     //valid and true - it is a place the callee can write, which is what the parameter is for.
                     if (parameterType is ByRefTypeAnalysisContext byReference)
                     {
-                        if (!TryLoadFieldAddress(argument, method, locals, module))
+                        if (!TryLoadByRefParameter(argument, method) //This method's own by-ref is the address.
+                            && !TryLoadFieldAddress(argument, method, locals, module))
                         instructions.Add(CilOpCodes.Ldloca, ScratchLocal(argument, byReference.ElementType.ToTypeSignature(module), method, locals));
                         continue;
                     }

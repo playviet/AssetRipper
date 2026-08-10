@@ -302,6 +302,29 @@ public static partial class IlGenerator
         return true;
     }
 
+    /// <summary>
+    /// Hands a callee this method's own by-reference parameter, which is already the address it wants.
+    /// Answers whether it did.
+    /// </summary>
+    /// <remarks>
+    /// The scratch local below is the right answer where nothing produces an address, but a by-ref parameter
+    /// *is* one - and passing a copy of what it refers to means the callee fills in a local nobody reads.
+    /// `TryGetLookAtWorldPosition` ends in `return TryGetPressedPointerWorldPosition(out pos)`, which handed
+    /// the inner call a fresh `Vector3` and returned `pos` untouched.
+    /// </remarks>
+    private static bool TryLoadByRefParameter(object? argument, MethodDefinition method)
+    {
+        if (argument is not LocalVariable { Type: ByRefTypeAnalysisContext } slot
+            || method.Parameters.FirstOrDefault(p => p.Name == slot.Name) is not { } parameter
+            || parameter.ParameterType is not ByReferenceTypeSignature)
+        {
+            return false;
+        }
+
+        method.CilMethodBody!.Instructions.Add(CilOpCodes.Ldarg, parameter);
+        return true;
+    }
+
     /// <summary>Whether the value being stored is a whole one of these rather than a member of one.</summary>
     private static bool StoringTheWholeOf(TypeAnalysisContext pointee)
         => CurrentInstruction is { Operands: [_, { } source, ..] }

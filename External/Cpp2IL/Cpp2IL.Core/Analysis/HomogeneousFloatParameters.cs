@@ -36,7 +36,11 @@ public static class HomogeneousFloatParameters
         or OpCode.Negate or OpCode.Not
         or OpCode.CheckEqual or OpCode.CheckNotEqual
         or OpCode.CheckGreater or OpCode.CheckLess
-        or OpCode.CheckGreaterOrEqual or OpCode.CheckLessOrEqual;
+        or OpCode.CheckGreaterOrEqual or OpCode.CheckLessOrEqual
+        //`Mathf.Max` is a compare and a select, and only the compare was rewritten - so the select kept the
+        //whole `Rect` where one of its floats belonged, and `FindOverlapCell` came out choosing between a
+        //struct and a number. Eight sites in this assembly, eighty-four in the game.
+        or OpCode.Select;
 
     public static void Run(MethodAnalysisContext method)
     {
