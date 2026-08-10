@@ -1604,7 +1604,17 @@ internal sealed class VectorLanes
     /// <summary>Splits a whole-register load into lanes, now that something has said how wide they are.</summary>
     private void Split(int register, int elementWidth, int lanes, Action<OpCode, object[]> emit)
     {
-        if (!pending.TryGetValue(register, out var load) || lanes * elementWidth > load.Bytes)
+        if (!pending.TryGetValue(register, out var load))
+            return;
+
+        //As many lanes as the load actually covers, rather than nothing at all when more are asked for. A
+        //`mov v4.16b, v0.16b` asks for four four-byte lanes while `v0` was filled by an eight-byte load, and
+        //refusing left `v0` with no width at all - so the copy failed, `v4` never had lanes, and the
+        //`fcmgt v3.4s, v3.4s, v4.4s` four instructions later had nothing to compare. What the load does not
+        //reach is answered by whatever else knows it, which is usually that the register is zero above.
+        lanes = System.Math.Min(lanes, load.Bytes / elementWidth);
+
+        if (lanes <= 0)
             return;
 
         pending.Remove(register);
