@@ -212,23 +212,9 @@ public static class InterfaceCallRecovery
     private static (TypeAnalysisContext Interface, int Slot, LocalVariable Receiver, LocalVariable RuntimeClass)? Dispatch(
         object target, Dictionary<LocalVariable, List<Instruction>> definitions, MethodAnalysisContext method)
     {
-        //The table entry is either still read into its own local or folded into the call by propagation.
-        var entry = target switch
+        foreach (var (found, fromClass) in Entries(target, definitions))
         {
-            MemoryOperand { Index: null, Scale: 0, Addend: 0, Base: LocalVariable held } => held,
-            LocalVariable local => LoadedFrom(local, definitions),
-            _ => null,
-        };
-
-        if (entry == null)
-            return null;
-
-        foreach (var address in Sources(entry, definitions))
-        {
-            //vtable + the offset the search found + this method's own slot, all as one addition.
-            if (address is not { OpCode: OpCode.Add, Operands: [_, LocalVariable found, { } added] }
-                || Constant(added) is not { } fromClass
-                || fromClass < VTableOffset64)
+            if (fromClass < VTableOffset64)
                 continue;
 
             //Worked out here rather than taken from the shared helper, which reports the first slot as no slot
@@ -259,6 +245,60 @@ public static class InterfaceCallRecovery
 
         return null;
     }
+
+    /// <summary>
+    /// Where the table entry was read from: what the distance to the slot was measured from, and that
+    /// distance.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// il2cpp writes <c>ADD X0, X8, #0x138</c> and then <c>LDP X8, X2, [X0]</c>, so the distance to the slot
+    /// begins as an addition of its own - and this pass only ever read that shape. Whether it still is one by
+    /// the time the pass runs says nothing about the call.
+    /// </para>
+    /// <para>
+    /// The address is where the walk and the runtime helper it falls back on meet. While it had a definition
+    /// on both edges nothing would forward it, so the addition stood. That helper is recognised as a throw,
+    /// no copy is written on its edge any more, the address became singly defined, and
+    /// <c>MetadataResolver.FoldAddressArithmetic</c> - which runs again out of single assignment form, before
+    /// this pass - folded it straight into the addressing mode of the read. Seven walks in the ninety-six
+    /// files stopped being recovered that way, and about eighty-three across the game. Both shapes are the
+    /// same address; both are read here.
+    /// </para>
+    /// </remarks>
+    private static IEnumerable<(LocalVariable Found, long FromClass)> Entries(
+        object target, Dictionary<LocalVariable, List<Instruction>> definitions)
+    {
+        //The table entry is either folded straight into the call or still read into a local of its own.
+        MemoryOperand? read = target switch
+        {
+            MemoryOperand { Index: null, Scale: 0, Base: LocalVariable } memory => memory,
+            LocalVariable local => ReadThrough(local, definitions),
+            _ => null,
+        };
+
+        if (read is not { Base: LocalVariable through } entry)
+            yield break;
+
+        //Left in the addressing mode: what it is measured from is the addition the walk ends with.
+        if (entry.Addend != 0)
+        {
+            yield return (through, entry.Addend);
+            yield break;
+        }
+
+        //Or standing on its own, which is what the compiler wrote.
+        foreach (var address in Sources(through, definitions))
+            if (address is { OpCode: OpCode.Add, Operands: [_, LocalVariable found, { } added] }
+                && Constant(added) is { } fromClass)
+                yield return (found, fromClass);
+    }
+
+    /// <summary>The memory a local was read from, where it was read exactly once and through an object.</summary>
+    private static MemoryOperand? ReadThrough(LocalVariable local, Dictionary<LocalVariable, List<Instruction>> definitions)
+        => Single(local, definitions) is { OpCode: OpCode.Move, Operands: [_, MemoryOperand { Index: null, Scale: 0, Base: LocalVariable } memory] }
+            ? memory
+            : null;
 
     /// <summary>
     /// The entry the walk stopped on, and how much of the slot the scaling in front of it already carries.

@@ -5065,9 +5065,9 @@
 11
 ],
 "Assembly-CSharp::CFramework.RemoteConfigManager::UpdateFromRemote": [
-6,
+3,
 14,
-6
+9
 ],
 "Assembly-CSharp::CFramework.RemoteConfigManager::FetchRemote": [
 1,
@@ -5075,9 +5075,9 @@
 1
 ],
 "Assembly-CSharp::CFramework.RemoteConfigManager::ApplyFromFirebase": [
-4,
+7,
 22,
-4
+7
 ],
 "Assembly-CSharp::CFramework.RemoteConfigManager::GetRaw": [
 2,
@@ -7465,9 +7465,9 @@
 2
 ],
 "Assembly-CSharp::CFramework.UserSegmentationManager::ResolveSegmentsByCampaign": [
-8,
+10,
 12,
-8
+10
 ],
 "Assembly-CSharp::CFramework.Benchmark::Start": [
 2,
