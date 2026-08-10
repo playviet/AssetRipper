@@ -302,6 +302,16 @@ public static class ForkPipeline
 
         LocalVariables.ResolveTypesAndFields(method);
 
+        // And again, on the types that only just arrived. The pass above has to run before the resolution -
+        // the point of it is to let the reads *through* the local resolve - but what assigns the local is
+        // often a call, and a call's answer is typed by the resolution itself. `ApplyFaceParts` is the case:
+        // `visualOffset` is written from `GetCellVisualOffset`'s answer, which said nothing yet, so the local
+        // kept `UnityEngine.Object` - the parameter type of the null check on it - and the five reads through
+        // it, one per face part, were all unmanaged memory. Resolving again is only paid for where the second
+        // look actually learned something.
+        if (MostDerivedLocalType.Run(method))
+            LocalVariables.ResolveTypesAndFields(method);
+
         // And the delegate invocations the pass that knows them could not see: by the time it ran, the
         // resolver had named the load of `invoke_impl` as the field it is and folding had put it straight
         // into the call, leaving nothing whose definition could be followed back to the delegate. Here the

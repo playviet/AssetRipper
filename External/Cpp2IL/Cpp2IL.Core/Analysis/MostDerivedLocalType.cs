@@ -61,6 +61,15 @@ public static class MostDerivedLocalType
 
             foreach (var place in places)
             {
+                //A zero says nothing about what a local holds - it is `null`, which every reference type has.
+                //`SubCellVisual::ApplyFaceParts` is the case: `visualOffset` is written once from a
+                //`CellVisualOffset` and twice from nought, one per arm of the check that it is not null, and
+                //demanding that every write agree threw away the only one that said anything. The type it was
+                //left with is the parameter type of the null check itself - `UnityEngine.Object` - and the
+                //five reads through it, one per face part, were all unmanaged memory.
+                if (place is { OpCode: OpCode.Move, Operands.Count: 2 } && IsNought(place.Operands[1]))
+                    continue;
+
                 //One place that is not a plain copy of something typed, and there is no agreement to have.
                 if (place is not { OpCode: OpCode.Move, Operands.Count: 2 }
                     || Assigned(place.Operands[1], header) is not { } given
@@ -76,7 +85,15 @@ public static class MostDerivedLocalType
             if (agreed == null || !DerivesFrom(agreed, carried))
             {
                 if (System.Environment.GetEnvironmentVariable("DERIVED_TRACE") == "1")
+                {
                     System.Console.Error.WriteLine($"DERIVED refused {local} <- {agreed?.FullName ?? "nothing"} ({places.Count} places)");
+
+                    foreach (var place in places)
+                        System.Console.Error.WriteLine($"    {place.OpCode} n={place.Operands.Count} [1]={(place.Operands.Count > 1 ? place.Operands[1] : null)}"
+                            + $" ({(place.Operands.Count > 1 ? place.Operands[1]?.GetType().Name : "-")})"
+                            + $" nought={(place.Operands.Count > 1 && IsNought(place.Operands[1]))}"
+                            + $" says={(place.Operands.Count > 1 ? Assigned(place.Operands[1], header)?.FullName : null) ?? "nothing"}");
+                }
 
                 continue;
             }
@@ -86,6 +103,25 @@ public static class MostDerivedLocalType
         }
 
         return changed;
+    }
+
+    /// <summary>Whether an operand is the constant nought, at whatever width the lifter wrote it.</summary>
+    private static bool IsNought(object? operand)
+    {
+        if (operand is null)
+            return true;
+
+        if (operand is string or LocalVariable or Register or MemoryOperand or FieldReference)
+            return false;
+
+        try
+        {
+            return System.Convert.ToInt64(operand) == 0;
+        }
+        catch (System.Exception)
+        {
+            return false;
+        }
     }
 
     /// <summary>What the one thing assigning a local says it is.</summary>
