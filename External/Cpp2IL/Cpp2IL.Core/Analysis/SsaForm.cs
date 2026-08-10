@@ -266,6 +266,10 @@ public partial class SsaForm
             for (var predIndex = 0; predIndex < block.Predecessors.Count; predIndex++)
             {
                 var predecessor = block.Predecessors[predIndex];
+
+                if (NeverReachesItsSuccessors(predecessor)) //A block that throws takes no edge out of itself.
+                    continue;
+
                 var moves = new List<Instruction>();
 
                 foreach (var phi in phiInstructions)

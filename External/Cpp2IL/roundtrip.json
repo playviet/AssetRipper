@@ -3730,7 +3730,7 @@
 2
 ],
 "Assembly-CSharp::CFramework.BaseAbilityBuyPopup::Show": [
-4,
+16,
 19,
 16
 ],
@@ -4595,9 +4595,9 @@
 3
 ],
 "Assembly-CSharp::CFramework.ANRWatchDogBridge::SetAppReady": [
+5,
 6,
-6,
-6
+5
 ],
 "Assembly-CSharp::CFramework.ANRWatchDogBridge::SetLoadingScene": [
 4,
@@ -5065,9 +5065,9 @@
 11
 ],
 "Assembly-CSharp::CFramework.RemoteConfigManager::UpdateFromRemote": [
-3,
+6,
 14,
-9
+6
 ],
 "Assembly-CSharp::CFramework.RemoteConfigManager::FetchRemote": [
 1,
@@ -5075,9 +5075,9 @@
 1
 ],
 "Assembly-CSharp::CFramework.RemoteConfigManager::ApplyFromFirebase": [
-7,
+4,
 22,
-7
+4
 ],
 "Assembly-CSharp::CFramework.RemoteConfigManager::GetRaw": [
 2,
@@ -7465,9 +7465,9 @@
 2
 ],
 "Assembly-CSharp::CFramework.UserSegmentationManager::ResolveSegmentsByCampaign": [
-10,
+8,
 12,
-10
+8
 ],
 "Assembly-CSharp::CFramework.Benchmark::Start": [
 2,
@@ -7820,7 +7820,7 @@
 2
 ],
 "Assembly-CSharp::CFramework.IEnumerableExtension::TakeLast": [
-3,
+4,
 7,
 7
 ],
@@ -9145,7 +9145,7 @@
 4
 ],
 "Assembly-CSharp::CFramework.Utility::GetGoogleSheetCSVData": [
-8,
+6,
 15,
 9
 ],
@@ -10460,7 +10460,7 @@
 12
 ],
 "Assembly-CSharp::CF.BoardController::ComputeMergeCenter": [
-4,
+1,
 8,
 4
 ],
@@ -10477,7 +10477,7 @@
 "Assembly-CSharp::CF.BoardController::ComputeHighlights": [
 19,
 23,
-20
+19
 ],
 "Assembly-CSharp::CF.BoardController::ClearAllHighlights": [
 3,
@@ -10885,7 +10885,7 @@
 1
 ],
 "Assembly-CSharp::CF.CellDraggable::BeginDragInternal": [
-22,
+23,
 37,
 23
 ],
@@ -10935,7 +10935,7 @@
 7
 ],
 "Assembly-CSharp::CF.CellDraggable::RaycastBoardCell": [
-18,
+19,
 30,
 19
 ],

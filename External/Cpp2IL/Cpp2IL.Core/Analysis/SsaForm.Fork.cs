@@ -42,6 +42,32 @@ public partial class SsaForm
         return merged;
     }
 
+    /// <summary>Whether control leaving this block by an edge is impossible, because the block throws.</summary>
+    /// <remarks>
+    /// <para>
+    /// The call that raises a null-reference exception becomes an <see cref="OpCode.Throw"/> only after the
+    /// graph was built, and nothing then takes the block's fall-through edge away. Taking single assignment
+    /// form apart therefore writes a phi copy on an edge control can never follow -
+    /// <c>IL_052c: num9 = num; throw new NullReferenceException();</c> - and that copy is the one thing
+    /// keeping a whole chain of dead values alive: in <c>BoardController::InitBoard</c> it holds up the
+    /// address of a field the write barrier wanted, and all fourteen of that method's commented statements
+    /// are the cascade. Around 300 of these edges exist in the game.
+    /// </para>
+    /// <para>
+    /// The whole block is searched rather than just its terminator: block merging can leave the throw in the
+    /// middle, and then the copies land after it. The edge itself is left alone - phi operands are aligned
+    /// positionally to <c>Block.Predecessors</c>, so removing a predecessor here would misalign every phi.
+    /// </para>
+    /// </remarks>
+    private static bool NeverReachesItsSuccessors(Block block)
+    {
+        foreach (var instruction in block.Instructions)
+            if (instruction.OpCode == OpCode.Throw)
+                return true;
+
+        return false;
+    }
+
     /// <summary>
     /// Whether two of a phi's inputs cannot be holding the same value, so the phi says nothing about what
     /// its result is.
