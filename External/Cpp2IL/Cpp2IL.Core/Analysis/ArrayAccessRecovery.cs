@@ -42,6 +42,26 @@ public static class ArrayAccessRecovery
 
                 for (var operand = 0; operand < instruction.Operands.Count; operand++)
                 {
+                    //A field reference the resolution made while the local carried a different type. Nothing
+                    //revises one once it is made, so `PowerUp_Shuffle`'s bounds check on `int[] indices` reads
+                    //`indices.grid` - `CellData.grid` sits at 0x18, exactly where an array keeps its length,
+                    //and X29 carried a `CellData` before it carried the array. The local says what it holds
+                    //now, and a field its type does not declare is stale.
+                    if (instruction.Operands[operand] is FieldReference { Local.Type: { } nowHolds } stale
+                        && operand != 0 && HasLength(nowHolds)
+                        && !Declares(nowHolds, stale.Field)
+                        && stale.Field.BackingData?.FieldOffset == lengthOffset)
+                    {
+                        var recovered = new LocalVariable($"length{method.Locals.Count}", new Register(null, "LENGTH"), integer);
+                        method.Locals.Add(recovered);
+
+                        block.Instructions.Insert(i, new Instruction(instruction.Index, OpCode.Call, length, recovered, stale.Local));
+                        instruction.Operands[operand] = recovered;
+                        i++;
+                        changed = true;
+                        continue;
+                    }
+
                     if (instruction.Operands[operand] is not MemoryOperand { Index: null, Scale: 0 } memory
                         || memory.Addend != lengthOffset)
                         continue;
@@ -404,6 +424,19 @@ public static class ArrayAccessRecovery
         => type is SzArrayTypeAnalysisContext or ArrayTypeAnalysisContext;
 
     /// <summary>Whether a value of this type can be asked for its length.</summary>
+    /// <summary>Whether the type, or anything it is built on, actually declares this field.</summary>
+    private static bool Declares(TypeAnalysisContext type, FieldAnalysisContext field)
+    {
+        for (var walk = type; walk != null; walk = walk is GenericInstanceTypeAnalysisContext generic ? generic.GenericType.BaseType : walk.BaseType)
+        {
+            foreach (var declared in walk.Fields)
+                if (declared.Name == field.Name)
+                    return true;
+        }
+
+        return false;
+    }
+
     private static bool HasLength(TypeAnalysisContext type)
         => IsArray(type) || type.FullName == "System.Array";
 
