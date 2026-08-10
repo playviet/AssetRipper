@@ -138,7 +138,13 @@ public static class StructInArithmetic
     /// </remarks>
     private static NestedFieldReference? FrontOf(LocalVariable local, MethodAnalysisContext method)
     {
-        if (local.Type is not { IsValueType: true } held || IsNumber(held))
+        //Through a by-reference, which is what a struct an `out` parameter was written into looks like where
+        //the caller reads it back: `TryGetBoardWorldRect(out var rect)` leaves the slot's *address* typed
+        //`UnityEngine.Rect&`, and `RaycastBoardCell` then adds it to a float. A reference to a struct standing
+        //where a number belongs is the member at the front of that struct, exactly as the struct itself is.
+        var pointee = local.Type is ByRefTypeAnalysisContext { ElementType: { } referred } ? referred : local.Type;
+
+        if (pointee is not { IsValueType: true } held || IsNumber(held))
             return null;
 
         //Never a parameter the analysis has since retyped. `IlGenerator.LoadLocal` matches a local to a
