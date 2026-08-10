@@ -147,15 +147,16 @@ internal sealed class VectorLanes
         if (UndecodedScalar.TryConvert(context, instruction, emit, address))
             return true;
 
-        if (Store(instruction, emit))
-        {
-            Stage(address, Word(context, address), "store");
-            return true;
-        }
-
         reading = context;
 
         var word = Word(context, address);
+
+        if (word is { } stored && Store(stored, instruction, emit))
+        {
+            Stage(address, word, "store");
+            return true;
+        }
+
 
         if (word is { } decodable && Decode(context, decodable, emit))
         {
@@ -1089,7 +1090,7 @@ internal sealed class VectorLanes
     /// the field recovery already reads a <c>stp s0, s1</c> as. Without this the lanes above the first are
     /// computed and then dropped, and the assignment keeps only one of its components.
     /// </remarks>
-    private bool Store(Arm64Instruction instruction, Action<OpCode, object[]> emit)
+    private bool Store(uint word, Arm64Instruction instruction, Action<OpCode, object[]> emit)
     {
         if (instruction.Mnemonic is not (Arm64Mnemonic.STR or Arm64Mnemonic.STUR)
             || instruction.Op1Kind != Arm64OperandKind.Memory
@@ -1098,10 +1099,28 @@ internal sealed class VectorLanes
             || instruction.MemIsPreIndexed)
             return false;
 
-        if (VectorNumber(instruction.Op0Reg) is not { } stored || !width.TryGetValue(stored, out var elementWidth))
+        if (VectorNumber(instruction.Op0Reg) is not { } stored)
+            return false;
+
+        //A register filled by a whole-register load has only a *pending* entry - nothing has yet said how
+        //wide its lanes are - so the width lookup below failed and the store fell through to `Invalidate`,
+        //which forgets the register. The reload then named frame slots nothing had ever written, and
+        //`RaycastBoardCell` lost `_overlayCorners[0].x` and `.y` and both blocks that read them. A spill is
+        //not a reason to give up on the register: split it at four-byte lanes, which is what a spilled
+        //`Vector2` is, and the store writes the two the reload will look for.
+        if (!width.ContainsKey(stored) && pending.TryGetValue(stored, out var held) && held.Bytes == 8)
+            Split(stored, 4, 2, emit);
+
+        if (!width.TryGetValue(stored, out var elementWidth))
             return false;
 
         if (GeneralNumber(instruction.MemBase) is not { } baseRegister)
+            return false;
+
+        //Disarm reports a 128-bit memory immediate unscaled, so a `q` spill and the load that reads it back
+        //disagree by a factor of sixteen unless the offset is decoded here the same way `Load` decodes it.
+        //390 of the 429 `STR V` in this assembly have a nonzero offset.
+        if (OffsetOf(word) is not { } offset)
             return false;
 
         var lanes = BytesOf(instruction.Op0Reg) / elementWidth;
@@ -1116,12 +1135,42 @@ internal sealed class VectorLanes
             //left the slot the call reads with no writes reaching it at all.
             emit(OpCode.Move,
             [
-                Place(baseRegister, instruction.MemOffset + (long)lane * elementWidth),
+                Place(baseRegister, offset + (long)lane * elementWidth),
                 Lane(stored, lane * elementWidth),
             ]);
         }
 
         return true;
+    }
+
+    /// <summary>
+    /// The byte offset a vector load or store addresses, from the word rather than from the disassembler.
+    /// </summary>
+    /// <remarks>
+    /// Scaled: <c>size 111 1 01 opc imm12 Rn Rt</c>, the offset in units of the width moved. Unscaled:
+    /// <c>size 111 1 00 opc 0 imm9 00 Rn Rt</c>, in bytes and signed. Disarm does not scale the 128-bit form,
+    /// which is why this is read here for both directions rather than taken from <c>MemOffset</c>.
+    /// </remarks>
+    private static long? OffsetOf(uint word)
+    {
+        var bytes = ((int)(word >> 30 & 3), (int)(word >> 22 & 3)) switch
+        {
+            (0b00, 0b10) or (0b00, 0b11) => 16,
+            (0b11, 0b00) or (0b11, 0b01) => 8,
+            (0b10, 0b00) or (0b10, 0b01) => 4,
+            _ => 0,
+        };
+
+        if (bytes == 0)
+            return null;
+
+        return (word >> 24 & 3) switch
+        {
+            0b01 => (long)(word >> 10 & 0xFFF) * bytes,
+            0b00 when (word >> 21 & 1) == 0 && (word >> 10 & 3) == 0
+                => (int)(word >> 12 & 0x1FF) is var unscaled && unscaled >= 0x100 ? unscaled - 0x200 : (int)(word >> 12 & 0x1FF),
+            _ => null,
+        };
     }
 
     /// <summary>
