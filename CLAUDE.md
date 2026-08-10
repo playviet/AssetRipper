@@ -26,6 +26,33 @@ anything the code, git history or this file already says.
 memory is worse than a missing one, because it is trusted. When a memory names a file, function or flag,
 check it still exists before acting on it.
 
+## Search codebase memory before reading the code
+
+The repository is indexed into a knowledge graph reachable through the `codebase-memory` tools. It is the
+second thing to consult, after the notes above and before any grep:
+
+- **`search_code`** finds a pattern and returns the *containing functions*, deduplicated and ranked by
+  structural importance, rather than a list of lines. The project is
+  **`Users-playviet-Documents-_BZ-AssetRipper`** — one hyphen before `_BZ`, and the tools will not find it
+  under any other spelling.
+- **`search_graph`, `trace_path` and `get_architecture`** answer the questions grep cannot: what calls this,
+  what would break, which pass runs before which.
+
+Why it goes first: this fork is a hundred small passes whose *order* is the whole design, and the question is
+almost always "who else touches this shape" rather than "where is this string". A whole session went on
+`SubCellVisual::UpdateFaceTracking` losing its `Mathf.Sin`, and the answer was that two passes in the same
+hook wrote and then un-wrote one register name. `search_code("StackSlots.ValuePrefix")` names all five passes
+that touch it in one call, `OutPointerSlotResult.Run` and `OutParameterWriteback.Run` among them.
+
+**Reindex when a task is finished** — after the commit, not before, so the graph matches what is staged:
+
+```
+index_repository(repo_path="/Users/playviet/Documents/_BZ/AssetRipper", mode="fast")
+```
+
+`fast` is the mode for this repo; `full` adds similarity edges and takes long enough to be its own task. An
+index that lags the tree is the same hazard as a stale memory: it is trusted, and it is wrong.
+
 ## The loop
 
 Never report a recovery change without measuring it. The loop, in order:
