@@ -141,6 +141,11 @@ public static class ForkPipeline
         // is what puts the real instantiation on the values this reads it from.
         SharedStandInRetyping.Run(method);
 
+        // And the ones no copy and no declaration reaches: a struct the compiler kept in the frame, read back
+        // through a slot address, so nothing joins it to the call that produced it. Directly after the pass
+        // above, so it only sees what that could not settle.
+        LoneInstantiation.Run(method);
+
         // Every constructor calls its base one and the language writes that call back, so keeping it only
         // produces a statement C# has no way to say. Runs here, where the receiver is `this` again rather
         // than the copy of it the compiled code was passing.
