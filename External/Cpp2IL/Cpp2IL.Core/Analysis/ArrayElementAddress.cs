@@ -37,6 +37,16 @@ namespace Cpp2IL.Core.Analysis;
 /// array: a pointer stepped by twelve through a <c>Vector3[]</c> is this shape, but a pointer stepped by
 /// eight is a walk over something else that was reached from it.
 /// </para>
+/// <para>
+/// <b>A known risk, measured and left standing.</b> A chain is carried into a local without asking how many
+/// places write it, so a pointer stepped round a loop - written once with the first element's address and
+/// once with itself plus the stride - would have its *first* address taken for the whole loop, and every
+/// iteration would read the same element. Requiring a single definition, and then requiring every definition
+/// to agree, were both built and both measured **worse**: `full` 597 -> 596 and `commented` 68 -> 75, while
+/// `BoardLogic::CheckAndMergeAll`, the method the guard was for, did not move either way. So the hazard is
+/// real in principle and has not been shown to happen here. What would settle it is a corpus shape that walks
+/// an array by pointer and checks the values, which is what the execution oracle is for.
+/// </para>
 /// </remarks>
 public static class ArrayElementAddress
 {
