@@ -46,22 +46,43 @@ public static class PackedPairField
                 shifted[raised] = value;
             }
 
-        foreach (var instruction in graph.Instructions)
+        foreach (var block in graph.Blocks)
+        for (var at = 0; at < block.Instructions.Count; at++)
         {
+            var instruction = block.Instructions[at];
+
             //The construction side: `cellIndex | (subIndex << 32)` put into a place declared as the struct.
             //`(SubCellRef)(num21 | (num20 << 32))` is not something C# will accept, and the two halves are
-            //exactly the constructor's two arguments.
+            //exactly the two members.
             if (instruction is { OpCode: OpCode.Or, Operands: [LocalVariable { Type: { } into } built, { } first, { } second] }
-                && Pair(into, halves) is not null)
+                && Pair(into, halves) is { } members)
             {
                 var low = shifted.ContainsKey(first as LocalVariable ?? Nothing) ? second : first;
                 var high = ReferenceEquals(low, first) ? second : first;
 
-                if (high is LocalVariable carried && shifted.TryGetValue(carried, out var top)
-                    && TwoWordConstructor(into) is { } constructor)
+                if (high is LocalVariable carried && shifted.TryGetValue(carried, out var top))
                 {
-                    instruction.OpCode = OpCode.Call;
-                    instruction.Operands = [constructor, built, low, top];
+                    if (TwoWordConstructor(into) is { } constructor)
+                    {
+                        instruction.OpCode = OpCode.Call;
+                        instruction.Operands = [constructor, built, low, top];
+                        continue;
+                    }
+
+                    //A struct written with an object initialiser has no constructor to call - and
+                    //`public struct SubCellRef { public int cellIndex; public int subIndex; }` has none at
+                    //all, which is why asking for one refused every site. The initialiser is what the source
+                    //said, so it is what is written back: the default of the struct, then each member.
+                    instruction.OpCode = OpCode.Move;
+                    instruction.Operands = [built, 0];
+
+                    block.Instructions.Insert(at + 1, new Instruction(instruction.Index, OpCode.Move,
+                        new FieldReference(members.Low, built, 0), low));
+
+                    block.Instructions.Insert(at + 2, new Instruction(instruction.Index, OpCode.Move,
+                        new FieldReference(members.High, built, 4), top));
+
+                    at += 2;
                     continue;
                 }
             }

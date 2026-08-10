@@ -271,7 +271,7 @@ public static partial class IlGenerator
             case OpCode.Move:
                 if (instruction.Operands[0] is FieldReference field) // stfld takes instance before value so LoadOperand StoreToOperand doesn't work
                 {
-                    if (!field.Field.IsStatic)
+                    if (!field.Field.IsStatic && !ValueTypeFieldOwner(field, method, locals)) //A struct's field is stored through its address.
                         LoadLocal(field.Local, method, locals);
 
                     LoadOperand(instruction.Operands[1], method, locals, writeLine, stringCtor, field.Field.FieldType);
@@ -952,7 +952,8 @@ public static partial class IlGenerator
                 method.CilMethodBody!.LocalVariables.Add(scratch);
 
                 instructions.Add(CilOpCodes.Stloc, scratch);
-                LoadLocal(field.Local, method, locals);
+                if (!ValueTypeFieldOwner(field, method, locals)) //A struct's field is stored through its address.
+                    LoadLocal(field.Local, method, locals);
                 instructions.Add(CilOpCodes.Ldloc, scratch);
                 instructions.Add(CilOpCodes.Stfld, fieldDescriptor);
                 break;

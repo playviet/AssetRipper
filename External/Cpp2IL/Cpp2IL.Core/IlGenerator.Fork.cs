@@ -1894,4 +1894,47 @@ public static partial class IlGenerator
         branch.OpCode = branch.OpCode.StackBehaviourPop == CilStackBehaviour.PopI ? CilOpCodes.Pop : CilOpCodes.Nop;
         branch.Operand = null;
     }
+
+    /// <summary>
+    /// Loads what a <see cref="CilOpCodes.Stfld"/> needs underneath the value, where the field belongs to a
+    /// struct held in a local or passed by value. Answers whether it did.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <c>stfld</c> takes an object reference or a managed pointer. A class local is a reference already, so
+    /// loading it is right - but a struct local is the value itself, and storing into a copy on the
+    /// evaluation stack says nothing. The IL does not verify, and ILSpy renders the refusal as the pointer
+    /// write it literally is: <c>((SubCellRef*)(nint)subCellRef)-&gt;cellIndex = num21</c>, commented out.
+    /// </para>
+    /// <para>
+    /// What the source said was <c>new SubCellRef { cellIndex = ci, subIndex = sub }</c>, and an object
+    /// initialiser on a struct is exactly a default followed by two field stores - so the address of the
+    /// local is what those stores want. <c>this</c> inside a struct is already a managed pointer and is left
+    /// to upstream's <c>ldarg.0</c>.
+    /// </para>
+    /// </remarks>
+    private static bool ValueTypeFieldOwner(FieldReference field, MethodDefinition method,
+        Dictionary<LocalVariable, CilLocalVariable> locals)
+    {
+        if (field.Local is not { IsThis: false } owner)
+            return false;
+
+        var parameter = method.Parameters.FirstOrDefault(p => p.Name == owner.Name);
+
+        if (parameter != null)
+        {
+            if (parameter.ParameterType is not { IsValueType: true } or ByReferenceTypeSignature)
+                return false;
+
+            method.CilMethodBody!.Instructions.Add(CilOpCodes.Ldarga, parameter);
+            return true;
+        }
+
+        if (!locals.TryGetValue(owner, out var held) || held.VariableType is not { IsValueType: true }
+            || held.VariableType is ByReferenceTypeSignature or PointerTypeSignature)
+            return false;
+
+        method.CilMethodBody!.Instructions.Add(CilOpCodes.Ldloca, held);
+        return true;
+    }
 }

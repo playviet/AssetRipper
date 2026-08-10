@@ -319,6 +319,13 @@ public static class ForkPipeline
         // `Unmanaged memory load: [v397 @ X8_v20 (System.Int32[])+18]`, reading a header field of a type the
         // recovery had by then worked out. Before the arithmetic below, which would otherwise call the index
         // a number of its own and leave nothing for the subscript to be built from.
+        // Directly above it, and for the same reason one level down: where the index was not free at the load
+        // the compiler works the element's address out a step at a time, and the addition chain that results
+        // is an array access to nobody - not to the recovery below, and not to the generator, which reads an
+        // access out of the addressing mode alone. Here, where the array is typed and before the recovery
+        // that then has the whole access in one operand to work with.
+        ArrayElementAddress.Run(method);
+
         ArrayAccessRecovery.Run(method);
 
         // Last of all, and only what nothing else could name: what arithmetic produces is a number, whatever
