@@ -352,6 +352,11 @@ public static class ForkPipeline
         // one every other pass has already declined.
         ArithmeticProducesANumber.Run(method);
 
+        // And again, on the lists that only just became lists. A local narrowed from `IList<T>` to `List<T>`
+        // by the second look above has its `_size` named by the resolution beside it - and `_size` is private
+        // with no property of that name, so without this the read trades `unmanaged` for `commented`.
+        ListIdiomRecovery.Run(method);
+
         // And again the fields that resolved only just now. A field is named by its property only where it
         // is known to be a field at all, and the pass that does so ran long before the line above - so a
         // field reached through something a later pass recovered was still being written by its private

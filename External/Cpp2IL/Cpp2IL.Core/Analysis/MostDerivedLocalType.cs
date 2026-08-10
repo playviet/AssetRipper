@@ -209,7 +209,25 @@ public static class MostDerivedLocalType
             if (ReferenceEquals(Definition(walk), Definition(held)))
                 return true;
 
-        return false;
+        //An interface is never on that chain: `List<T>`'s base is `System.Object`, so a local declared
+        //`IList<ECellColor>` and assigned once from a `List<ECellColor>` field kept the interface and its
+        //`.Count` came out as a read of unmanaged memory - taking the `if` around it with it.
+        //`GenerateSmartBlock`'s three junk pools are that, and the honest case beside them - a `pool` written
+        //from six disagreeing places - is refused by the agreement test long before this is asked.
+        return held.IsInterface && Implements(derived, Definition(held), 0);
+    }
+
+    /// <summary>Whether the type, or anything it is built on, says it is one of these.</summary>
+    private static bool Implements(TypeAnalysisContext type, TypeAnalysisContext wanted, int depth)
+    {
+        if (depth > 8)
+            return false;
+
+        foreach (var declared in Definition(type).InterfaceContexts)
+            if (ReferenceEquals(Definition(declared), wanted) || Implements(declared, wanted, depth + 1))
+                return true;
+
+        return Up(type) is { } above && Implements(above, wanted, depth + 1);
     }
 
     private static TypeAnalysisContext? Up(TypeAnalysisContext type)
