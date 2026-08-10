@@ -150,6 +150,32 @@ public static partial class LocalVariables
     /// was added to - which is what indexing an array looks like - calls the array an <c>int</c> and loses
     /// every access through it.
     /// </summary>
+    /// <summary>
+    /// The values the last sweep found the method dereferencing, kept so that the two conditions this adds to
+    /// the phi propagation need no argument the upstream method does not already take.
+    /// </summary>
+    [System.ThreadStatic] private static HashSet<LocalVariable>? dereferenced;
+
+    /// <summary>Whether carrying this type across a phi edge would call a pointer a number.</summary>
+    /// <remarks>
+    /// A phi merges whatever each path left in the register, and a register is taken back the moment the value
+    /// in it is finished with - so one end typed by one role says nothing about the other end holding another.
+    /// Where one end is a <b>primitive</b> and the other is something the method <b>dereferences</b>, they
+    /// cannot be the same value: nothing reads a field off an <c>int</c>. Saying they are costs every access
+    /// through it, and <c>SetTypeIfUnknown</c> never revises, so the field load one sweep later cannot correct
+    /// it - <c>CheckAndMergeAll</c>'s <c>_interBuf</c> came out <c>System.Int32</c> because the same register
+    /// had held the <c>cols</c> parameter, and its four array accesses were lost with it.
+    ///
+    /// Only the base of a memory operand, never the index: a subscript really is a number. And at any offset,
+    /// not only a nonzero one - a class pointer is read at nought. <c>IntPtr</c> is left out: unsafe code
+    /// dereferences one legitimately.
+    /// </remarks>
+    private static bool WouldCallAPointerANumber(TypeAnalysisContext carried, LocalVariable held)
+        => carried is { IsValueType: true, Namespace: nameof(System) }
+            && carried.Name is "Boolean" or "SByte" or "Byte" or "Int16" or "UInt16" or "Int32" or "UInt32"
+                or "Int64" or "UInt64" or "Single" or "Double" or "Char"
+            && dereferenced?.Contains(held) == true;
+
     private static HashSet<LocalVariable> AddressesUsedAsBases(MethodAnalysisContext method)
     {
         var bases = new HashSet<LocalVariable>();
@@ -163,6 +189,7 @@ public static partial class LocalVariables
             }
         }
 
+        dereferenced = bases;
         return bases;
     }
 

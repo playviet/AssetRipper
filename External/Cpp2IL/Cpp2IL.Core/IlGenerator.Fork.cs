@@ -58,6 +58,13 @@ public static partial class IlGenerator
             _ => null,
         };
 
+        //A register whose type arrived through a by-reference still holds the array itself: the local declared
+        //for it has the reference stripped already, so `ldloc` pushes a `bool[]` whatever the analysis called
+        //it. `ComputeHighlights` had both `arr.Length` and `arr[ns] = true` refused - the store silently, as a
+        //`pop`, so the highlight was never written and no marker said so.
+        while (arrayType is ByRefTypeAnalysisContext { ElementType: { } behind })
+            arrayType = behind;
+
         var element = arrayType switch
         {
             SzArrayTypeAnalysisContext szArray => szArray.ElementType,

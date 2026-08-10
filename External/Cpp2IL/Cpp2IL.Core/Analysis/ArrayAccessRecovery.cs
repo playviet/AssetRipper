@@ -420,8 +420,17 @@ public static class ArrayAccessRecovery
             _ => null,
         };
 
+    /// <remarks>
+    /// Through a by-reference too. A register the analysis made carries <c>T[]&amp;</c> wherever its type arrived
+    /// from an <c>out</c> parameter's slot: <c>BoardController::ComputeHighlights</c> joins
+    /// <c>TryGetValue</c>'s slot with a fresh <c>new bool[4]</c>, and the join takes its type from the slot
+    /// edge. What is in the register is the array, which is why the generator strips the reference from every
+    /// local it declares. A parameter that really holds an address is dereferenced at distance nought and
+    /// never reaches here - measured: of 132 by-ref-to-array bases in the game, none is a named parameter.
+    /// </remarks>
     private static bool IsArray(TypeAnalysisContext? type)
-        => type is SzArrayTypeAnalysisContext or ArrayTypeAnalysisContext;
+        => type is SzArrayTypeAnalysisContext or ArrayTypeAnalysisContext
+            || (type is ByRefTypeAnalysisContext { ElementType: { } behind } && IsArray(behind));
 
     /// <summary>Whether a value of this type can be asked for its length.</summary>
     /// <summary>Whether the type, or anything it is built on, actually declares this field.</summary>

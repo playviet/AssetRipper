@@ -496,7 +496,8 @@ public static partial class LocalVariables
         {
             for (var i = 1; i < phi.Operands.Count; i++)
             {
-                if (phi.Operands[i] is LocalVariable { Type: { } inputType })
+                if (phi.Operands[i] is LocalVariable { Type: { } inputType }
+                    && !WouldCallAPointerANumber(inputType, destination)) //Nothing reads a field off an int.
                 {
                     changed = SetTypeIfUnknown(destination, inputType);
                     break;
@@ -512,7 +513,7 @@ public static partial class LocalVariables
         {
             for (var i = 1; i < phi.Operands.Count; i++)
             {
-                if (phi.Operands[i] is LocalVariable input)
+                if (phi.Operands[i] is LocalVariable input && !WouldCallAPointerANumber(destination.Type, input))
                     changed |= SetTypeIfUnknown(input, destination.Type);
             }
         }

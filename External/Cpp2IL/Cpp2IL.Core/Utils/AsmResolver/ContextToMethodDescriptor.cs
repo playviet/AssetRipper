@@ -26,7 +26,8 @@ public static class ContextToMethodDescriptor
     {
         return context is ConcreteGenericMethodAnalysisContext concreteMethod
             ? concreteMethod.ToMethodDescriptor(parentModule)
-            : parentModule.DefaultImporter.ImportMethod(context.GetMethodDefinition());
+            //A member of a generic type is named on that type instantiated over its own parameters.
+            : parentModule.DefaultImporter.ImportMethod(context.GetMethodDefinition().OnItsOwnInstantiation(parentModule));
     }
 
     public static IMethodDescriptor ToMethodDescriptor(this ConcreteGenericMethodAnalysisContext context, ModuleDefinition parentModule)
