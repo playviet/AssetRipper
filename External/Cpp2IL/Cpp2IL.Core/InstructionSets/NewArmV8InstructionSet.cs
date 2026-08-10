@@ -1328,6 +1328,7 @@ public partial class NewArmV8InstructionSet : Cpp2IlInstructionSet
             //TODO
             return [];
 
-        return GetArgumentOperandsForCall(methodsAtAddress.First());
+        //Not First(): a generic definition shares its address with an instantiation. See InstantiationAmong.
+        return GetArgumentOperandsForCall(InstantiationAmong(methodsAtAddress));
     }
 }

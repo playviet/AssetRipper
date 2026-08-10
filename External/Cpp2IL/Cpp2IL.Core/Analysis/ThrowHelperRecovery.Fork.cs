@@ -103,7 +103,11 @@ public static partial class ThrowHelperRecovery
 
                 case Arm64Mnemonic.BL:
                 case Arm64Mnemonic.B:
-                    callees.Add(instruction.BranchTarget);
+                    //Only branches taken before the function returns, for the same reason a name is: past that
+                    //point the read is into whatever function comes next, and its callees are not this one's.
+                    if (!returned)
+                        callees.Add(instruction.BranchTarget);
+
                     break;
 
                 default:
@@ -114,7 +118,17 @@ public static partial class ThrowHelperRecovery
             }
         }
 
-        return Follow(appContext, callees, depth);
+        //A helper that comes back is not a throw helper. Nothing else in this search says so: the name is
+        //looked for in the body and then, failing that, in everything the body calls, five deep - and five
+        //hops below `IsInst`, the check il2cpp makes before storing a reference into an array, something
+        //raises `OutOfMemoryException`. All 17995 of its call sites were rewritten into an unconditional
+        //throw, which ends the block, so the store the check guards and everything after it became
+        //unreachable. `ColorExtension.ToHex` and the whole of `InterstitialGate` threw on entry.
+        //
+        //A real throw helper does not return - it ends in a raise - so where a name was not found in the body
+        //itself and the body returns, the search stops rather than borrowing a name from something it called.
+        //A veneer is unaffected: it is one branch and no return, so it is still followed to what it stands for.
+        return returned ? null : Follow(appContext, callees, depth);
     }
 
     private static string? Follow(ApplicationAnalysisContext appContext, List<ulong> callees, int depth)

@@ -801,8 +801,74 @@ public partial class NewArmV8InstructionSet
             used++;
         }
 
+        //The hidden pointer a fully shared generic answers through. A shared body cannot know how big a `T`
+        //is, so it neither returns one in `x0` nor uses the architecture's own `x8`: the caller passes
+        //somewhere to put it as an ordinary pointer argument after the declared ones, and the MethodInfo moves
+        //along by one. `IListExtension::RandomItem<T>` reads its generic context from `x2` and writes its
+        //answer through `x1`, so naming `x1` the MethodInfo both lost the context and stamped
+        //`Il2CppMethodInfo` on the destination of the memcpy that is the method's `return`. 252 shared bodies
+        //in this game return a type parameter and every one was off by a register.
+        //
+        //Stepped over rather than added as an operand: every pass that reads the parameter list indexes it
+        //positionally, and what is wrong here is which register the MethodInfo is in, not how many parameters
+        //there are. The test is the *raw* return type, because it has to be exactly a type parameter -
+        //`ArrayExtension::ResizeArray<T>` returns `T[]`, which is a pointer like any other and takes no
+        //buffer, and its MethodInfo is in `x3` today, correctly.
+        if (context.Definition?.RawReturnType?.Type is LibCpp2IL.BinaryStructures.Il2CppTypeEnum.IL2CPP_TYPE_VAR
+            or LibCpp2IL.BinaryStructures.Il2CppTypeEnum.IL2CPP_TYPE_MVAR)
+            used++;
+
         if (used < 8)
             operands.Add(RegisterFor(Arm64Register.X0 + used));
+    }
+
+    /// <summary>
+    /// Which of the methods at one address says how its arguments were handed over.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// il2cpp gives a generic method's own definition the pointer of one of the instantiations it generated,
+    /// so <c>MethodsByAddress</c> holds both - and <c>First()</c> is the definition, because
+    /// <c>PopulateMethodsByAddressTable</c> adds every definition before it adds a concrete generic. The
+    /// definition's parameters are generic parameters, which name no size and no fields, so a <c>Vector3</c>
+    /// argument is not seen to be a struct of floats, is given an integer register, and every argument after
+    /// it shifts by one.
+    /// </para>
+    /// <code>
+    /// From&lt;T1,T2,TPlugOptions&gt;(TweenerCore&lt;...&gt; t, T2 fromValue, bool setImmediately, bool isRelative)
+    ///   definition @284CDD4  regs=[X0,X1,X2,X3]   aapcs64: x0=t, s0..s2=fromValue, w1, w2, x3=MethodInfo*
+    /// </code>
+    /// <para>
+    /// <c>FeedbackPopup::BuildAnimation</c> is the case: <c>.From(new Vector3(0f, 0f, -wobbleAngle))</c> came
+    /// out as <c>From((Vector3)1L, setImmediately: false, isRelative: false)</c> - the <c>1</c> is
+    /// <c>setImmediately</c> arriving in <c>w1</c>, and <c>isRelative</c> is the trailing <c>MethodInfo*</c>.
+    /// </para>
+    /// <para>
+    /// Chosen by what the parameters are rather than by the context's class, because identical bodies are
+    /// folded together and one address may hold unrelated methods: only a candidate with no generic parameter
+    /// left in its signature can answer, and where the first already has none nothing changes at all.
+    /// </para>
+    /// </remarks>
+    private static MethodAnalysisContext InstantiationAmong(List<MethodAnalysisContext> candidates)
+    {
+        if (candidates.Count < 2 || !LeavesAParameterOpen(candidates[0]))
+            return candidates[0];
+
+        foreach (var candidate in candidates)
+            if (!LeavesAParameterOpen(candidate))
+                return candidate;
+
+        return candidates[0];
+    }
+
+    /// <summary>Whether any parameter is still a generic parameter, which names no size and no fields.</summary>
+    private static bool LeavesAParameterOpen(MethodAnalysisContext method)
+    {
+        foreach (var parameter in method.Parameters)
+            if (parameter.ParameterType is GenericParameterTypeAnalysisContext)
+                return true;
+
+        return false;
     }
 
     /// <summary>
