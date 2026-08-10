@@ -450,6 +450,12 @@ public static class ForkPipeline
         // what gets a name. Runs after the lambda cache is folded, so what lies between the two is settled.
         FieldReadSinking.Run(method);
 
+        // The other half of the pass below, on the address rather than on a read through it: a constant
+        // distance from a slot's address is the field that far into the struct the slot holds. Here for the
+        // same reason - before the collection, because naming the slot is what gives it a reader, and it is
+        // now the only thing that names the state machine at all.
+        SlotFieldAddress.Run(method);
+
         // A read at a distance from a slot's address is a read of the slot that distance away - both are
         // frame offsets and adding them names it. Late, where every slot the frame uses has been named -
         // but **before** the collection below, because joining the read to the slot is what gives the slot a
