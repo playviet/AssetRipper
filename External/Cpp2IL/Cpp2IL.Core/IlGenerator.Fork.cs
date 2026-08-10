@@ -219,6 +219,123 @@ public static partial class IlGenerator
         return true;
     }
 
+    /// <summary>
+    /// Writes a value through a by-reference parameter of the method being generated, rather than into a
+    /// local that shares its name. Answers whether it did.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Every ISIL local gets a <see cref="CilLocalVariable"/> of its own, parameters included.
+    /// <c>LoadLocal</c> notices that a local names a parameter and emits <c>ldarg</c>; nothing on the storing
+    /// side ever did, so <c>Move [pos @ X1 (UnityEngine.Vector3&amp;)], v71.x</c> came out as a store into a
+    /// shadow local - and where the addend was not nought, as a <c>pop</c>.
+    /// </para>
+    /// <para>
+    /// So <b>no recovered method has ever written its own <c>out</c> or <c>ref</c> parameter</b>. Twenty-nine
+    /// of the thirty-eight in this game hand back the zero the caller cleared the slot with:
+    /// <c>TryGetLookAtWorldPosition</c>, <c>TryGetBoardWorldRect</c>, every <c>InterstitialGate</c> method.
+    /// All five compilability scorers rate those bodies whole, which is why this survived so long - only an
+    /// execution oracle can see it.
+    /// </para>
+    /// <para>
+    /// A store through a by-reference is one machine word, so an addend inside a struct names the member at
+    /// that distance and an addend of nought names the member at the front - the same reading
+    /// <see cref="FrontMember"/> makes of the load. A whole struct does not travel this way; the compiler
+    /// copies it, which is a different shape entirely.
+    /// </para>
+    /// </remarks>
+    private static bool TryStoreThroughByRef(MemoryOperand memory, MethodDefinition method,
+        Dictionary<LocalVariable, CilLocalVariable> locals)
+    {
+        if (memory is not { Index: null, Scale: 0, Base: LocalVariable slot }
+            || slot.Type is not ByRefTypeAnalysisContext { ElementType: { } pointee }
+            || CurrentContext is not { } context)
+        {
+            return false;
+        }
+
+        if (method.Parameters.FirstOrDefault(p => p.Name == slot.Name) is not { } parameter
+            || parameter.ParameterType is not ByReferenceTypeSignature)
+        {
+            return false;
+        }
+
+        var module = method.DeclaringModule!;
+        var instructions = method.CilMethodBody!.Instructions;
+
+        //A value type with members of its own is written one member at a time - unless what is being stored
+        //*is* one of those structs, which `SubCellVisual::TryGetLookPosition` does: `pos = _lookPos` in one
+        //move. Taking the front member there wrote a `Vector3` into a `float`.
+        if (pointee.IsValueType && !IsAPrimitive(pointee) && !StoringTheWholeOf(pointee))
+        {
+            if (MemberAt(pointee, memory.Addend, context) is not { } member)
+                return false;
+
+            var into = member.ToFieldDescriptor(module);
+            var held = new CilLocalVariable(into.Signature!.FieldType);
+            method.CilMethodBody!.LocalVariables.Add(held);
+
+            //`stfld` wants the pointer underneath the value, and the value is already on the stack.
+            instructions.Add(CilOpCodes.Stloc, held);
+            instructions.Add(CilOpCodes.Ldarg, parameter);
+            instructions.Add(CilOpCodes.Ldloc, held);
+            instructions.Add(CilOpCodes.Stfld, into);
+            return true;
+        }
+
+        if (memory.Addend != 0)
+            return false;
+
+        var signature = pointee.ToTypeSignature(module);
+        var value = new CilLocalVariable(signature);
+        method.CilMethodBody!.LocalVariables.Add(value);
+
+        instructions.Add(CilOpCodes.Stloc, value);
+        instructions.Add(CilOpCodes.Ldarg, parameter);
+        instructions.Add(CilOpCodes.Ldloc, value);
+        //`stind.ref` takes no operand at all; `stobj` names the type it writes.
+        if (pointee.IsValueType)
+            instructions.Add(CilOpCodes.Stobj, module.DefaultImporter.ImportType(signature.ToTypeDefOrRef()));
+        else
+            instructions.Add(CilOpCodes.Stind_Ref);
+
+        return true;
+    }
+
+    /// <summary>Whether the value being stored is a whole one of these rather than a member of one.</summary>
+    private static bool StoringTheWholeOf(TypeAnalysisContext pointee)
+        => CurrentInstruction is { Operands: [_, { } source, ..] }
+            && TypeOfOperand(source)?.FullName == pointee.FullName;
+
+    /// <summary>The member of a struct at that distance into it, at whichever convention it was recorded.</summary>
+    /// <remarks>
+    /// <see cref="MetadataResolver.FieldOfStructValue"/> adds the object header, because il2cpp records a
+    /// struct's fields at the offsets they sit at in a boxed one. This build does not, for these types:
+    /// <c>probe fields Vector3</c> says <c>x</c> at 0, <c>y</c> at 4, <c>z</c> at 8, with the header showing
+    /// only in <c>instance=1C</c>. Asking the boxed way alone found no member at any of the three, which is
+    /// why the first attempt at this wrote nothing for a <c>Vector3</c> out parameter. Both are tried, raw
+    /// first, the same way <see cref="Analysis.PackedStructFieldRead"/> reads a packed struct's fields.
+    /// </remarks>
+    private static FieldAnalysisContext? MemberAt(TypeAnalysisContext type, long offset, MethodAnalysisContext context)
+    {
+        var definition = (type as GenericInstanceTypeAnalysisContext)?.GenericType ?? type;
+
+        foreach (var field in definition.Fields)
+            if (!field.IsStatic && field.BackingData?.FieldOffset == offset)
+                return type is GenericInstanceTypeAnalysisContext instance
+                    ? new ConcreteGenericFieldAnalysisContext(field, instance)
+                    : field;
+
+        return MetadataResolver.FieldOfStructValue(type, offset, context);
+    }
+
+    /// <summary>A value that is one number rather than a thing with members.</summary>
+    private static bool IsAPrimitive(TypeAnalysisContext type)
+        => type.IsEnumType || type.FullName is "System.Boolean" or "System.Char"
+            or "System.SByte" or "System.Byte" or "System.Int16" or "System.UInt16"
+            or "System.Int32" or "System.UInt32" or "System.Int64" or "System.UInt64"
+            or "System.Single" or "System.Double" or "System.IntPtr" or "System.UIntPtr";
+
     private static bool TryStoreArrayElement(MemoryOperand memory, MethodDefinition method,
         Dictionary<LocalVariable, CilLocalVariable> locals)
     {
@@ -299,6 +416,14 @@ public static partial class IlGenerator
     /// </summary>
     [System.ThreadStatic]
     private static MethodAnalysisContext? CurrentContext;
+
+    /// <summary>
+    /// The instruction being generated, for the one question a destination cannot answer on its own: what is
+    /// on the evaluation stack. A store through a by-reference is a member of the struct when what it stores
+    /// is one number, and the whole of it when it is the struct - and only the source operand says which.
+    /// </summary>
+    [System.ThreadStatic]
+    private static Instruction? CurrentInstruction;
 
     /// <summary>
     /// Two CIL instructions that say the same thing are equal, and before offsets are worked out a body is

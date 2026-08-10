@@ -243,6 +243,8 @@ public static partial class IlGenerator
     private static List<CilInstruction> GenerateInstructions(Instruction instruction, MethodAnalysisContext context,
         MethodDefinition method, Dictionary<LocalVariable, CilLocalVariable> locals, MemberReference writeLine, MemberReference stringCtor)
     {
+        CurrentInstruction = instruction; //So a store can ask what value it is storing.
+
         var body = method.CilMethodBody!;
         var instructions = body.Instructions;
         var currentCount = instructions.Count;
@@ -959,6 +961,9 @@ public static partial class IlGenerator
                 break;
 
             case MemoryOperand memory:
+                if (TryStoreThroughByRef(memory, method, locals)) //An out parameter is written, not shadowed.
+                    break;
+
                 if (memory.Index == null && memory.Addend == 0 && memory.Scale == 0
                     && memory.Base is LocalVariable local2)
                 {
