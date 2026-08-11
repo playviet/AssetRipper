@@ -67,6 +67,25 @@ public static class BitfieldMove
             //were between them.
             var kept = imms - immr + 1;
 
+            //A *signed* extract does not mask - it sign-extends, and a mask would clear the very bits that
+            //carry the sign. `sbfx w8, w9, #4, #8` is a signed byte read out of the middle of a word, and
+            //masking it says every such value is positive. So the field is moved up until its top bit is the
+            //register's top bit and then brought back down, which is what makes the copies of the sign.
+            //Only when the field already reaches the top is that the plain arithmetic shift the caller knows.
+            if (instruction.Mnemonic == Arm64Mnemonic.SBFM && kept < width - immr)
+            {
+                var up = width - 1 - imms;
+
+                if (up > 0)
+                    emit(OpCode.ShiftLeft, [destination, source, up]);
+                else
+                    emit(OpCode.Move, [destination, source]);
+
+                emit(OpCode.ShiftRight, [destination, destination, width - kept]);
+
+                return true;
+            }
+
             if (immr == 0)
                 emit(OpCode.Move, [destination, source]);
             else if (instruction.Mnemonic == Arm64Mnemonic.UBFM)

@@ -18,6 +18,8 @@ namespace Cpp2IL.Core.Analysis;
 /// </summary>
 public static class ArrayTypeInference
 {
+    private static readonly bool Trace = System.Environment.GetEnvironmentVariable("ARRAYTYPE_TRACE") is not null;
+
     public static bool Run(MethodAnalysisContext method)
     {
         var elements = method.AppContext.Binary.is32Bit ? 0x10 : 0x20;
@@ -48,6 +50,31 @@ public static class ArrayTypeInference
 
             if (ArrayAndWidth(sum, definitions) is not { } indexed)
                 continue;
+
+            //Something the array is *assigned* beats anything worked out from what came out of it, and beats
+            //it whether or not the array already has a type. The element's own type is only as good as
+            //whatever last touched it - `op_Equality` types its argument `UnityEngine.Object`, and from that
+            //this concluded `UnityEngine.Object[]` for a local a field read three instructions earlier had
+            //said was `FTUE[]`. Nothing improves a type once it is set, so every field read off an element
+            //became unmanaged memory: `TutorialMenu::OnTutorialStepCompleted` is that, twice.
+            //
+            //Only ever *downwards*, to something the current answer is a base of. Replacing a type with an
+            //unrelated one is how a pass that means well empties a method, and there is no case for it here:
+            //an array is assigned an array of the same thing or of something more exact, never of something
+            //else entirely.
+            var assigned = Assigned(method.ControlFlowGraph, indexed.Array);
+
+            if (Trace)
+                System.Console.Error.WriteLine($"ARRAYTYPE {method.Name}: array={indexed.Array} "
+                    + $"held={indexed.Array.Type?.FullName ?? "?"} assigned={assigned?.FullName ?? "?"} "
+                    + $"element={elementType?.FullName ?? "?"} width={indexed.Width} "
+                    + $"better={(assigned is { } a && MoreExactThan(a, indexed.Array.Type))}");
+
+            if (assigned is { } declared && MoreExactThan(declared, indexed.Array.Type))
+            {
+                indexed.Array.Type = declared;
+                changed = true;
+            }
 
             if (indexed.Array.Type != null)
             {
@@ -82,7 +109,7 @@ public static class ArrayTypeInference
     {
         //Only a read produces a value to name. A store consumes one, and what it stores is typed already or
         //is what the inference above learns the array from.
-        if (!read || instruction.Operands[0] is not LocalVariable { Type: null } loaded)
+        if (!read || instruction.Operands[0] is not LocalVariable loaded)
             return false;
 
         if (indexed.Array.Type is not SzArrayTypeAnalysisContext { ElementType: { } element })
@@ -93,9 +120,92 @@ public static class ArrayTypeInference
         if (Width(element, pointerSize) != indexed.Width)
             return false;
 
+        //An untyped element, or one wearing a base class of what the array holds. The second happens because
+        //something got to it first with less to go on: `op_Equality(Object, Object)` types its argument, so
+        //an `FTUE` taken out of an `FTUE[]` is called a `UnityEngine.Object` and the two field reads off it
+        //become unmanaged memory. What the array holds is the better answer and cannot contradict this one -
+        //every element of an `FTUE[]` is a `UnityEngine.Object`, which is why the vaguer name was allowed in
+        //the first place.
+        if (loaded.Type != null && (loaded.Type.FullName == element.FullName || !DerivesFrom(element, loaded.Type)))
+            return false;
+
         loaded.Type = element;
         return true;
     }
+
+    /// <summary>The most exact array type anything flowing into this local already says it has.</summary>
+    /// <remarks>
+    /// <para>
+    /// The array a loop reads through is a <b>phi</b>, not a local anything moves into - the copies on the
+    /// incoming edges are made later, when single assignment form is taken apart, and this runs long before
+    /// that. So the thing to read is the phi's own inputs, which are right there as its operands.
+    /// </para>
+    /// <para>
+    /// <c>TutorialMenu::OnTutorialStepCompleted</c> merges two reads of the same field: one input kept
+    /// <c>CF.FTUE[]</c>, the other had already been flattened to <c>UnityEngine.Object[]</c> by the element
+    /// inference below. Either says more than an element does, and the exact one says most.
+    /// </para>
+    /// <para>
+    /// Inputs that cannot be the same array - two unrelated element types - mean the register is being
+    /// reused and the phi says nothing, which is the same judgement <c>SsaForm.InputsDisagree</c> makes.
+    /// </para>
+    /// </remarks>
+    private static TypeAnalysisContext? Assigned(Graphs.ISILControlFlowGraph graph, LocalVariable array)
+    {
+        TypeAnalysisContext? best = null;
+
+        foreach (var instruction in graph.Instructions)
+        {
+            if (instruction.OpCode is not (OpCode.Move or OpCode.Phi) || instruction.Operands.Count < 2
+                || !ReferenceEquals(instruction.Operands[0], array))
+                continue;
+
+            for (var i = 1; i < instruction.Operands.Count; i++)
+            {
+                if (TypeOf(instruction.Operands[i]) is not { } type || ElementOf(type) is null)
+                    continue;
+
+                if (best is null || MoreExactThan(type, best))
+                    best = type;
+                else if (best.FullName != type.FullName && !MoreExactThan(best, type))
+                    return null;
+            }
+        }
+
+        return best;
+    }
+
+    /// <summary>Whether one array type says more than another: nothing at all, or the same array of a subclass.</summary>
+    private static bool MoreExactThan(TypeAnalysisContext candidate, TypeAnalysisContext? held)
+    {
+        if (held is null)
+            return true;
+
+        return ElementOf(candidate) is { } exact && ElementOf(held) is { } vague
+            && exact.FullName != vague.FullName && DerivesFrom(exact, vague);
+    }
+
+    /// <summary>Whether one type is the other, further down.</summary>
+    /// <remarks>
+    /// Walked up the derived type's own hierarchy, because that is the direction a reference is allowed to
+    /// travel: an <c>FTUE</c> may be called the <c>UnityEngine.Object</c> it also is, never the other way
+    /// round.
+    /// </remarks>
+    private static bool DerivesFrom(TypeAnalysisContext derived, TypeAnalysisContext ancestor)
+    {
+        for (var walk = derived.BaseType; walk != null; walk = walk.BaseType)
+            if (walk.FullName == ancestor.FullName)
+                return true;
+
+        return false;
+    }
+
+    private static TypeAnalysisContext? ElementOf(TypeAnalysisContext type) => type switch
+    {
+        SzArrayTypeAnalysisContext array => array.ElementType,
+        ArrayTypeAnalysisContext { Rank: 1 } array => array.ElementType,
+        _ => null,
+    };
 
     /// <summary>What a value is, where that is known.</summary>
     private static TypeAnalysisContext? TypeOf(object operand) => operand switch

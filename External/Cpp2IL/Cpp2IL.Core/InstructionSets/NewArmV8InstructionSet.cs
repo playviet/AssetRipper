@@ -823,6 +823,13 @@ public partial class NewArmV8InstructionSet : Cpp2IlInstructionSet
                     }
                 }
 
+                //Every other arrangement of the same instruction: `sbfx`, `sxtb`, `sbfiz`. Only the
+                //arithmetic-shift-right form above was translated, so the rest were `Not implemented` -
+                //`BoardLogic::GenerateSmartBlock` lost eight statements to two of them. The shared
+                //translation already tells signed from unsigned; it was simply never reached from here.
+                if (BitfieldMove.Apply(instruction, ConvertOperand(instruction, 0), ConvertOperand(instruction, 1), (opCode, operands) => Add(address, opCode, operands)))
+                    break;
+
                 Add(address, OpCode.NotImplemented, $"Instruction {instruction.Mnemonic} not yet implemented.");
                 break;
 
