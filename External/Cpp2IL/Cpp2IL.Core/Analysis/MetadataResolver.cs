@@ -423,12 +423,17 @@ public static partial class MetadataResolver
                 if (!candidates.Any(candidate => ReferenceEquals(BaseMethodOf(candidate), representedBase)))
                     continue;
             }
-            else if (!ReferenceEquals(representedMethod, representedBase))
+            else if (!ReferenceEquals(representedMethod, representedBase)
+                && IsManagedCode(method.AppContext, (ulong)target))
             {
                 //No method is recorded at this address because the body is shared between every instantiation of
                 //a generic method, and only the concrete ones carry addresses. Which instantiation is being called
                 //is exactly what the runtime method argument is there to say - il2cpp passes it so that the shared
                 //body can find its own type arguments - so it is the call target, and nothing else could be.
+                //
+                //**Only where the address is managed code at all** - see IsManagedCode in the fork. A native
+                //runtime helper is also an address no method is recorded at, and the register the hidden
+                //argument would occupy is also very often still holding one from the statement before.
             }
             else
             {

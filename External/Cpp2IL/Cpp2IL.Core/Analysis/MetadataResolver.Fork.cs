@@ -880,4 +880,62 @@ public static partial class MetadataResolver
 
         return laid;
     }
+
+    /// <summary>Where the managed methods are, so a native runtime helper can be told from one.</summary>
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<ApplicationAnalysisContext,
+        System.Tuple<ulong, ulong>> managedRegion = new();
+
+    /// <summary>
+    /// Whether an address is managed code rather than one of the runtime's own functions.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <see cref="ResolveCallsViaMethodInfo"/> takes an address with no method recorded at it to be a shared
+    /// generic body, and names the call from the runtime method argument the caller passed. **A native
+    /// runtime helper is also an address with no method recorded at it**, and the register a hidden argument
+    /// would occupy is very often still holding one from the statement before.
+    /// </para>
+    /// <code>
+    /// ldr x3, [x25]                ; methodof(Enum::TryParse&lt;ELevelParam&gt;), for the call below
+    /// bl  0x21BD51C                ; il2cpp_codegen_get_interface_invoke_data(obj, iface, slot) - x3 leftover
+    /// bl  0x235D478                ; the real Enum.TryParse
+    /// </code>
+    /// <para>
+    /// So the interface dispatch helper was named <c>Enum.TryParse</c>, and with it the *result* of the walk
+    /// became a <c>System.Boolean</c>. That is what stops <c>InterfaceCallRecovery</c> in
+    /// <c>LevelMetadataDesignConfig::BuildOverrideMap</c>: the vtable entry pointer wears <c>Boolean</c>, so
+    /// the read through it resolves to <c>Boolean.m_value</c> - a field access where the pass needs a memory
+    /// read - and the walk stops looking like a walk. Nine calls in that one body carry the wrong name.
+    /// The same happened to <c>0x218465C</c>, the <c>IsInst</c> helper, which has 18000 sites.
+    /// </para>
+    /// <para>
+    /// The bound is taken from the method table rather than written down: every managed method is between the
+    /// lowest and the highest address it records, and the runtime's own functions in this binary are below
+    /// all of them.
+    /// </para>
+    /// </remarks>
+    private static bool IsManagedCode(ApplicationAnalysisContext app, ulong target)
+    {
+        var bounds = managedRegion.GetValue(app, static context =>
+        {
+            var lowest = ulong.MaxValue;
+            var highest = ulong.MinValue;
+
+            foreach (var address in context.MethodsByAddress.Keys)
+            {
+                if (address == 0)
+                    continue;
+
+                if (address < lowest)
+                    lowest = address;
+
+                if (address > highest)
+                    highest = address;
+            }
+
+            return System.Tuple.Create(lowest, highest);
+        });
+
+        return bounds.Item1 <= target && target <= bounds.Item2;
+    }
 }
