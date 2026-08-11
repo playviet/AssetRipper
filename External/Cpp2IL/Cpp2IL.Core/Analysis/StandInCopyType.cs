@@ -54,7 +54,12 @@ public static class StandInCopyType
             if (instruction.Destination is not LocalVariable written)
                 continue;
 
-            var copy = instruction is { OpCode: OpCode.Move, Operands: [_, LocalVariable] };
+            //Reading a field is a copy of something nameable too, and a stronger one: a managed field never
+            //holds a class pointer, so a local filled from one was never a class pointer either.
+            //`BoardController::BuildLevelPool` opens with `Move v65 (Il2CppClass<BoardSettingSO>),
+            //this._shuffleColors (ECellColor[])` and the array's own length then read as
+            //`[Il2CppClass<BoardSettingSO>+18]` - an unmanaged-memory statement for what is `.Length`.
+            var copy = instruction is { OpCode: OpCode.Move, Operands: [_, LocalVariable or FieldReference] };
             carriedOnly[written] = copy && carriedOnly.GetValueOrDefault(written, true);
         }
 
@@ -64,15 +69,24 @@ public static class StandInCopyType
 
             foreach (var instruction in graph.Instructions)
             {
-                if (instruction is not { OpCode: OpCode.Move, Operands: [LocalVariable into, LocalVariable from] })
+                if (instruction is not { OpCode: OpCode.Move, Operands: [LocalVariable into, { } source] })
                     continue;
 
-                if (LocalVariables.IsRuntimeStandIn(into.Type) && Nameable(from.Type) && carriedOnly.GetValueOrDefault(into))
+                //What the source says it holds, whether it is a local or the field one was read out of.
+                var held = source switch
                 {
-                    into.Type = from.Type;
+                    LocalVariable local => local.Type,
+                    FieldReference { Field.FieldType: { } declared } => declared,
+                    _ => null,
+                };
+
+                if (LocalVariables.IsRuntimeStandIn(into.Type) && Nameable(held) && carriedOnly.GetValueOrDefault(into))
+                {
+                    into.Type = held;
                     settling = true;
                 }
-                else if (LocalVariables.IsRuntimeStandIn(from.Type) && Nameable(into.Type) && carriedOnly.GetValueOrDefault(from))
+                else if (source is LocalVariable from
+                    && LocalVariables.IsRuntimeStandIn(from.Type) && Nameable(into.Type) && carriedOnly.GetValueOrDefault(from))
                 {
                     from.Type = into.Type;
                     settling = true;
@@ -82,7 +96,15 @@ public static class StandInCopyType
     }
 
     /// <summary>A reference type the program itself has - which a stand-in never is.</summary>
+    /// <remarks>
+    /// Not a type parameter. Unconstrained, <c>T</c> is neither a reference nor a value type to the language,
+    /// so a value that arrives as one has to be cast through <c>object</c> and cannot be compared to null -
+    /// <c>GameObjectExtension::HasInterface&lt;T&gt;</c> holds its candidate in an <c>object</c> exactly for
+    /// that reason, and calling it a <c>T</c> costs the two statements that read it.
+    /// </remarks>
     private static bool Nameable(TypeAnalysisContext? type)
-        => type is { IsValueType: false } and not (ByRefTypeAnalysisContext or PointerTypeAnalysisContext)
+        => type is { IsValueType: false }
+            and not (ByRefTypeAnalysisContext or PointerTypeAnalysisContext
+                or GenericParameterTypeAnalysisContext)
             && !LocalVariables.IsRuntimeStandIn(type);
 }

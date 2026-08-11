@@ -130,6 +130,14 @@ public static partial class IlGenerator
     /// </remarks>
     private static FieldAnalysisContext? FrontMember(MemoryOperand memory, TypeAnalysisContext element, MethodAnalysisContext context)
     {
+        //An enum has one instance field, `value__`, holding the whole of it - so a number is exactly what a
+        //read of the element produces and there is nothing in front of anything. Naming it is also not
+        //something C# will accept: `primaryTargets[(int)blockCat].value__` is what
+        //`BoardLogic::CheckAndMergeAll` came out as, commented, twice. The guard below catches a struct whose
+        //first field is of its own type; an enum's is of the *underlying* type, so it went straight past.
+        if (element.IsEnumType)
+            return null;
+
         if (!element.IsValueType || context.ControlFlowGraph is not { } graph
             || FieldAt(element, 0) is not { } front || ReferenceEquals(front.FieldType, element))
             return null;
