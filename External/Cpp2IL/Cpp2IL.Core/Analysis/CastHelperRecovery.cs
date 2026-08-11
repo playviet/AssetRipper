@@ -55,6 +55,16 @@ public static class CastHelperRecovery
                 continue;
 
             instruction.Operands = [ObjectIsInstance, instruction.Operands[1], instruction.Operands[2], target];
+
+            //And what it answers with is one of those. The helper hands its answer back in a general register
+            //like any other call, so a value that nothing else pinned down came out as a number, and the
+            //`isinst` the generator writes is then stored into a `long` - `long num11 = (long)(text as
+            //ECellColor[])`, which does not compile, and every statement that used it goes with it. Only where
+            //nothing has decided otherwise: a result already known to be a reference is not overruled, since
+            //the class here is what the check is *against* and the value may be declared as something below
+            //it.
+            if (instruction.Operands[1] is LocalVariable { Type: null or { IsValueType: true } } answer)
+                answer.Type = target;
         }
     }
 

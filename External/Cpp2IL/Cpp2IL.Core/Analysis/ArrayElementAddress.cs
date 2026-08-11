@@ -128,13 +128,33 @@ public static class ArrayElementAddress
                     continue;
                 }
 
-                if (instruction.Operands[i] is not MemoryOperand { Index: null, Base: LocalVariable through } read)
-                    continue;
+                Address address;
+                long addend;
 
-                if (!chains.TryGetValue(through, out var address))
-                    continue;
+                switch (instruction.Operands[i])
+                {
+                    case MemoryOperand { Index: null, Base: LocalVariable through } read
+                        when chains.TryGetValue(through, out var reached):
+                        address = reached;
+                        addend = reached.Constant + read.Addend;
+                        break;
 
-                var addend = address.Constant + read.Addend;
+                    //And the same address already named as a member of something else. The chain's local is
+                    //typed by whatever the offsets happened to fit, and where that lands on a real type the
+                    //resolver names the read before this pass ever sees it - `v208.isEmpty`, a `CellData` at
+                    //0x20 - and there is no memory operand left to fold. The chain is the stronger evidence:
+                    //it rests on something declared as an array and the distance is measured from the array's
+                    //own header. `BoardController::PowerUp_Shuffle` swaps two elements of an `ECellColor[][]`
+                    //this way, and the swap and every statement after it was commented out.
+                    case FieldReference { Local: { } named } member
+                        when chains.TryGetValue(named, out var renamed):
+                        address = renamed;
+                        addend = renamed.Constant + member.Offset;
+                        break;
+
+                    default:
+                        continue;
+                }
 
                 //With a constant subscript the addend carries both the element and the distance into it, and
                 //the generator takes them apart again. With the subscript in a register the scale has already
@@ -150,6 +170,17 @@ public static class ArrayElementAddress
                 }
 
                 instruction.Operands[i] = new MemoryOperand(address.Array, address.Index, addend, address.Scale);
+
+                //What a whole element is read into is one of those, whatever it was called before the chain
+                //was put back together. The read was named as a member of the type the chain's local had been
+                //given, and its destination took that member's type with it - `bool isEmpty = grids[i]`, which
+                //then refuses the store that puts it back. Only where this is the one place the local is
+                //written, so nothing else is being overruled.
+                if (i == 1 && addend == header && instruction is { OpCode: OpCode.Move, Operands: [LocalVariable into, ..] }
+                    && everyDefinition.TryGetValue(into, out var only) && only is [var single] && single == instruction)
+                {
+                    into.Type = address.Element;
+                }
             }
         }
     }
