@@ -640,6 +640,17 @@ public static partial class MetadataResolver
                     occupied += floats - 1;
             }
 
+            //A call whose address several instantiations share was handed **both** runs, because nothing at
+            //the call site said which one it was. Now that the runtime method has named it, the operands can
+            //be laid out under the signature - and they have to be, because truncating positionally reads a
+            //`Vector3` argument out of the integer register that happens to sit at its index.
+            if (Relaid(instruction, callee, kept) is { } laid)
+            {
+                instruction.Operands = laid;
+                changed = true;
+                continue;
+            }
+
             if (instruction.Operands.Count == occupied || instruction.Operands.Count <= kept)
                 continue;
 
@@ -798,4 +809,75 @@ public static partial class MetadataResolver
         MemoryOperand memory => Mentions(memory.Base, answer) || Mentions(memory.Index, answer),
         _ => Named(operand) == answer,
     };
+
+    /// <summary>
+    /// The operands of a shared-body call, laid out under the signature the runtime method finally named.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The lifter hands such a call both argument runs - x0..x7 then v0..v7 - because at the call site
+    /// several instantiations share the address and nothing says which is being called. What arrives here is
+    /// a fixed shape: the callee, the result, then sixteen registers in a known order. Selecting from it by
+    /// position is what aapcs64 says: each parameter takes the next register of its own run, a struct of
+    /// floats takes one per field, and everything unclaimed is dropped.
+    /// </para>
+    /// <para>
+    /// Without this the list was simply cut to the signature's length, so `From(t, Vector3 fromValue, bool
+    /// setImmediately, bool isRelative)` read `fromValue` from x1, `setImmediately` from x2 - and x2 held
+    /// `isRelative`, while `fromValue` sat in v0, v1 and v2 untouched. `FeedbackPopup::BuildAnimation` lost
+    /// its wobble tween to that, and 757 call sites across 389 methods carry the same fingerprint.
+    /// </para>
+    /// </remarks>
+    private static List<object>? Relaid(Instruction instruction, MethodAnalysisContext callee, int kept)
+    {
+        //The shape the lifter makes for a shared body, and nothing else: the leading operands plus both runs.
+        var leading = instruction.OpCode == OpCode.Call ? 2 : 1;
+
+        if (instruction.Operands.Count != leading + Aapcs64.RegistersPerRun * 2)
+            return null;
+
+        var laid = new List<object>(kept);
+
+        for (var i = 0; i < leading; i++)
+            laid.Add(instruction.Operands[i]);
+
+        var integer = 0;
+        var vector = 0;
+
+        object? Next(bool floats)
+        {
+            var taken = floats ? vector++ : integer++;
+
+            if (taken >= Aapcs64.RegistersPerRun)
+                return null;
+
+            return instruction.Operands[leading + (floats ? Aapcs64.RegistersPerRun : 0) + taken];
+        }
+
+        //`this` is the first of the integer run, before any parameter.
+        if (!callee.IsStatic && Next(false) is { } receiver)
+            laid.Add(receiver);
+
+        var floatsBeyondTheFirst = new List<object>();
+
+        foreach (var parameter in callee.Parameters)
+        {
+            var fields = HomogeneousFloatStruct.Count(parameter.ParameterType);
+
+            if (Next(fields is > 0) is not { } argument)
+                return null;
+
+            laid.Add(argument);
+
+            //The registers a float struct occupies beyond its first go after every parameter, which is where
+            //everything counting operands off the parameter list expects them.
+            for (var field = 1; field < fields; field++)
+                if (Next(true) is { } more)
+                    floatsBeyondTheFirst.Add(more);
+        }
+
+        laid.AddRange(floatsBeyondTheFirst);
+
+        return laid;
+    }
 }

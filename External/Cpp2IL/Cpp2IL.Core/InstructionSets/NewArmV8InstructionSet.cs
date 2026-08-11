@@ -204,6 +204,25 @@ public partial class NewArmV8InstructionSet : Cpp2IlInstructionSet
             }
         }
 
+        //The same, and then the vector run behind it, for a callee that *will* be named - one whose address
+        //several instantiations of a generic method share. A genuinely unknown callee still gets the integer
+        //run alone: eight more operands nothing will ever claim would keep eight more values alive, which is
+        //what cost branches the last time an unresolved call was given registers it did not use.
+        void AddSharedCall(ulong address, ulong target)
+        {
+            var call = Add(address, OpCode.Call, target, RegisterFor(Arm64Register.X0));
+
+            for (var run = 0; run < 2; run++)
+            {
+                var first = run == 0 ? Arm64Register.X0 : Arm64Register.V0;
+
+                for (var argument = 0; argument < Analysis.Aapcs64.RegistersPerRun; argument++)
+                {
+                    call.Operands.Add(RegisterFor(first + argument));
+                }
+            }
+        }
+
         //Several values in one register - see VectorLanes.cs. What it takes apart entirely it says so for;
         //where it only adds the lanes above the first, the ordinary lifting below still handles that first.
         if (vectorLanes.TryConvert(context, instruction, (opCode, operands) => Add(address, opCode, operands)))
@@ -491,7 +510,7 @@ public partial class NewArmV8InstructionSet : Cpp2IlInstructionSet
                         //convention could have used, exactly as for a callee that is not known at all. Taking the
                         //first candidate's signature instead dropped that argument and left the result unconnected,
                         //and taking the *caller's* return register said the call produced nothing at all.
-                        AddUnmanagedCall(address, instruction.BranchTarget);
+                        AddSharedCall(address, instruction.BranchTarget);
                     }
                 }
                 else if (ImportedCall(context, instruction.BranchTarget) is { } imported)
