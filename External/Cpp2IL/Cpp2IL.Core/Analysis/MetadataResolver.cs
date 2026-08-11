@@ -162,6 +162,13 @@ public static partial class MetadataResolver
                     //A generic base records every offset as zero, so the loop above can only ever match the
                     //first field of one. The rest are found by walking the layout, where it can be closed.
                     field ??= FieldOfGenericBase(local.Type, memory.Addend, method);
+
+                    //And a struct reached through its address. A distance into one is measured from the value,
+                    //while most types record their fields from the front of the boxed object - see
+                    //FieldOfStructValue in the fork, which answers for both. Last, so nothing that matched
+                    //outright is second-guessed.
+                    if (field == null && local.Type.IsValueType)
+                        field = FieldOfStructValue(local.Type, memory.Addend, method);
                 }
 
                 //An offset that matched nothing may name a member of a struct held in a field, which is stored

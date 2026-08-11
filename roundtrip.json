@@ -1195,9 +1195,9 @@
 5
 ],
 "Assembly-CSharp::UnityEngine.UI.ProceduralImage.ProceduralImage::EncodeAllInfoIntoVertices": [
-5,
+4,
 6,
-5
+4
 ],
 "Assembly-CSharp::UnityEngine.UI.ProceduralImage.ProceduralImage::EncodeFloats_0_1_16_16": [
 1,
@@ -7600,9 +7600,9 @@
 2
 ],
 "Assembly-CSharp::CFramework.Logger::PrintColorMapping": [
-8,
+11,
 13,
-12
+11
 ],
 "Assembly-CSharp::CFramework.SpeedTester::StartTest": [
 5,
