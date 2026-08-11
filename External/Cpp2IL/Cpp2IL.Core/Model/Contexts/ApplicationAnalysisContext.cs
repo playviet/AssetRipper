@@ -130,6 +130,9 @@ public class ApplicationAnalysisContext : ContextWithDataStorage
 
         PopulateMethodsByAddressTable();
 
+        //And the bodies the compiler emitted twice, whose live copy no table names - see ClonedMethodRecovery.
+        Analysis.ClonedMethodRecovery.Register(this);
+
         HasFinishedInitializing = true;
     }
 
