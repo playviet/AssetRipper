@@ -72,8 +72,9 @@ public static partial class ThrowHelperRecovery
         }
 
         var pages = new Dictionary<Arm64Register, ulong>();
-        var callees = new List<ulong>();
+        var callees = new List<(ulong Target, bool Veneer)>();
         var returned = false;
+        var conditionals = 0;
 
         foreach (var instruction in body)
         {
@@ -92,7 +93,13 @@ public static partial class ThrowHelperRecovery
                     //exception of its neighbour.
                     if (!returned && ReadCStringAtVirtualAddress(appContext, page + (ulong)instruction.Op2Imm) is { } text
                         && text.EndsWith("Exception", StringComparison.Ordinal))
+                    {
+                        if (Trace)
+                            System.Console.Error.WriteLine(
+                                $"THROW {address:X} depth={depth} route=own cond={conditionals} -> {text}");
+
                         return text;
+                    }
 
                     pages.Remove(instruction.Op0Reg);
                     break;
@@ -105,9 +112,37 @@ public static partial class ThrowHelperRecovery
                 case Arm64Mnemonic.B:
                     //Only branches taken before the function returns, for the same reason a name is: past that
                     //point the read is into whatever function comes next, and its callees are not this one's.
-                    if (!returned)
-                        callees.Add(instruction.BranchTarget);
+                    var veneer = instruction.Mnemonic == Arm64Mnemonic.B
+                        && instruction.MnemonicConditionCode is Arm64ConditionCode.NONE or Arm64ConditionCode.AL;
 
+                    if (instruction.Mnemonic == Arm64Mnemonic.B && !veneer)
+                    {
+                        //A `b.cs` is a branch *within* this function, to the other side of a decision it is
+                        //making. Following it made the function's own error path look like a function of its
+                        //own, and the search - now walking a body it had already been in - came out with the
+                        //exception that path raises. `CFramework.Logger::Log` is exactly that: `b.cs` over a
+                        //length compare at 0x22D6CE0, five instructions to the null check below it, and the
+                        //name of the exception the null check raises. 139 of its call sites became
+                        //`throw new NullReferenceException();`, plus 18 for its overload at 0x22D6D80, and
+                        //`GameStateLoading::InitRemoteConfig` - two statements, both calls - became a body
+                        //whose only statement was that throw.
+                        conditionals++;
+                        break;
+                    }
+
+                    if (!returned)
+                        callees.Add((instruction.BranchTarget, veneer));
+
+                    break;
+
+                case Arm64Mnemonic.CBZ:
+                case Arm64Mnemonic.CBNZ:
+                case Arm64Mnemonic.TBZ:
+                case Arm64Mnemonic.TBNZ:
+                    //Not followed - a branch taken only sometimes is not what this function is - but counted,
+                    //because how much deciding a function does before it raises is what tells a helper whose
+                    //whole purpose is to throw from an ordinary method that throws on one of its paths.
+                    conditionals++;
                     break;
 
                 default:
@@ -128,19 +163,39 @@ public static partial class ThrowHelperRecovery
         //A real throw helper does not return - it ends in a raise - so where a name was not found in the body
         //itself and the body returns, the search stops rather than borrowing a name from something it called.
         //A veneer is unaffected: it is one branch and no return, so it is still followed to what it stands for.
-        return returned ? null : Follow(appContext, callees, depth);
+        //
+        //That test is necessary and not sufficient, because the body read here is a fixed 64-instruction
+        //window rather than a function: a function longer than the window has its `RET` outside it and looks,
+        //from in here, exactly like one that never returns. `CFramework.LogExtensions.Log` at 0x22D6C2C is
+        //that - it null-checks its receiver 84 instructions in, so `returned` is false and every one of its
+        //callees was searched. `CF.GameStateLoading::InitRemoteConfig`, whose whole body is `this.Log(...);
+        //RemoteConfigManager.I.Init();`, came out as `throw new NullReferenceException();` and scored `full`.
+        //
+        //So only a veneer is followed now: an *unconditional branch* out of the function, which is the one
+        //case where the target is not something this function calls but something it *is*. A `BL` comes back,
+        //and what the callee raises on some branch of its own is not what its caller raises.
+        return returned ? null : Follow(appContext, address, callees, depth, conditionals);
     }
 
-    private static string? Follow(ApplicationAnalysisContext appContext, List<ulong> callees, int depth)
+    private static string? Follow(ApplicationAnalysisContext appContext, ulong address,
+        List<(ulong Target, bool Veneer)> callees, int depth, int conditionals)
     {
         foreach (var callee in callees)
         {
-            if (ResolveName(appContext, callee, depth + 1) is { } name)
-                return name;
+            if (ResolveName(appContext, callee.Target, depth + 1) is not { } name)
+                continue;
+
+            if (Trace)
+                System.Console.Error.WriteLine($"THROW {address:X} depth={depth} "
+                    + $"route={(callee.Veneer ? "veneer" : "call")} to={callee.Target:X} cond={conditionals} -> {name}");
+
+            return name;
         }
 
         return null;
     }
+
+    private static readonly bool Trace = System.Environment.GetEnvironmentVariable("THROW_TRACE") is not null;
 
     /// <summary>The addresses this thread is part-way through, which is how a cycle ends.</summary>
     /// <remarks>
