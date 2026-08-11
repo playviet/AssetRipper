@@ -3190,7 +3190,7 @@
 3
 ],
 "Assembly-CSharp::CFramework.AssetLoader+<InstantiateFromAddressables>d__10::MoveNext": [
-10,
+9,
 20,
 11
 ],
@@ -3205,7 +3205,7 @@
 1
 ],
 "Assembly-CSharp::CFramework.AssetLoader+<LoadFromAddressables>d__7`1::MoveNext": [
-7,
+6,
 15,
 8
 ],
@@ -4335,7 +4335,7 @@
 2
 ],
 "Assembly-CSharp::CFramework.AdSimulatorAds+<CRShowFullscreen>d__40::MoveNext": [
-7,
+8,
 18,
 8
 ],
@@ -6452,7 +6452,7 @@
 "Assembly-CSharp::CFramework.TrackingManager::InjectParamCounts": [
 5,
 7,
-6
+5
 ],
 "Assembly-CSharp::CFramework.TrackingManager::OnApplicationPause": [
 13,
@@ -6612,7 +6612,7 @@
 "Assembly-CSharp::CFramework.TrackingManager::InjectGlobalParams": [
 20,
 24,
-21
+20
 ],
 "Assembly-CSharp::CFramework.TrackingManager::IsCoin": [
 3,
@@ -9610,7 +9610,7 @@
 1
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenModuleUnityVersion::DOGradientColor": [
-7,
+3,
 9,
 7
 ],
@@ -11225,9 +11225,9 @@
 1
 ],
 "Assembly-CSharp::CF.LevelMetadataDesignConfig::BuildOverrideMap": [
-3,
+2,
 7,
-5
+4
 ],
 "Assembly-CSharp::CF.LevelMetadataDesignConfig::EnsureCache": [
 5,
@@ -12205,7 +12205,7 @@
 2
 ],
 "Assembly-CSharp::CF.FeedbackPopup::BuildAnimation": [
-13,
+19,
 19,
 19
 ],

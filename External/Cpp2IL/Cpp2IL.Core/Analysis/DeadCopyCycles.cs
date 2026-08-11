@@ -61,6 +61,19 @@ public static class DeadCopyCycles
                     foreach (var part in assembly.Parts)
                         Reach(part);
                     break;
+
+                //A field named on a local is a read of that local, wherever in the operand list it sits -
+                //the passes that recover a field write the base into the reference and leave nothing else
+                //behind, so missing this case would collect the definition of a base still being read.
+                case FieldReference { Local: { } owner }:
+                    Reach(owner);
+                    break;
+
+                case MultiDimensionalElement element:
+                    Reach(element.Array);
+                    foreach (var index in element.Indices)
+                        Reach(index);
+                    break;
             }
         }
 
@@ -133,7 +146,19 @@ public static class DeadCopyCycles
     /// Only <c>X</c> for now: the float-struct family is rebuilt out of V registers by four passes that run
     /// after this one, and taking a V copy away here would be taking it from them.
     /// </remarks>
-    private static bool IsInvented(LocalVariable local) => local.Register.Name is not null;
+    private static bool IsInvented(LocalVariable local)
+    {
+        var name = local.Register.Name;
+
+        if (name is not { Length: >= 2 } || name[0] != 'X')
+            return true;
+
+        for (var i = 1; i < name.Length; i++)
+            if (name[i] is < '0' or > '9')
+                return true;
+
+        return false;
+    }
 
     /// <summary>
     /// Opcodes that compute a value and do nothing else - the same set <see cref="DeadCodeEliminator"/>
