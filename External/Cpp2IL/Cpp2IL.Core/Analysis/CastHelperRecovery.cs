@@ -65,7 +65,58 @@ public static class CastHelperRecovery
             //it.
             if (instruction.Operands[1] is LocalVariable { Type: null or { IsValueType: true } } answer)
                 answer.Type = target;
+
+            //And the value being asked about, where what it is declared as is something the question could
+            //not be about at all.
+            if (instruction.Operands[2] is LocalVariable asked && AsksSomethingImpossible(asked.Type, target))
+                asked.Type = method.AppContext.SystemTypes.SystemObjectType;
         }
+    }
+
+    /// <summary>
+    /// Whether the value a cast is asking about is declared as something the cast could not possibly be about,
+    /// in which case the declaration is wrong and <c>object</c> is what the code actually has in hand.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A register holds whatever it last held, and a value the analysis could not place keeps that. In
+    /// <c>BoardController::PowerUp_Shuffle</c> the result of <c>Array.Clone</c> - which returns
+    /// <c>object</c> - came out declared <c>System.String</c>, so the cast after it read
+    /// <c>text as ECellColor[]</c>: valid IL, and not something C# will say, because no reference conversion
+    /// exists between the two. The statement and the three built on it were commented away.
+    /// </para>
+    /// <para>
+    /// Asking whether a value is of a type says nothing about what it is declared as - that is the whole
+    /// point of asking - so where the two are unrelated the declaration is the thing that is wrong. Only
+    /// where they are genuinely unrelated: <c>x as Derived</c> on a <c>Base</c> is the ordinary case and
+    /// says the declaration was right.
+    /// </para>
+    /// </remarks>
+    private static bool AsksSomethingImpossible(TypeAnalysisContext? declared, TypeAnalysisContext target)
+    {
+        if (declared is null || declared.IsValueType || target.IsValueType)
+            return false;
+
+        if (declared.IsInterface || target.IsInterface)
+            return false;
+
+        return !Reaches(declared, target) && !Reaches(target, declared);
+    }
+
+    /// <summary>Whether one type is the other or is derived from it.</summary>
+    private static bool Reaches(TypeAnalysisContext from, TypeAnalysisContext to)
+    {
+        //Everything reaches object, so a value declared as anything can be asked about as one.
+        if (to.FullName == "System.Object")
+            return true;
+
+        for (var step = from; step is not null; step = step.BaseType)
+        {
+            if (step.FullName == to.FullName)
+                return true;
+        }
+
+        return false;
     }
 
     /// <summary>The type a runtime class argument stands for, whether it is folded in or carried in a value.</summary>

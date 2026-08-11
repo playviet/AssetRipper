@@ -546,6 +546,11 @@ public static class ForkPipeline
         // stand-in for the rest of the method, and where the same register later carries a managed value the
         // copies between the two come out as `array = (CellData[])num17;`. Here, so that everything which
         // resolves against a stand-in has already run and only the generator sees the correction.
+        // Beside the pass below and for the same kind of reason: a local carrying a number is not always
+        // carrying one. A type test writes its answer on one arm and a nought on the other, and the join
+        // takes whatever width the register had - so an `isinst` result was stored into a `long`.
+        NullMergedLocal.Run(method);
+
         StandInCopyType.Run(method);
 
         // And once more on what that just named. A read at 0x18 of an array is its length and a read at
