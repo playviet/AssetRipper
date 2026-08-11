@@ -43,6 +43,12 @@ public static class OutParameterWriteback
             return;
 
         var slots = SlotsWhoseAddressIsTaken(graph.Instructions);
+
+        if (System.Environment.GetEnvironmentVariable("SLOT_TRACE") is not null)
+            System.Console.Error.WriteLine($"SLOTS {method.Name}: taken=[{string.Join(",", slots)}] "
+                + $"cleared=[{string.Join(",", System.Linq.Enumerable.Select(ZeroStores(graph),
+                    i => i.Operands[0] is Register r ? r.Name : i.Operands[0].GetType().Name))}]");
+
         if (slots.Count == 0)
             return;
 
@@ -191,6 +197,16 @@ public static class OutParameterWriteback
         ushort us => us == 0,
         byte b => b == 0,
         sbyte sb => sb == 0,
+
+        //A struct is cleared through a *vector* register - `movi v0.2d, #0` then `stp v0, v0, [sp, #0x50]` -
+        //and the lane model writes that zero as a float, because that is what a lane of a vector register
+        //holds. Reading only the integer widths meant the commonest clear in the whole binary was not one:
+        //`BoardController::TryGetPressedPointerScreenPosition` clears 68 bytes of `Touch` that way, so the
+        //slot kept the zero, and the slot is the same variable as its address - which is what `memcpy` and
+        //`get_phase` were then handed. Both came out as `0f`.
+        float f => f == 0,
+        double d => d == 0,
+
         _ => false,
     };
 
