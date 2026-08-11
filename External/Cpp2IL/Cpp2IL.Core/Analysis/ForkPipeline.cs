@@ -508,6 +508,18 @@ public static class ForkPipeline
         // operand says a member of it.
         IndirectArgument.Run(method);
 
+        // And the same struct assigned rather than passed. Too big for registers, it is copied by `memcpy` -
+        // an import no method table names - so the call stayed an address with a field's arithmetic in front
+        // of it. Here, where what the source holds is settled, since the length agreeing with the struct's
+        // own size is what identifies the shape.
+        StructAssignmentCopy.Run(method);
+
+        // And again on the fields those two just named. Both turn something that was arithmetic or an
+        // unresolved call into a field, long after the pass that says a private one by its property has run -
+        // so `mergeParticle.sizeOverLifetime = ...` arrived as `particleImage3._sizeOverLifetime = ...`,
+        // recovered exactly and still not something the project can write.
+        InaccessibleFieldRecovery.Run(method);
+
         HomogeneousFloatArguments.Run(method);
 
         // A shared generic body opens by asking whether its own runtime context is filled in yet. It is, by
