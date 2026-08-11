@@ -37,8 +37,20 @@ public static class SlotAddressRead
                 slots.TryAdd(named, local);
         }
 
-        if (slots.Count == 0)
-            return false;
+        //No early return on an empty set. `StackAnalyzer` only names a slot something touched **as a slot**,
+        //and a method that anchors its locals on the frame pointer touches none of them that way: every
+        //access is `[x29 - n]`, an address, so `slots` is empty and this used to give up before the fallback
+        //below - which exists precisely to make the slot that is missing.
+        //
+        //It is the commonest shape there is. **468 of the 590** untyped bases that root at the frame are
+        //`stackaddr_0` from `add x29, sp, #0`, concentrated in shared-generic bodies and async state
+        //machines, where il2cpp emits an alloca for a `T`-sized buffer so the stack pointer moves and x29
+        //has to anchor the locals. **381 of the 439 direct sites returned here**, and a hundred of them have
+        //a type at the site and convert on the spot.
+        //
+        //And 183 of the stores among them are worse than a marker: the generator has nowhere to put a write
+        //through an address it cannot name, so it `Pop`s the value and says nothing. `IListExtension::Swap`
+        //spills its `j` parameter to `[x29 - 0x34]`, the store is dropped, and the reload comes back zero.
 
         var changed = false;
 

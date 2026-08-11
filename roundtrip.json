@@ -1175,9 +1175,9 @@
 0
 ],
 "Assembly-CSharp::UnityEngine.UI.ProceduralImage.ProceduralImage::FixRadius": [
-1,
+2,
 6,
-4
+2
 ],
 "Assembly-CSharp::UnityEngine.UI.ProceduralImage.ProceduralImage::OnPopulateMesh": [
 3,
@@ -2740,9 +2740,9 @@
 4
 ],
 "Assembly-CSharp::Common.GameHubFlow::PrepareFirstOpen": [
-0,
+2,
 4,
-0
+2
 ],
 "Assembly-CSharp::Common.GameHubFlow::Route": [
 3,
@@ -2800,9 +2800,9 @@
 1
 ],
 "Assembly-CSharp::Common.GameManager::SetState": [
-2,
+4,
 8,
-2
+4
 ],
 "Assembly-CSharp::Common.GameManager::Update": [
 1,
@@ -2850,9 +2850,9 @@
 1
 ],
 "Assembly-CSharp::Common.GameStateHome::OnEnter": [
-9,
+11,
 15,
-9
+11
 ],
 "Assembly-CSharp::Common.GameStateHome::OnExit": [
 1,
@@ -2875,19 +2875,19 @@
 3
 ],
 "Assembly-CSharp::Common.GameStateLoading::InitRemoteConfig": [
-0,
+1,
 2,
-0
+1
 ],
 "Assembly-CSharp::Common.GameStateLoading::InitUserSegmentation": [
-2,
+3,
 4,
-2
+3
 ],
 "Assembly-CSharp::Common.GameStateLoading::InitConsent": [
-1,
+3,
 7,
-1
+3
 ],
 "Assembly-CSharp::Common.GameStateLoading::OnConsentReady": [
 2,
@@ -2895,14 +2895,14 @@
 2
 ],
 "Assembly-CSharp::Common.GameStateLoading::InitTracking": [
-1,
+4,
 6,
-1
+4
 ],
 "Assembly-CSharp::Common.GameStateLoading::InitAds": [
-1,
+3,
 5,
-1
+3
 ],
 "Assembly-CSharp::Common.GameStateLoading::OnTrackingReady": [
 3,
@@ -3160,9 +3160,9 @@
 10
 ],
 "Assembly-CSharp::Common.LoadingMenu::OnEnable": [
-1,
+4,
 5,
-1
+4
 ],
 "Assembly-CSharp::Common.LoadingMenu::OnDisable": [
 3,
@@ -3190,7 +3190,7 @@
 3
 ],
 "Assembly-CSharp::CFramework.AssetLoader+<InstantiateFromAddressables>d__10::MoveNext": [
-9,
+10,
 20,
 11
 ],
@@ -3205,7 +3205,7 @@
 1
 ],
 "Assembly-CSharp::CFramework.AssetLoader+<LoadFromAddressables>d__7`1::MoveNext": [
-6,
+7,
 15,
 8
 ],
@@ -3225,9 +3225,9 @@
 2
 ],
 "Assembly-CSharp::CFramework.AssetLoader::LoadSync": [
-5,
+4,
 6,
-5
+4
 ],
 "Assembly-CSharp::CFramework.AssetLoader::IsExist": [
 1,
@@ -3245,9 +3245,9 @@
 2
 ],
 "Assembly-CSharp::CFramework.AssetLoader::LoadFromAddressablesSync": [
-5,
+4,
 8,
-5
+4
 ],
 "Assembly-CSharp::CFramework.AssetLoader::IsExistInAddressables": [
 2,
@@ -3595,9 +3595,9 @@
 0
 ],
 "Assembly-CSharp::CFramework.VibrateManager::Haptic": [
-1,
+2,
 4,
-3
+2
 ],
 "Assembly-CSharp::CFramework.AbilityInventory::GetSaveData": [
 1,
@@ -3730,7 +3730,7 @@
 2
 ],
 "Assembly-CSharp::CFramework.BaseAbilityBuyPopup::Show": [
-16,
+4,
 19,
 16
 ],
@@ -3970,9 +3970,9 @@
 6
 ],
 "Assembly-CSharp::CFramework.AdsManager::OnAllProvidersReady": [
-2,
+14,
 22,
-2
+14
 ],
 "Assembly-CSharp::CFramework.AdsManager::FlushInitComplete": [
 2,
@@ -4195,9 +4195,9 @@
 11
 ],
 "Assembly-CSharp::CFramework.ConsentManager::OnMaxSdkInitialized": [
-5,
+6,
 13,
-5
+6
 ],
 "Assembly-CSharp::CFramework.ConsentManager::StartUmpFlow": [
 11,
@@ -4225,9 +4225,9 @@
 2
 ],
 "Assembly-CSharp::CFramework.ConsentManager::Settle": [
-2,
+4,
 11,
-2
+4
 ],
 "Assembly-CSharp::CFramework.InterstitialGate::BindSegments": [
 1,
@@ -4255,24 +4255,24 @@
 4
 ],
 "Assembly-CSharp::CFramework.InterstitialGate::CanShow": [
-6,
+11,
 15,
-6
+11
 ],
 "Assembly-CSharp::CFramework.InterstitialGate::PassesNewUserGates": [
-5,
+8,
 9,
-5
+8
 ],
 "Assembly-CSharp::CFramework.InterstitialGate::PassesProtections": [
-7,
+9,
 10,
-7
+9
 ],
 "Assembly-CSharp::CFramework.InterstitialGate::PassesPacing": [
-8,
+10,
 11,
-8
+10
 ],
 "Assembly-CSharp::CFramework.AdMobAds::ValidateRevenue": [
 8,
@@ -4280,9 +4280,9 @@
 8
 ],
 "Assembly-CSharp::CFramework.AdMobAds::RetryLoad": [
-6,
+8,
 12,
-6
+8
 ],
 "Assembly-CSharp::CFramework.AdMobAds::ResetRetry": [
 2,
@@ -4330,19 +4330,19 @@
 1
 ],
 "Assembly-CSharp::CFramework.AdMobAds::LoadNative": [
-1,
+2,
 3,
-1
+2
 ],
 "Assembly-CSharp::CFramework.AdSimulatorAds+<CRShowFullscreen>d__40::MoveNext": [
-4,
+7,
 18,
-4
+8
 ],
 "Assembly-CSharp::CFramework.AdSimulatorAds+<CRShowRewarded>d__41::MoveNext": [
-3,
+6,
 17,
-3
+6
 ],
 "Assembly-CSharp::CFramework.AdSimulatorAds::Awake": [
 1,
@@ -4355,29 +4355,29 @@
 0
 ],
 "Assembly-CSharp::CFramework.AdSimulatorAds::LoadBanner": [
-1,
+3,
 4,
-1
+3
 ],
 "Assembly-CSharp::CFramework.AdSimulatorAds::ShowBanner": [
-0,
 4,
-0
+4,
+4
 ],
 "Assembly-CSharp::CFramework.AdSimulatorAds::HideBanner": [
-0,
 3,
-0
+3,
+3
 ],
 "Assembly-CSharp::CFramework.AdSimulatorAds::DestroyBanner": [
-0,
 3,
-0
+3,
+3
 ],
 "Assembly-CSharp::CFramework.AdSimulatorAds::LoadInterstitial": [
-1,
+2,
 3,
-1
+2
 ],
 "Assembly-CSharp::CFramework.AdSimulatorAds::IsInterstitialReady": [
 1,
@@ -4385,14 +4385,14 @@
 1
 ],
 "Assembly-CSharp::CFramework.AdSimulatorAds::ShowInterstitial": [
-1,
+6,
 7,
-1
+6
 ],
 "Assembly-CSharp::CFramework.AdSimulatorAds::LoadRewarded": [
-1,
+2,
 3,
-1
+2
 ],
 "Assembly-CSharp::CFramework.AdSimulatorAds::IsRewardedReady": [
 1,
@@ -4400,14 +4400,14 @@
 1
 ],
 "Assembly-CSharp::CFramework.AdSimulatorAds::ShowRewarded": [
-1,
+4,
 5,
-1
+4
 ],
 "Assembly-CSharp::CFramework.AdSimulatorAds::LoadAppOpen": [
-1,
+2,
 3,
-1
+2
 ],
 "Assembly-CSharp::CFramework.AdSimulatorAds::IsAppOpenReady": [
 1,
@@ -4415,14 +4415,14 @@
 1
 ],
 "Assembly-CSharp::CFramework.AdSimulatorAds::ShowAppOpen": [
-1,
+6,
 7,
-1
+6
 ],
 "Assembly-CSharp::CFramework.AdSimulatorAds::LoadNative": [
-1,
+5,
 7,
-1
+5
 ],
 "Assembly-CSharp::CFramework.AdSimulatorAds::IsNativeReady": [
 1,
@@ -4475,9 +4475,9 @@
 5
 ],
 "Assembly-CSharp::CFramework.AppLovinAds::Initialize": [
-3,
+10,
 18,
-3
+10
 ],
 "Assembly-CSharp::CFramework.AppLovinAds::RegisterFormatCallbacks": [
 1,
@@ -4495,9 +4495,9 @@
 6
 ],
 "Assembly-CSharp::CFramework.AppLovinAds::LoadBanner": [
-2,
+3,
 4,
-2
+3
 ],
 "Assembly-CSharp::CFramework.AppLovinAds::ShowBanner": [
 3,
@@ -4515,9 +4515,9 @@
 3
 ],
 "Assembly-CSharp::CFramework.AppLovinAds::LoadInterstitial": [
-3,
+1,
 6,
-3
+1
 ],
 "Assembly-CSharp::CFramework.AppLovinAds::IsInterstitialReady": [
 2,
@@ -4525,14 +4525,14 @@
 2
 ],
 "Assembly-CSharp::CFramework.AppLovinAds::ShowInterstitial": [
-3,
+4,
 6,
-3
+4
 ],
 "Assembly-CSharp::CFramework.AppLovinAds::LoadRewarded": [
-2,
+0,
 6,
-2
+0
 ],
 "Assembly-CSharp::CFramework.AppLovinAds::IsRewardedReady": [
 2,
@@ -4540,14 +4540,14 @@
 2
 ],
 "Assembly-CSharp::CFramework.AppLovinAds::ShowRewarded": [
-3,
+5,
 7,
-3
+5
 ],
 "Assembly-CSharp::CFramework.AppLovinAds::LoadAppOpen": [
-2,
+4,
 9,
-2
+4
 ],
 "Assembly-CSharp::CFramework.AppLovinAds::IsAppOpenReady": [
 2,
@@ -4555,9 +4555,9 @@
 2
 ],
 "Assembly-CSharp::CFramework.AppLovinAds::ShowAppOpen": [
-2,
+4,
 6,
-2
+4
 ],
 "Assembly-CSharp::CFramework.AppLovinAds::LoadNative": [
 1,
@@ -4565,9 +4565,9 @@
 1
 ],
 "Assembly-CSharp::CFramework.AppLovinAds::LaunchTestSuite": [
-0,
 1,
-0
+1,
+1
 ],
 "Assembly-CSharp::CFramework.IronSourceAds::Initialize": [
 0,
@@ -4640,9 +4640,9 @@
 2
 ],
 "Assembly-CSharp::CFramework.StateMachine`1::Set": [
-1,
+3,
 5,
-1
+3
 ],
 "Assembly-CSharp::CFramework.StateMachine`1::Update": [
 1,
@@ -4765,7 +4765,7 @@
 1
 ],
 "Assembly-CSharp::CFramework.GoogleDesignConfigSo`2::GetDataById": [
-1,
+2,
 2,
 2
 ],
@@ -4790,7 +4790,7 @@
 1
 ],
 "Assembly-CSharp::CFramework.GoogleDesignConfigSo`2::OnPulled": [
-3,
+4,
 6,
 4
 ],
@@ -4845,9 +4845,9 @@
 2
 ],
 "Assembly-CSharp::CFramework.GooglePlayInstallReferrerProvider::OnSetupFinished": [
-16,
+17,
 21,
-16
+17
 ],
 "Assembly-CSharp::CFramework.GooglePlayInstallReferrerProvider::ExtractParam": [
 8,
@@ -4855,14 +4855,14 @@
 8
 ],
 "Assembly-CSharp::CFramework.InstallReferrerManager::Init": [
-1,
+3,
 8,
-1
+3
 ],
 "Assembly-CSharp::CFramework.InstallReferrerManager::OnGoogleResolved": [
-4,
+6,
 15,
-4
+6
 ],
 "Assembly-CSharp::CFramework.InstallReferrerManager::Classify": [
 18,
@@ -4880,9 +4880,9 @@
 1
 ],
 "Assembly-CSharp::CFramework.InstallReferrerManager::FetchMeta": [
-17,
+18,
 23,
-17
+18
 ],
 "Assembly-CSharp::CFramework.InstallReferrerManager::PopulateMeta": [
 7,
@@ -5005,7 +5005,7 @@
 2
 ],
 "Assembly-CSharp::CFramework.RemoteConfigModel`1::EnsureParsed": [
-3,
+4,
 6,
 4
 ],
@@ -5045,9 +5045,9 @@
 3
 ],
 "Assembly-CSharp::CFramework.RemoteConfigManager+<FetchRemote>d__21::MoveNext": [
-3,
+7,
 21,
-3
+7
 ],
 "Assembly-CSharp::CFramework.RemoteConfigManager::Init": [
 10,
@@ -5055,9 +5055,9 @@
 10
 ],
 "Assembly-CSharp::CFramework.RemoteConfigManager::OnFirebaseReady": [
-0,
+2,
 4,
-0
+2
 ],
 "Assembly-CSharp::CFramework.RemoteConfigManager::LogDefaults": [
 11,
@@ -5065,9 +5065,9 @@
 11
 ],
 "Assembly-CSharp::CFramework.RemoteConfigManager::UpdateFromRemote": [
-6,
+3,
 14,
-6
+9
 ],
 "Assembly-CSharp::CFramework.RemoteConfigManager::FetchRemote": [
 1,
@@ -5075,9 +5075,9 @@
 1
 ],
 "Assembly-CSharp::CFramework.RemoteConfigManager::ApplyFromFirebase": [
-4,
+9,
 22,
-4
+9
 ],
 "Assembly-CSharp::CFramework.RemoteConfigManager::GetRaw": [
 2,
@@ -5095,7 +5095,7 @@
 3
 ],
 "Assembly-CSharp::CFramework.BaseSaveManager`1::Init": [
-7,
+8,
 9,
 8
 ],
@@ -5110,17 +5110,17 @@
 1
 ],
 "Assembly-CSharp::CFramework.BaseSaveManager`1::OnApplicationFocus": [
-0,
+1,
 1,
 1
 ],
 "Assembly-CSharp::CFramework.BaseSaveManager`1::OnApplicationPause": [
-0,
+1,
 1,
 1
 ],
 "Assembly-CSharp::CFramework.BaseSaveManager`1::OnApplicationQuit": [
-0,
+1,
 1,
 1
 ],
@@ -5140,9 +5140,9 @@
 2
 ],
 "Assembly-CSharp::CFramework.SaveBaseSingleton`1::Deserialize": [
-0,
 6,
-0
+6,
+6
 ],
 "Assembly-CSharp::CFramework.SaveBaseSingleton`1::ResetToDefault": [
 3,
@@ -5180,14 +5180,14 @@
 1
 ],
 "Assembly-CSharp::CFramework.SaveIO::Save": [
-10,
+11,
 17,
-10
+11
 ],
 "Assembly-CSharp::CFramework.SaveIO::Load": [
-11,
+14,
 20,
-11
+14
 ],
 "Assembly-CSharp::CFramework.SaveIO::DeleteAll": [
 3,
@@ -5200,9 +5200,9 @@
 5
 ],
 "Assembly-CSharp::CFramework.SingletonJson`1+<GetJsonOnline>d__3::MoveNext": [
-5,
+9,
 26,
-5
+9
 ],
 "Assembly-CSharp::CFramework.SingletonJson`1::GetJsonOnline": [
 2,
@@ -5370,7 +5370,7 @@
 1
 ],
 "Assembly-CSharp::CFramework.BaseTrackingSaveData`1::SetCustomCount": [
-0,
+1,
 5,
 1
 ],
@@ -5415,7 +5415,7 @@
 6
 ],
 "Assembly-CSharp::CFramework.BaseTrackingSaveData`1::AppendSnapshotFields": [
-10,
+30,
 44,
 30
 ],
@@ -5645,7 +5645,7 @@
 2
 ],
 "Assembly-CSharp::CFramework.FirebaseTracking::Initialize": [
-0,
+2,
 3,
 2
 ],
@@ -5780,9 +5780,9 @@
 4
 ],
 "Assembly-CSharp::CFramework.TrackingEvents::AbysscoreAdImpression": [
+1,
 8,
-8,
-8
+1
 ],
 "Assembly-CSharp::CFramework.TrackingEvents::AdIsReady": [
 4,
@@ -6425,9 +6425,9 @@
 3
 ],
 "Assembly-CSharp::CFramework.TrackingManager::InitNetworksAndSession": [
-9,
+12,
 19,
-9
+12
 ],
 "Assembly-CSharp::CFramework.TrackingManager::InitCrashService": [
 3,
@@ -6435,9 +6435,9 @@
 3
 ],
 "Assembly-CSharp::CFramework.TrackingManager::InitSession": [
-10,
+19,
 32,
-10
+19
 ],
 "Assembly-CSharp::CFramework.TrackingManager::ClearParamCountRules": [
 2,
@@ -6452,12 +6452,12 @@
 "Assembly-CSharp::CFramework.TrackingManager::InjectParamCounts": [
 5,
 7,
-5
+6
 ],
 "Assembly-CSharp::CFramework.TrackingManager::OnApplicationPause": [
-11,
+13,
 21,
-11
+13
 ],
 "Assembly-CSharp::CFramework.TrackingManager::TrackAdImpression": [
 16,
@@ -6540,9 +6540,9 @@
 1
 ],
 "Assembly-CSharp::CFramework.TrackingManager::SetAttribution": [
-5,
+17,
 23,
-5
+17
 ],
 "Assembly-CSharp::CFramework.TrackingManager::ApplyAttributionOnce": [
 6,
@@ -6612,7 +6612,7 @@
 "Assembly-CSharp::CFramework.TrackingManager::InjectGlobalParams": [
 20,
 24,
-20
+21
 ],
 "Assembly-CSharp::CFramework.TrackingManager::IsCoin": [
 3,
@@ -6665,9 +6665,9 @@
 2
 ],
 "Assembly-CSharp::CFramework.TrackingManager::TrackGameEnd": [
+8,
 9,
-9,
-9
+8
 ],
 "Assembly-CSharp::CFramework.TrackingManager::SetSegmentName": [
 3,
@@ -6765,7 +6765,7 @@
 2
 ],
 "Assembly-CSharp::CFramework.BaseUIView::Awake": [
-16,
+18,
 22,
 18
 ],
@@ -6805,7 +6805,7 @@
 2
 ],
 "Assembly-CSharp::CFramework.BaseUIView::GetId": [
-1,
+2,
 2,
 2
 ],
@@ -6995,7 +6995,7 @@
 3
 ],
 "Assembly-CSharp::CFramework.MultiCutoutOverlay::DrawCornerFeather": [
-2,
+3,
 5,
 3
 ],
@@ -7025,7 +7025,7 @@
 2
 ],
 "Assembly-CSharp::CFramework.MultiCutoutOverlay::WorldRectToLocal": [
-0,
+1,
 4,
 1
 ],
@@ -7075,7 +7075,7 @@
 15
 ],
 "Assembly-CSharp::CFramework.SlicedFilledImage::GetAdjustedBorders": [
-0,
+2,
 6,
 3
 ],
@@ -7180,7 +7180,7 @@
 1
 ],
 "Assembly-CSharp::CFramework.UIManager::HandleBackKey": [
-3,
+4,
 9,
 4
 ],
@@ -7410,9 +7410,9 @@
 1
 ],
 "Assembly-CSharp::CFramework.UserSegmentationManager::ApplyCounts": [
-20,
+18,
 23,
-20
+18
 ],
 "Assembly-CSharp::CFramework.UserSegmentationManager::ReadNumber": [
 3,
@@ -7465,9 +7465,9 @@
 2
 ],
 "Assembly-CSharp::CFramework.UserSegmentationManager::ResolveSegmentsByCampaign": [
-8,
+10,
 12,
-8
+10
 ],
 "Assembly-CSharp::CFramework.Benchmark::Start": [
 2,
@@ -7600,9 +7600,9 @@
 2
 ],
 "Assembly-CSharp::CFramework.Logger::PrintColorMapping": [
-11,
+8,
 13,
-11
+12
 ],
 "Assembly-CSharp::CFramework.SpeedTester::StartTest": [
 5,
@@ -7710,7 +7710,7 @@
 3
 ],
 "Assembly-CSharp::CFramework.ColorExtension::RandomColor": [
-1,
+2,
 3,
 2
 ],
@@ -7735,9 +7735,9 @@
 2
 ],
 "Assembly-CSharp::CFramework.ComponentExtension::CopyComponent": [
-1,
+7,
 11,
-1
+7
 ],
 "Assembly-CSharp::CFramework.DateTimeExtension::ChangeTime": [
 0,
@@ -7780,12 +7780,12 @@
 1
 ],
 "Assembly-CSharp::CFramework.IDictionaryExtension::TryGetKeyByValue": [
-2,
+1,
 7,
-4
+1
 ],
 "Assembly-CSharp::CFramework.IDictionaryExtension::GetKeysByValue": [
-1,
+0,
 7,
 4
 ],
@@ -7810,9 +7810,9 @@
 0
 ],
 "Assembly-CSharp::CFramework.IEnumerableExtension::GetRandom": [
-0,
 1,
-0
+1,
+1
 ],
 "Assembly-CSharp::CFramework.IEnumerableExtension::PickRandom": [
 1,
@@ -7820,7 +7820,7 @@
 2
 ],
 "Assembly-CSharp::CFramework.IEnumerableExtension::TakeLast": [
-4,
+3,
 7,
 7
 ],
@@ -7840,9 +7840,9 @@
 1
 ],
 "Assembly-CSharp::CFramework.IListExtension::RemoveRandom": [
-2,
+1,
 5,
-2
+1
 ],
 "Assembly-CSharp::CFramework.IListExtension::IsEmpty": [
 0,
@@ -7890,9 +7890,9 @@
 3
 ],
 "Assembly-CSharp::CFramework.JsonExtension+<FromNewlineDelimitedJson>d__2`1::MoveNext": [
-0,
+2,
 4,
-0
+2
 ],
 "Assembly-CSharp::CFramework.JsonExtension::ToNewlineDelimitedJson": [
 5,
@@ -8215,9 +8215,9 @@
 3
 ],
 "Assembly-CSharp::CFramework.TransformExtension::FindChild": [
-2,
+0,
 4,
-2
+1
 ],
 "Assembly-CSharp::CFramework.TransformExtension::FindDeepestChild": [
 3,
@@ -8690,19 +8690,19 @@
 3
 ],
 "Assembly-CSharp::CFramework.Json+Serializer::SerializeValue": [
-6,
 9,
-6
+9,
+9
 ],
 "Assembly-CSharp::CFramework.Json+Serializer::SerializeObject": [
-7,
+8,
 11,
-7
+8
 ],
 "Assembly-CSharp::CFramework.Json+Serializer::SerializeArray": [
-5,
+6,
 7,
-5
+6
 ],
 "Assembly-CSharp::CFramework.Json+Serializer::SerializeString": [
 14,
@@ -9180,9 +9180,9 @@
 2
 ],
 "Assembly-CSharp::CFramework.Utility::CopyComponent": [
-1,
+8,
 13,
-1
+8
 ],
 "Assembly-CSharp::CFramework.Utility::IsPrefab": [
 0,
@@ -9307,12 +9307,12 @@
 "Assembly-CSharp::DG.Tweening.DOTweenModulePhysics::DORotate": [
 3,
 4,
-4
+3
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenModulePhysics::DOLookAt": [
 4,
 8,
-6
+4
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenModulePhysics::DOJump": [
 18,
@@ -9320,12 +9320,12 @@
 18
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenModulePhysics::DOPath": [
-3,
+4,
 4,
 4
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenModulePhysics::DOLocalPath": [
-4,
+5,
 6,
 5
 ],
@@ -9355,12 +9355,12 @@
 18
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenModulePhysics2D::DOPath": [
-3,
+4,
 4,
 4
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenModulePhysics2D::DOLocalPath": [
-4,
+5,
 6,
 5
 ],
@@ -9380,9 +9380,9 @@
 6
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenModuleSprite::DOBlendableColor": [
-6,
+5,
 7,
-6
+5
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenModuleUI+Utils::SwitchToRectTransform": [
 2,
@@ -9410,17 +9410,17 @@
 6
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenModuleUI::DOFlexibleSize": [
-1,
+4,
 4,
 4
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenModuleUI::DOMinSize": [
-1,
+4,
 4,
 4
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenModuleUI::DOPreferredSize": [
-1,
+4,
 4,
 4
 ],
@@ -9530,19 +9530,19 @@
 4
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenModuleUI::DOCounter": [
-4,
+6,
 7,
 6
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenModuleUI::DOText": [
-4,
+7,
 8,
 7
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenModuleUI::DOBlendableColor": [
-6,
+5,
 7,
-6
+5
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenModuleUI::DOShapeCircle": [
 5,
@@ -9715,9 +9715,9 @@
 3
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenAnimation::Dispatch_OnReset": [
-0,
 1,
-0
+1,
+1
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenAnimation::Awake": [
 7,
@@ -9760,9 +9760,9 @@
 1
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenAnimation::CreateTween": [
-54,
+15,
 58,
-55
+15
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenAnimation::GetTweens": [
 3,
@@ -9770,34 +9770,34 @@
 3
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenAnimation::SetAnimationTarget": [
-0,
+7,
 8,
 7
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenAnimation::DOPlay": [
-4,
+1,
 5,
-4
+1
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenAnimation::DOPlayBackwards": [
-4,
+1,
 5,
-4
+1
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenAnimation::DOPlayForward": [
-4,
+1,
 5,
-4
+1
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenAnimation::DOPause": [
-4,
+1,
 5,
-4
+1
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenAnimation::DOTogglePause": [
-4,
+1,
 5,
-4
+1
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenAnimation::DORewind": [
 5,
@@ -9805,14 +9805,14 @@
 5
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenAnimation::DORestart": [
-9,
+6,
 11,
-9
+6
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenAnimation::DOComplete": [
-4,
+1,
 5,
-4
+1
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenAnimation::DOGotoAndPause": [
 1,
@@ -9825,19 +9825,19 @@
 1
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenAnimation::DOGoto": [
-11,
+8,
 15,
-11
+8
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenAnimation::DOKill": [
-5,
+2,
 6,
-5
+2
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenAnimation::DOPlayById": [
-4,
+1,
 5,
-4
+1
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenAnimation::DOPlayAllById": [
 1,
@@ -9850,9 +9850,9 @@
 1
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenAnimation::DOPlayBackwardsById": [
-4,
+1,
 5,
-4
+1
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenAnimation::DOPlayBackwardsAllById": [
 1,
@@ -9860,9 +9860,9 @@
 1
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenAnimation::DOPlayForwardById": [
-4,
+1,
 5,
-4
+1
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenAnimation::DOPlayForwardAllById": [
 1,
@@ -9870,14 +9870,14 @@
 1
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenAnimation::DOPlayNext": [
-3,
+5,
 7,
 5
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenAnimation::DORewindAndPlayNext": [
-6,
+3,
 7,
-6
+3
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenAnimation::DORewindAllById": [
 2,
@@ -9885,9 +9885,9 @@
 2
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenAnimation::DORestartById": [
-5,
+2,
 6,
-5
+2
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenAnimation::DORestartAllById": [
 2,
@@ -9895,9 +9895,9 @@
 2
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenAnimation::DOKillById": [
-4,
+1,
 5,
-4
+1
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenAnimation::DOKillAllById": [
 1,
@@ -9925,14 +9925,14 @@
 3
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenAnimation::ReEvaluateRelativeTween": [
-7,
+6,
 15,
-7
+6
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenProShortcuts::DOSpiral": [
-5,
+3,
 9,
-6
+3
 ],
 "Assembly-CSharp::DG.Tweening.ShortcutExtensionsTMPText::DOColor": [
 3,
@@ -9970,7 +9970,7 @@
 3
 ],
 "Assembly-CSharp::DG.Tweening.ShortcutExtensionsTMPText::DOCounter": [
-4,
+6,
 7,
 6
 ],
@@ -10005,7 +10005,7 @@
 5
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenTMPAnimator+CharTransform::ResetGeometry": [
-5,
+6,
 8,
 6
 ],
@@ -10035,19 +10035,19 @@
 3
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenTMPAnimator+CharTransform::UpdateGeometry": [
-17,
+15,
 20,
-17
+15
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenTMPAnimator+CharTransform::ShiftVertices": [
-10,
+9,
 14,
-12
+9
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenTMPAnimator+CharTransform::ResetVerticesShift": [
 9,
 14,
-11
+9
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenTMPAnimator::DisposeInstanceFor": [
 4,
@@ -10065,9 +10065,9 @@
 10
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenTMPAnimator::Reset": [
-5,
+3,
 9,
-5
+3
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenTMPAnimator::OnTextChanged": [
 2,
@@ -10075,9 +10075,9 @@
 2
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenTMPAnimator::ValidateChar": [
-7,
+8,
 11,
-7
+8
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenTMPAnimator::ValidateSpan": [
 2,
@@ -10107,7 +10107,7 @@
 "Assembly-CSharp::DG.Tweening.DOTweenTMPAnimator::GetCharRotation": [
 2,
 5,
-3
+2
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenTMPAnimator::GetCharScale": [
 2,
@@ -10125,9 +10125,9 @@
 4
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenTMPAnimator::SetCharRotation": [
-3,
+4,
 9,
-5
+4
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenTMPAnimator::SetCharScale": [
 4,
@@ -10172,10 +10172,10 @@
 "Assembly-CSharp::DG.Tweening.DOTweenTMPAnimator::DORotateChar": [
 3,
 5,
-4
+3
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenTMPAnimator::DOScaleChar": [
-2,
+3,
 4,
 3
 ],
@@ -10185,7 +10185,7 @@
 5
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenTMPAnimator::DOPunchCharRotation": [
-4,
+5,
 7,
 5
 ],
@@ -10200,7 +10200,7 @@
 5
 ],
 "Assembly-CSharp::DG.Tweening.DOTweenTMPAnimator::DOShakeCharRotation": [
-4,
+5,
 7,
 5
 ],
@@ -10210,9 +10210,9 @@
 5
 ],
 "Assembly-CSharp::CF.BoardController+<DelayedMergeCheck>d__152::MoveNext": [
-4,
+5,
 11,
-4
+5
 ],
 "Assembly-CSharp::CF.BoardController+<HammerAnimation>d__155::MoveNext": [
 26,
@@ -10220,7 +10220,7 @@
 27
 ],
 "Assembly-CSharp::CF.BoardController+<ProcessCascades>d__137::MoveNext": [
-51,
+52,
 70,
 53
 ],
@@ -10230,7 +10230,7 @@
 2
 ],
 "Assembly-CSharp::CF.BoardController+<RefillControl>d__136::MoveNext": [
-0,
+1,
 13,
 1
 ],
@@ -10320,9 +10320,9 @@
 11
 ],
 "Assembly-CSharp::CF.BoardController::BuildLevelPool": [
-7,
+6,
 8,
-7
+6
 ],
 "Assembly-CSharp::CF.BoardController::RebuildTargetReqMap": [
 7,
@@ -10330,9 +10330,9 @@
 7
 ],
 "Assembly-CSharp::CF.BoardController::BuildInitialBoard": [
-39,
+40,
 48,
-39
+40
 ],
 "Assembly-CSharp::CF.BoardController::PrepareCtxInitial": [
 32,
@@ -10345,9 +10345,9 @@
 8
 ],
 "Assembly-CSharp::CF.BoardController::BuildControlSlots": [
-16,
+17,
 21,
-16
+17
 ],
 "Assembly-CSharp::CF.BoardController::BuildControlGenContext": [
 31,
@@ -10400,9 +10400,9 @@
 2
 ],
 "Assembly-CSharp::CF.BoardController::PlaceCell": [
-10,
+26,
 32,
-10
+26
 ],
 "Assembly-CSharp::CF.BoardController::ProcessMergeQueue": [
 0,
@@ -10460,7 +10460,7 @@
 12
 ],
 "Assembly-CSharp::CF.BoardController::ComputeMergeCenter": [
-1,
+4,
 8,
 4
 ],
@@ -10575,9 +10575,9 @@
 5
 ],
 "Assembly-CSharp::CF.BoardLogic::GenerateSmartBlock": [
-46,
+45,
 52,
-46
+45
 ],
 "Assembly-CSharp::CF.BoardLogic::PickTargetColor": [
 9,
@@ -10590,9 +10590,9 @@
 1
 ],
 "Assembly-CSharp::CF.BoardLogic::PickWeighted": [
-18,
+16,
 22,
-18
+16
 ],
 "Assembly-CSharp::CF.BoardLogic::CountBoardShapes": [
 6,
@@ -10600,9 +10600,9 @@
 6
 ],
 "Assembly-CSharp::CF.BoardLogic::PickFromPool": [
-20,
+17,
 24,
-20
+17
 ],
 "Assembly-CSharp::CF.BoardLogic::ShuffleInt": [
 1,
@@ -11215,9 +11215,9 @@
 2
 ],
 "Assembly-CSharp::CF.AllDesignConfig::PullAll": [
-1,
+4,
 7,
-1
+4
 ],
 "Assembly-CSharp::CF.AllDesignConfig::CRPullAll": [
 1,
@@ -11225,9 +11225,9 @@
 1
 ],
 "Assembly-CSharp::CF.LevelMetadataDesignConfig::BuildOverrideMap": [
-2,
+3,
 7,
-4
+5
 ],
 "Assembly-CSharp::CF.LevelMetadataDesignConfig::EnsureCache": [
 5,
@@ -11525,9 +11525,9 @@
 1
 ],
 "Assembly-CSharp::CF.GameManager::SetState": [
-2,
+4,
 6,
-2
+4
 ],
 "Assembly-CSharp::CF.GameManager::Update": [
 1,
@@ -11580,9 +11580,9 @@
 1
 ],
 "Assembly-CSharp::CF.GameStateHome::OnEnter": [
-1,
+3,
 5,
-1
+3
 ],
 "Assembly-CSharp::CF.GameStateHome::OnExit": [
 1,
@@ -11615,9 +11615,9 @@
 2
 ],
 "Assembly-CSharp::CF.GameStateLoading::InitRemoteConfig": [
-0,
+1,
 2,
-0
+1
 ],
 "Assembly-CSharp::CF.GameStateLoading::BindPersistentServices": [
 4,
@@ -11625,9 +11625,9 @@
 4
 ],
 "Assembly-CSharp::CF.GameStateLoading::InitConsent": [
-1,
+3,
 8,
-1
+3
 ],
 "Assembly-CSharp::CF.GameStateLoading::OnConsentReady": [
 2,
@@ -11635,14 +11635,14 @@
 2
 ],
 "Assembly-CSharp::CF.GameStateLoading::InitTracking": [
-1,
+4,
 6,
-1
+4
 ],
 "Assembly-CSharp::CF.GameStateLoading::InitAds": [
-1,
+3,
 5,
-1
+3
 ],
 "Assembly-CSharp::CF.GameStateLoading::OnTrackingReady": [
 2,
@@ -12395,9 +12395,9 @@
 5
 ],
 "Assembly-CSharp::CF.LoadingMenu::OnEnable": [
-1,
+4,
 5,
-1
+4
 ],
 "Assembly-CSharp::CF.LoadingMenu::OnDisable": [
 3,
@@ -12465,7 +12465,7 @@
 3
 ],
 "Assembly-CSharp::CF.TutorialIntroMenu::Show": [
-7,
+10,
 13,
 10
 ],
