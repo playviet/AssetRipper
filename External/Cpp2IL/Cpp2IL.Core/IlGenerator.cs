@@ -905,6 +905,11 @@ public static partial class IlGenerator
             ushort us => us == 0,
             byte b => b == 0,
             sbyte sb => sb == 0,
+            //A struct is cleared through a vector register - `movi v0.2d, #0` and a store pair - so the
+            //commonest nought in the binary arrives as a float. Only asked where the place it is going is a
+            //reference or a struct, so a real 0f going into a float is never touched.
+            float f => f == 0,
+            double d => d == 0,
             _ => false,
         };
 
