@@ -107,11 +107,19 @@ public static class ArrayElementAddress
             }
         }
 
+        if (System.Environment.GetEnvironmentVariable("CHAIN_TRACE") is { } wanted && method.Name.Contains(wanted))
+            foreach (var instruction in graph.Instructions)
+                if (instruction.OpCode == OpCode.Add && instruction.Operands is [LocalVariable made, ..])
+                    System.Console.WriteLine($"CHAIN {(chains.ContainsKey(made) ? "yes" : "no ")} {instruction}");
+
         if (chains.Count == 0)
             return;
 
-        foreach (var instruction in graph.Instructions)
+        foreach (var block in graph.Blocks)
+        for (var at = 0; at < block.Instructions.Count; at++)
         {
+            var instruction = block.Instructions[at];
+
             for (var i = 0; i < instruction.Operands.Count; i++)
             {
                 //An index that is really a byte offset. Where the compiler kept one instead of a subscript the
@@ -139,6 +147,37 @@ public static class ArrayElementAddress
                         addend = reached.Constant + read.Addend;
                         break;
 
+                    //The subscript in two halves, which is how `a[i + j]` over an array of bytes is compiled:
+                    //one term is added into the address and the other stays in the addressing mode, because
+                    //at a width of one there is nothing to scale and no reason to put them together first.
+                    //`BoardLogic::CheckAndMergeAll` reads `_mergeRemoveMask[baseIdx + s]` that way, and the
+                    //address came out as `_mergeRemoveMask + num8` in front of an unmanaged-memory read.
+                    //Only at a step of exactly one element, where an unscaled term can be nothing else.
+                    case MemoryOperand { Index: not null, Base: LocalVariable carrying } indexed
+                        when chains.TryGetValue(carrying, out var partial)
+                            && ArrayTypeInference.Width(partial.Element, pointerSize) is 1
+                            && indexed.Scale is 0 or 1:
+                    {
+                        var subscript = indexed.Index;
+
+                        //Both halves present: the sum of them is the subscript, and it has to be worked out
+                        //somewhere - immediately in front of the read, where both are in hand.
+                        if (partial.Index is { } already)
+                        {
+                            var sum = new LocalVariable($"index{method.Locals.Count}", new Register(null, "SUM"),
+                                method.AppContext.SystemTypes.SystemInt32Type);
+
+                            method.Locals.Add(sum);
+                            block.Instructions.Insert(at, new Instruction(instruction.Index, OpCode.Add, sum, already, subscript!));
+                            at++;
+                            subscript = sum;
+                        }
+
+                        address = partial with { Index = subscript, Scale = 1 };
+                        addend = partial.Constant + indexed.Addend;
+                        break;
+                    }
+
                     //And the same address already named as a member of something else. The chain's local is
                     //typed by whatever the offsets happened to fit, and where that lands on a real type the
                     //resolver names the read before this pass ever sees it - `v208.isEmpty`, a `CellData` at
@@ -153,6 +192,16 @@ public static class ArrayElementAddress
                         break;
 
                     default:
+                        //Every address this could have folded and did not, for one named method. Both halves
+                        //of the question - is there a chain, and does the read reach it - have been wrong
+                        //here in turn, and neither is visible from the export.
+                        if (System.Environment.GetEnvironmentVariable("CHAIN_TRACE") is { } asked && method.Name.Contains(asked)
+                            && instruction.Operands[i] is MemoryOperand { Base: LocalVariable why } refused)
+                        {
+                            System.Console.WriteLine($"CHAIN refused {instruction} operand {i} chain={chains.ContainsKey(why)}"
+                                + $" index={refused.Index} scale={refused.Scale}");
+                        }
+
                         continue;
                 }
 
@@ -210,7 +259,23 @@ public static class ArrayElementAddress
             return null;
 
         if (Scaled(added, definitions, stride) is { } scaled && stride == scaled.Width)
+        {
+            //A constant the subscript is carrying belongs on the address, not in the subscript. The compiler
+            //works `array + 0x20 + i` out as `array + (i + 0x20)` when the header and the index end up in the
+            //same register - `BoardLogic::CheckAndMergeAll` does, over a `byte[]` - and then nothing here can
+            //see a header at all and the fold is refused for being before the first element.
+            if (scaled.Index is LocalVariable subscript && definitions.TryGetValue(subscript, out var made)
+                && made is { OpCode: OpCode.Add, Operands: [_, { } one, { } other] })
+            {
+                if (Constant(other) is { } after && one is LocalVariable)
+                    return running with { Index = one, Scale = scaled.Width, Constant = running.Constant + after * scaled.Width };
+
+                if (Constant(one) is { } before && other is LocalVariable)
+                    return running with { Index = other, Scale = scaled.Width, Constant = running.Constant + before * scaled.Width };
+            }
+
             return running with { Index = scaled.Index, Scale = scaled.Width };
+        }
 
         //Or the subscript is not there at all, because the compiler kept a byte offset instead and stepped it
         //by the element's width once round the loop. The counter it moves with is the subscript.

@@ -554,5 +554,6 @@ public static class ForkPipeline
         // `BoardController::BuildLevelPool` reads `_shuffleColors.Length` four times through a local the
         // initialisation guard had left holding `Il2CppClass<BoardSettingSO>`.
         ArrayAccessRecovery.Run(method);
+        ArrayElementAddress.Run(method);
     }
 }
