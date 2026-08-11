@@ -547,5 +547,12 @@ public static class ForkPipeline
         // copies between the two come out as `array = (CellData[])num17;`. Here, so that everything which
         // resolves against a stand-in has already run and only the generator sees the correction.
         StandInCopyType.Run(method);
+
+        // And once more on what that just named. A read at 0x18 of an array is its length and a read at
+        // 0x20 plus a scaled index is an element, and both are decided from the type the base carries - so a
+        // base that only became an array on the line above was refused when the pass ran the first time.
+        // `BoardController::BuildLevelPool` reads `_shuffleColors.Length` four times through a local the
+        // initialisation guard had left holding `Il2CppClass<BoardSettingSO>`.
+        ArrayAccessRecovery.Run(method);
     }
 }
