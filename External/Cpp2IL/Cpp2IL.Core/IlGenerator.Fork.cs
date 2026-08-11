@@ -142,6 +142,21 @@ public static partial class IlGenerator
             //element the subtraction reads was loaded whole and the whole statement went.
             //Not a call: an argument may be a struct passed entire to something that answers with a number,
             //and Vector3.Distance would then have said its first argument was an `x`.
+            //A *store* is the same evidence the other way round: there the memory operand is `Operands[0]`
+            //and the value is beside it. Looking only at what an instruction reads meant a store never
+            //matched at all, so an element assigned one float was reported as the whole element:
+            //
+            //    //array[0] = (Vector3)num7;     <- the store at +0x20, commented out
+            //    array[0].y = y;                 <-        +0x24, kept
+            //    array[0].z = z;                 <-        +0x28, kept
+            //
+            //`GizmosDrawer::DrawPoint` is that, and so are 140 element-base stores across the game.
+            if (instruction.OpCode == OpCode.Move && instruction.Operands.Count == 2
+                && instruction.Operands[0] is MemoryOperand into && Same(into, memory)
+                && instruction.Operands[1] is LocalVariable { Type: { } stored }
+                && !ReferenceEquals(stored, element) && Analysis.StructInArithmetic.IsNumber(stored))
+                return front;
+
             if (instruction.OpCode is not (OpCode.Move or OpCode.Add or OpCode.Subtract or OpCode.Multiply or OpCode.Divide)
                 || instruction.Operands.Count < 2
                 || instruction.Operands[0] is not LocalVariable { Type: { } wanted })
@@ -150,9 +165,7 @@ public static partial class IlGenerator
             var reads = false;
 
             for (var i = 1; i < instruction.Operands.Count && !reads; i++)
-                reads = instruction.Operands[i] is MemoryOperand read
-                    && Equals(read.Base, memory.Base) && Equals(read.Index, memory.Index)
-                    && read.Addend == memory.Addend && read.Scale == memory.Scale;
+                reads = instruction.Operands[i] is MemoryOperand read && Same(read, memory);
 
             //A number where a struct would go, and the number the front member is.
             if (reads && !ReferenceEquals(wanted, element) && Analysis.StructInArithmetic.IsNumber(wanted))
@@ -161,6 +174,11 @@ public static partial class IlGenerator
 
         return null;
     }
+
+    /// <summary>Whether two memory operands name the same place.</summary>
+    private static bool Same(MemoryOperand one, MemoryOperand other)
+        => Equals(one.Base, other.Base) && Equals(one.Index, other.Index)
+            && one.Addend == other.Addend && one.Scale == other.Scale;
 
     /// <summary>The instance field of a struct that begins at an offset, if one does.</summary>
     private static FieldAnalysisContext? FieldAt(TypeAnalysisContext type, int offset)
