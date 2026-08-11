@@ -102,6 +102,19 @@ internal static partial class InvalidSourceRepair
 		int emptied = 0;
 		HashSet<string> repairedFiles = [];
 
+		//Before the loop, not after it. C# forbids `unsafe` on an iterator outright, and the compiler says so
+		//about the *declaration* - so every statement in the body is then unreachable code in a method that
+		//does not compile, and the loop comments the lot. `AllDesignConfig.CRPullAll` and
+		//`BoardController.PowerUp_Shuffle` are 46 statements between them, both faithful reconstructions,
+		//both lost to a modifier over a body with nothing unsafe in it.
+		//
+		//This was written to run afterwards because the diagnostic was thought to be `CS1629`, which the loop
+		//was measured never to see. It does not: at C# 9 Roslyn reports **`CS8773`** - "ref and unsafe in
+		//async and iterator methods is not available in C# 9.0" - and that one the loop sees on its first
+		//compilation. Nothing needed a compiler either way: the modifier over a body with no unsafe syntax
+		//says nothing, whenever it is removed.
+		RemoveUnsafeFromIterators(outputFolder, fileSystem, parseOptions, repairedFiles);
+
 		for (int attempt = 0; attempt < MaxAttempts; attempt++)
 		{
 			List<SourceFile> files = Parse(outputFolder, fileSystem, parseOptions);
@@ -150,12 +163,8 @@ internal static partial class InvalidSourceRepair
 			}
 		}
 
-		//C# forbids `unsafe` on an iterator outright, and nothing above can find it: the method only becomes
-		//one on the last attempt, where emptying a body that would not settle leaves a bare `yield` behind,
-		//and no compile follows that. So it is not a diagnostic to answer but a shape to sweep for - and the
-		//rule needs no compiler, because the two are never legal together. `AllDesignConfig.CRPullAll` is the
-		//case: declared `unsafe IEnumerator`, every statement commented out, and the three errors it raised
-		//were the only thing between this export and an assembly that builds.
+		//And again afterwards, because emptying a body that would not settle can leave a bare `yield` behind
+		//in a method that was not an iterator when the sweep above ran.
 		RemoveUnsafeFromIterators(outputFolder, fileSystem, parseOptions, repairedFiles);
 
 		if (widened > 0)
