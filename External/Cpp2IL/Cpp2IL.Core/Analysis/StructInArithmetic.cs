@@ -116,6 +116,13 @@ public static class StructInArithmetic
     {
         for (var operand = 1; operand < instruction.Operands.Count; operand++)
         {
+            //A literal with a fraction in it. No address is ever a float, so this is arithmetic and the
+            //struct beside it is one of its members - `MergeEffect::Play` multiplies a `Vector3` by `2.5d`
+            //and the generator gave up on the whole statement. An *integer* literal says nothing of the
+            //kind: a constant distance from a struct is how a field of one is reached.
+            if (instruction.Operands[operand] is float or double)
+                return true;
+
             var type = instruction.Operands[operand] switch
             {
                 FieldReference field => field.Field.FieldType,
