@@ -38,6 +38,25 @@ public static class Aapcs64
     /// the vector registers, the same rule <see cref="HomogeneousFloatStruct"/> describes for arguments.
     /// </para>
     /// </remarks>
+    /// <summary>
+    /// Whether a value of this type is handed over as a pointer to a copy rather than in registers.
+    /// </summary>
+    /// <remarks>
+    /// The same rule the return side uses, stated over a type so the argument side can ask it too: more than
+    /// sixteen bytes, not a primitive, and not a homogeneous float aggregate - those travel in one vector
+    /// register per member however many there are.
+    /// </remarks>
+    public static bool PassedIndirectly(TypeAnalysisContext? type)
+    {
+        if (type is null || !type.IsValueType || type.IsEnumType || type.Namespace == nameof(System))
+            return false;
+
+        if (HomogeneousFloatStruct.Count(type) is { } floats && floats <= 4)
+            return false;
+
+        return ValueSize(type) is { } size && size > 16;
+    }
+
     public static bool ReturnsIndirectly(MethodAnalysisContext callee)
     {
         var returned = callee.ReturnType;

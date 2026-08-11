@@ -502,6 +502,12 @@ public static class ForkPipeline
         // vector registers a call's answer lands in is what makes that shape appear at all.
         WholeStructAtItsOwnType.Run(method);
 
+        // And the other half of that: a composite too big for two registers is handed over as a pointer to
+        // one, so what the register holds is an address and every pass that names a distance from an address
+        // named the field at nought. Beside the pass above because both are about a struct arriving where the
+        // operand says a member of it.
+        IndirectArgument.Run(method);
+
         HomogeneousFloatArguments.Run(method);
 
         // A shared generic body opens by asking whether its own runtime context is filled in yet. It is, by
