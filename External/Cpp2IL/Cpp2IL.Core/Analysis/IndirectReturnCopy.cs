@@ -40,6 +40,8 @@ namespace Cpp2IL.Core.Analysis;
 /// </remarks>
 public static class IndirectReturnCopy
 {
+    private static readonly bool Trace = System.Environment.GetEnvironmentVariable("INDIRECT_TRACE") is not null;
+
     public static void Run(MethodAnalysisContext method)
     {
         if (method.ControlFlowGraph is not { } graph)
@@ -61,6 +63,23 @@ public static class IndirectReturnCopy
                 filled[slot] = filled.ContainsKey(slot) ? null! : instruction;
             }
         }
+
+        //Every call, named or not, with what each operand turned out to be - which is the only way to see
+        //that a copy this pass is looking for has had one of its operands replaced by something that is not
+        //a place. `BoardController::TryGetPressedPointerScreenPosition` is that: the destination arrives as a
+        //`Single` rather than the slot address the copy is going to, so the match below cannot see it and
+        //`Touch touch = default(Touch);` stands. Not a regression - it reads that way on this binary as far
+        //back as the first export of it.
+        if (Trace)
+            foreach (var instruction in graph.Instructions)
+                if (instruction is { OpCode: OpCode.Call, Operands: [ulong at, ..] })
+                    System.Console.Error.WriteLine($"INDIRECT {method.Name}: @{at:X} "
+                        + $"{binary.ImportedFunctionAt(at) ?? "?"} ["
+                        + string.Join(", ", System.Linq.Enumerable.Select(instruction.Operands,
+                            o => o is LocalVariable l ? $"{l}:{l.Type?.FullName ?? "?"}" : o.GetType().Name)) + "]");
+                else if (instruction is { OpCode: OpCode.Call, Operands: [MethodAnalysisContext callee, ..] })
+                    System.Console.Error.WriteLine($"INDIRECT {method.Name}: {callee.Name} -> "
+                        + $"{callee.ReturnType?.FullName ?? "?"} indirect={Aapcs64.ReturnsIndirectly(callee)}");
 
         if (filled.Count == 0)
             return;
