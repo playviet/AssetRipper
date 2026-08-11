@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Cpp2IL.Core.Analysis;
 using Cpp2IL.Core.ISIL;
 using Cpp2IL.Core.Model.Contexts;
@@ -74,7 +75,10 @@ internal sealed class VectorLanes
     /// floats or two doubles - only the instruction that reads them does. So the load is kept and split at the
     /// first use, at the width that use asks for.
     /// </remarks>
-    private readonly Dictionary<int, (int Base, long Offset, int Bytes, long? Absolute)> pending = new();
+    private readonly Dictionary<int, (int Base, long Offset, int Bytes, long? Absolute, Register? Pinned)> pending = new();
+
+    /// <summary>How many bases have had to be kept, so each copy gets a name of its own.</summary>
+    private int pins;
 
     /// <summary>The method being lifted, so a settled address can be read out of the binary.</summary>
     private MethodAnalysisContext? reading;
@@ -118,6 +122,7 @@ internal sealed class VectorLanes
         pending.Clear();
         zeroAbove.Clear();
         next = 0;
+        pins = 0;
     }
 
     /// <summary>
@@ -148,6 +153,9 @@ internal sealed class VectorLanes
             return true;
 
         reading = context;
+
+        //Before anything else, because after it the base is gone.
+        PinBases(instruction, emit);
 
         var word = Word(context, address);
 
@@ -1263,7 +1271,7 @@ internal sealed class VectorLanes
 
         Forget(loaded);
         var loadedFrom = (int)(word >> 5 & 0x1F);
-        pending[loaded] = (loadedFrom, offset, bytes, Settled(loadedFrom, offset));
+        pending[loaded] = (loadedFrom, offset, bytes, Settled(loadedFrom, offset), null);
         return true;
     }
 
@@ -1316,10 +1324,10 @@ internal sealed class VectorLanes
         var second = (int)(word >> 10 & 0x1F);
 
         Forget(first);
-        pending[first] = (baseRegister, offset, bytes, Settled(baseRegister, offset));
+        pending[first] = (baseRegister, offset, bytes, Settled(baseRegister, offset), null);
 
         Forget(second);
-        pending[second] = (baseRegister, offset + bytes, bytes, Settled(baseRegister, offset + bytes));
+        pending[second] = (baseRegister, offset + bytes, bytes, Settled(baseRegister, offset + bytes), null);
 
         return true;
     }
@@ -1733,7 +1741,9 @@ internal sealed class VectorLanes
             }
             else
             {
-                from = Place(load.Base, load.Offset + (long)lane * elementWidth);
+                from = load.Pinned is { } kept
+                    ? new MemoryOperand(kept, null, load.Offset + (long)lane * elementWidth)
+                    : Place(load.Base, load.Offset + (long)lane * elementWidth);
             }
 
             emit(OpCode.Move, [Lane(register, lane * elementWidth), from]);
@@ -1827,6 +1837,53 @@ internal sealed class VectorLanes
 
         if (!answers)
             masks.Remove(register);
+    }
+
+    /// <summary>
+    /// Keeps a copy of any base a waiting load will need, where the instruction about to run overwrites it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A whole-register load is not split into lanes where it happens - nothing there says how wide they are -
+    /// but at the first instruction that reads one. The base is remembered as a register <i>number</i>, so the
+    /// address the lanes are finally written against is whatever that register holds <b>then</b>, which is
+    /// very often not what it held at the load.
+    /// </para>
+    /// <code>
+    /// ldr  d0, [x8, #0x18]      ; rows and cols, two ints in one load
+    /// movz w8, #0x3F000000      ; and now x8 is 0.5f
+    /// str  w8, [x21, #0x20]
+    /// str  d0, [x21, #0x18]     ; split here: two reads at [0.5f + 0x18] and [0.5f + 0x1C]
+    /// </code>
+    /// <para>
+    /// <c>BoardController::CreateFallbackLevelData</c> is that, and it is why <c>rows</c> and <c>cols</c> came
+    /// out as reads of unmanaged memory through a local declared <c>System.Single</c>. The register's own name
+    /// is the only thing that was ever wrong: copied to one nothing else writes, the address is right whenever
+    /// the split happens.
+    /// </para>
+    /// <para>
+    /// A load whose address was settled to a constant needs none of this, and neither does one off the stack
+    /// pointer, which nothing reassigns. The copy is only emitted where a base really is about to be lost, so
+    /// a method whose vector loads are read straight away gains no instructions.
+    /// </para>
+    /// </remarks>
+    private void PinBases(Arm64Instruction instruction, Action<OpCode, object[]> emit)
+    {
+        if (pending.Count == 0 || GeneralNumber(instruction.Op0Reg) is not { } written || written == 31)
+            return;
+
+        foreach (var register in pending.Keys.ToList())
+        {
+            var load = pending[register];
+
+            if (load.Base != written || load.Absolute != null || load.Pinned != null)
+                continue;
+
+            var kept = new Register(null, $"X{written}#pin{pins++}");
+
+            emit(OpCode.Move, [kept, General(load.Base)]);
+            pending[register] = load with { Pinned = kept };
+        }
     }
 
     private void Forget(int register)
