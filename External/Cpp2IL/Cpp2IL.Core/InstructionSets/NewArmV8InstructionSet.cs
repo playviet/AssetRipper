@@ -499,6 +499,12 @@ public partial class NewArmV8InstructionSet : Cpp2IlInstructionSet
                     foreach ((OpCode importedOpCode, object[] importedOperands) in imported)
                         Add(address, importedOpCode, importedOperands);
                 }
+                //An array store the compiler put in a function of its own - see Analysis.OutlinedArrayStore.
+                else if (Analysis.OutlinedArrayStore.Rewrite(context, instruction.BranchTarget, RegisterFor) is { } stored)
+                {
+                    foreach ((OpCode storedOpCode, object[] storedOperands) in stored)
+                        Add(address, storedOpCode, storedOperands);
+                }
                 else
                 {
                     AddUnmanagedCall(address, instruction.BranchTarget);
