@@ -6,7 +6,7 @@ using LibCpp2IL;
 
 namespace Cpp2IL.Core.Utils;
 
-public static class NewArm64Utils
+public static partial class NewArm64Utils
 {
     public static List<Arm64Instruction> GetArm64MethodBodyAtVirtualAddress(Il2CppBinary binary, ulong virtAddress, bool managed = true, int count = -1)
     {
@@ -25,7 +25,7 @@ public static class NewArm64Utils
 
                 var bytes = binary.GetRawBinaryContent().Slice((int)rawStart, (int)(rawStartOfNextMethod - rawStart));
 
-                return Disassemble(bytes, virtAddress);
+                return PutDisplacedInstructionsBack(Disassemble(bytes, virtAddress), binary);
             }
         }
 

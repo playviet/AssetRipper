@@ -174,6 +174,14 @@ internal sealed class VectorLanes
         PinBases(instruction, emit);
         NoteGeneralAnswer(instruction);
 
+        //A staged load does not outlive the path it was staged on. `ret` and an indirect branch both leave the
+        //method for good, and what the listing holds after one is a region nothing here reaches - so a load
+        //still pending at that point gets split at an address it never ran at, against a base that by then
+        //holds something else. Four of these in Assembly-CSharp, all of them an epilogue `ldp d9, d8, [sp+n]`
+        //leaking past the `ret`, and clearing here drops no split that was right.
+        if (instruction.Mnemonic is Arm64Mnemonic.RET or Arm64Mnemonic.BR)
+            pending.Clear();
+
         var word = Word(context, address);
 
         if (word is { } stored && Store(stored, instruction, emit))

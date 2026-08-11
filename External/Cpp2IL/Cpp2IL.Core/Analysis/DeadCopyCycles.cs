@@ -77,6 +77,8 @@ public static class DeadCopyCycles
             }
         }
 
+        var trace = System.Environment.GetEnvironmentVariable("CYCLE_TRACE") is { } wanted && method.Name.Contains(wanted);
+
         foreach (var instruction in graph.Instructions)
         {
             if (HasNoEffect(instruction.OpCode))
@@ -90,8 +92,13 @@ public static class DeadCopyCycles
                 continue;
             }
 
+            var before = live.Count;
+
             foreach (var operand in instruction.Operands)
                 Reach(operand);
+
+            if (trace && live.Count != before)
+                System.Console.WriteLine($"CYCLE seed {instruction.OpCode} {instruction}");
         }
 
         //What the live values were made from.
@@ -118,6 +125,9 @@ public static class DeadCopyCycles
 
         foreach (var (written, places) in definitions)
         {
+            if (trace)
+                System.Console.WriteLine($"CYCLE {written.Name} @ {written.Register} live={live.Contains(written)} invented={IsInvented(written)}");
+
             if (live.Contains(written) || IsInvented(written))
                 continue;
 
