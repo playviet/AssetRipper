@@ -284,8 +284,9 @@ public partial class SsaForm
                     if (Equals(destination, source))
                         continue;
 
-                    // And copies that cannot be the value moving, only the register being reused.
-                    if (CannotBeTheSameValue(destination, source))
+                    // And copies that cannot be the value moving, only the register being reused - unless this
+                    // is the one edge control can take, where there is nothing to disagree with.
+                    if (CannotBeTheSameValue(destination, source) && !SettledByTheOnlyEdge(block, predIndex, destination, source))
                         continue;
 
                     moves.Add(new Instruction(-1, OpCode.Move, destination, source));

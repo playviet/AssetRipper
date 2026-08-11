@@ -239,4 +239,52 @@ public partial class SsaForm
             }
         }
     }
+
+    /// <summary>
+    /// Whether this is the one edge into the join that control can actually take, so the phi is simply what
+    /// arrives on it - and the type it was given came from an edge that never happens.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <see cref="NeverReachesItsSuccessors"/> stops a copy being written on an impossible edge. It does not
+    /// stop the phi being <i>typed</i> from one, and where the other edge is then refused by
+    /// <see cref="CannotBeTheSameValue"/> the phi is erased with nothing defining its destination at all -
+    /// a local read three times and never written.
+    /// </para>
+    /// <para>
+    /// <c>BoardController::PowerUp_Shuffle</c> is that. Sixteen null-check failures merge into one block that
+    /// throws, and that block falls into the shuffle loop's header, so <c>X22</c> - the count <c>n</c> -
+    /// merges with whatever the sixteen paths last left in it, and comes out declared <c>CellData</c>. The
+    /// loop bound, the swap and every statement after it were commented away.
+    /// </para>
+    /// <para>
+    /// With one live edge there is nothing to disagree with: the value on it is the value, and the
+    /// destination is retyped to say so. The refusal stands wherever two edges are genuinely live.
+    /// </para>
+    /// </remarks>
+    private static bool SettledByTheOnlyEdge(Block block, int predIndex, object destination, object source)
+    {
+        var live = -1;
+
+        for (var i = 0; i < block.Predecessors.Count; i++)
+        {
+            if (NeverReachesItsSuccessors(block.Predecessors[i]))
+                continue;
+
+            if (live >= 0)
+                return false;
+
+            live = i;
+        }
+
+        if (live != predIndex)
+            return false;
+
+        //Only a type that came from nowhere else. A phi's destination is a local of its own, so nothing but
+        //this join decides what it holds.
+        if (destination is LocalVariable settled && source is LocalVariable arriving)
+            settled.Type = arriving.Type;
+
+        return true;
+    }
 }
