@@ -80,6 +80,21 @@ internal sealed class VectorLanes
     /// <summary>How many bases have had to be kept, so each copy gets a name of its own.</summary>
     private int pins;
 
+    /// <summary>
+    /// The general registers holding a condition rather than a number.
+    /// </summary>
+    /// <remarks>
+    /// A vectorised select needs its chooser to be an answer, not an arbitrary value, or the bitwise blend it
+    /// really is cannot be written as the ternary it means. A chooser broadcast from a *general* register was
+    /// never an answer, because nothing said what that register held - so `bsl` refused, and with it
+    /// everything downstream of it: `BoardLogic::GenerateSmartBlock` loses eight statements to one.
+    ///
+    /// `cset`, `csetm` and the `csinv wd, wzr, wzr, cond` they alias write the condition itself, which is
+    /// exactly what the lifter turns into a comparison. So a `dup` out of one of those carries an answer into
+    /// every lane, and the select can be written.
+    /// </remarks>
+    private readonly HashSet<int> generalAnswers = new();
+
     /// <summary>The method being lifted, so a settled address can be read out of the binary.</summary>
     private MethodAnalysisContext? reading;
 
@@ -121,6 +136,7 @@ internal sealed class VectorLanes
         masks.Clear();
         pending.Clear();
         zeroAbove.Clear();
+        generalAnswers.Clear();
         next = 0;
         pins = 0;
     }
@@ -156,6 +172,7 @@ internal sealed class VectorLanes
 
         //Before anything else, because after it the base is gone.
         PinBases(instruction, emit);
+        NoteGeneralAnswer(instruction);
 
         var word = Word(context, address);
 
@@ -394,7 +411,7 @@ internal sealed class VectorLanes
 
                     var from = fromLane ? Lane(source, index * elementWidth) : General(source);
                     var lanes = LanesIn(elementWidth, q);
-                    var copiedAnswers = fromLane && masks.Contains(source);
+                    var copiedAnswers = fromLane ? masks.Contains(source) : generalAnswers.Contains(source);
 
                     Forget(destination);
 
@@ -1884,6 +1901,30 @@ internal sealed class VectorLanes
             emit(OpCode.Move, [kept, General(load.Base)]);
             pending[register] = load with { Pinned = kept };
         }
+    }
+
+    /// <summary>Remembers whether a general register now holds a condition, for a chooser broadcast out of it.</summary>
+    private void NoteGeneralAnswer(Arm64Instruction instruction)
+    {
+        //A call leaves the argument and scratch registers holding whatever the callee left there.
+        if (instruction.Mnemonic is Arm64Mnemonic.BL or Arm64Mnemonic.BLR)
+        {
+            generalAnswers.Clear();
+            return;
+        }
+
+        if (GeneralNumber(instruction.Op0Reg) is not { } written || written == 31)
+            return;
+
+        //`csetm` is `csinv wd, wzr, wzr, invert(cond)`, and Disarm reports whichever the encoding spells.
+        var answer = instruction.Mnemonic is Arm64Mnemonic.CSET or Arm64Mnemonic.CSETM
+            || (instruction.Mnemonic is Arm64Mnemonic.CSINV or Arm64Mnemonic.CSNEG
+                && GeneralNumber(instruction.Op1Reg) == 31 && GeneralNumber(instruction.Op2Reg) == 31);
+
+        if (answer)
+            generalAnswers.Add(written);
+        else
+            generalAnswers.Remove(written);
     }
 
     private void Forget(int register)
