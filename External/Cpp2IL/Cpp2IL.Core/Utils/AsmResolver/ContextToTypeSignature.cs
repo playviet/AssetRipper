@@ -7,7 +7,7 @@ using LibCpp2IL.BinaryStructures;
 
 namespace Cpp2IL.Core.Utils.AsmResolver;
 
-public static class ContextToTypeSignature
+public static partial class ContextToTypeSignature
 {
     private static TypeDefinition GetTypeDefinition(this TypeAnalysisContext context)
     {
@@ -16,6 +16,9 @@ public static class ContextToTypeSignature
 
     public static TypeSignature ToTypeSignature(this TypeAnalysisContext context, ModuleDefinition parentModule) => context switch
     {
+        //A stand-in the runtime library keeps to itself is not a type the project can name - see the fork file.
+        _ when SharedEnumUnderlying(context, parentModule) is { } underlying => underlying,
+
         ReferencedTypeAnalysisContext referencedTypeAnalysisContext => referencedTypeAnalysisContext.ToTypeSignature(parentModule),
 
         //The module type is the one type nothing builds a stub for - AsmResolver creates it with the module

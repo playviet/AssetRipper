@@ -1290,7 +1290,7 @@ internal static partial class InvalidSourceRepair
 	/// message matters as much as the id: <c>CS0030</c> alone says only "invalid cast" for 800 statements,
 	/// while the message names both types and splits them into families that have separate answers.
 	/// </remarks>
-	private static void DumpDiagnostics(CSharpCompilation compilation)
+	private static void DumpDiagnostics(CSharpCompilation compilation, Dictionary<SyntaxTree, SourceFile> byTree)
 	{
 		if (Environment.GetEnvironmentVariable("REPAIR_WHY") is not { Length: > 0 } path)
 		{
@@ -1302,7 +1302,20 @@ internal static partial class InvalidSourceRepair
 		{
 			if (diagnostic.Severity == DiagnosticSeverity.Error)
 			{
-				text.Append(diagnostic.Id).Append('\t').Append(diagnostic.GetMessage()).Append('\n');
+				//And where. Without it the dump says what the compiler objected to but not to which member,
+				//so a family cannot be traced back to the one statement that started it - which is the
+				//question worth asking, since one uncompilable declaration comments out every later
+				//statement that used the local.
+				//The tree, not the diagnostic's own path, which is empty: the files are parsed from text and
+				//never carry one. `byTree` is the same map the repair uses to find the file to edit.
+				string where = diagnostic.Location.SourceTree is { } tree && byTree.TryGetValue(tree, out SourceFile? found)
+					? System.IO.Path.GetFileName(found.Path)
+					: "?";
+
+				text.Append(diagnostic.Id).Append('\t')
+					.Append(where).Append(':')
+					.Append(diagnostic.Location.GetLineSpan().StartLinePosition.Line + 1).Append('\t')
+					.Append(diagnostic.GetMessage()).Append('\n');
 			}
 		}
 
@@ -1320,13 +1333,13 @@ internal static partial class InvalidSourceRepair
 			return 0;
 		}
 
-		DumpDiagnostics(compilation);
-
 		Dictionary<SyntaxTree, SourceFile> byTree = [];
 		foreach (SourceFile file in files)
 		{
 			byTree[file.Root.SyntaxTree] = file;
 		}
+
+		DumpDiagnostics(compilation, byTree);
 
 		Dictionary<SourceFile, List<Edit>> planned = [];
 		HashSet<ISymbol> done = new(SymbolEqualityComparer.Default);
