@@ -226,6 +226,20 @@ public static partial class MetadataResolver
                     ? new ConcreteGenericFieldAnalysisContext(field, instance)
                     : field;
 
+        //And a struct the metadata records from the value rather than from the boxed object. `UnityEngine.Rect`
+        //has `m_XMin` at 0 and `m_Height` at 12 - there is no header in front of them - while a class records
+        //its first field at 0x10. A field beginning at nought is what says the whole type is laid out that way,
+        //and then the distance is already the distance. `CellDraggable::RaycastBoardCell` hands an `out Rect`
+        //to a callee and reads `.y` and `.height` back out of the slots the callee wrote.
+        if (!definition.Fields.Any(f => !f.IsStatic && f.BackingData?.FieldOffset == 0))
+            return null;
+
+        foreach (var field in definition.Fields)
+            if (!field.IsStatic && field.BackingData?.FieldOffset == offset)
+                return type is GenericInstanceTypeAnalysisContext laidOut
+                    ? new ConcreteGenericFieldAnalysisContext(field, laidOut)
+                    : field;
+
         return null;
     }
 

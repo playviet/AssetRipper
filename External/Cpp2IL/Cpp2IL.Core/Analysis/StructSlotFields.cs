@@ -79,10 +79,11 @@ public static class StructSlotFields
             //the arithmetic is speculation competing with metadata: it renamed a Quaternion temporary that
             //merely sat above a `CharTransform` into that struct's `scale`, and
             //`DOTweenTMPAnimator.SetCharScale` lost its call to a cast that cannot be written.
-            if (versions.Find(v => v.Type is GenericInstanceTypeAnalysisContext { IsValueType: true } candidate
-                    && candidate.Namespace != nameof(System)
-                    && !IsSharedStandIn(candidate)) is not { } held
-                || held.Type is not GenericInstanceTypeAnalysisContext structure)
+            if (System.Environment.GetEnvironmentVariable("SLOTFIELD_TRACE") is { } asked && method.Name.Contains(asked))
+                System.Console.WriteLine($"SLOTFIELD {start:X} -> {string.Join(", ", versions.Select(v => v.ToString()))}");
+
+            if (versions.Find(v => Structure(v.Type) is not null) is not { } held
+                || Structure(held.Type) is not { } structure)
                 continue;
 
             foreach (var (offset, inner) in slots)
@@ -92,7 +93,12 @@ public static class StructSlotFields
                     continue;
 
                 if (MetadataResolver.PathIntoStructValue(structure, offset - start, method) is not { } path)
+                {
+                    if (System.Environment.GetEnvironmentVariable("SLOTFIELD_TRACE") is { } why && method.Name.Contains(why))
+                        System.Console.WriteLine($"SLOTFIELD  no path into {structure.FullName} at {offset - start}");
+
                     continue;
+                }
 
                 foreach (var inside in inner)
                     if (!ReferenceEquals(inside, held) && !fields.ContainsKey(inside) && CanBeTheField(inside, path[^1]))
@@ -206,4 +212,40 @@ public static class StructSlotFields
             ? negative ? -value : value
             : null;
     }
+
+    /// <summary>
+    /// The struct a slot holds, where something says so rather than the arithmetic guessing it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>An instantiation.</b> il2cpp records no field offsets for one - which is the whole reason this pass
+    /// has to lay it out at all - so no other pass has had a chance to name the slot and the arithmetic is
+    /// the only thing that can.
+    /// </para>
+    /// <para>
+    /// <b>Or a by-ref the ABI decided.</b> An <c>out Rect</c> parameter is the address of a slot, and the
+    /// callee's own signature is what types it - not arithmetic, not a guess about what sits above what.
+    /// <c>CellDraggable::RaycastBoardCell</c> hands <c>&amp;stack[-A0]</c> to
+    /// <c>TryGetBoardWorldRect(out Rect)</c>, and the slots at -9C and -94 - <c>y</c> and <c>height</c> -
+    /// stayed bare locals nothing assigns, so <c>rect.yMin + rect.height</c> came out as
+    /// <c>(float)(obj + obj2)</c>.
+    /// </para>
+    /// <para>
+    /// An ordinary struct that nothing points at is still refused. Its offsets <i>are</i> recorded, so the
+    /// arithmetic here would be speculation competing with metadata: it renamed a Quaternion temporary that
+    /// merely sat above a <c>CharTransform</c> into that struct's <c>scale</c>, and
+    /// <c>DOTweenTMPAnimator.SetCharScale</c> lost its call to a cast that cannot be written.
+    /// </para>
+    /// </remarks>
+    private static TypeAnalysisContext? Structure(TypeAnalysisContext? type) => type switch
+    {
+        GenericInstanceTypeAnalysisContext { IsValueType: true } instantiation
+            when instantiation.Namespace != nameof(System) && !IsSharedStandIn(instantiation) => instantiation,
+
+        ByRefTypeAnalysisContext { ElementType: { IsValueType: true, IsEnumType: false } pointedAt }
+            when pointedAt.Namespace != nameof(System)
+                && (pointedAt is not GenericInstanceTypeAnalysisContext shared || !IsSharedStandIn(shared)) => pointedAt,
+
+        _ => null,
+    };
 }
