@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <AssemblyName>probe2</AssemblyName>
+    <RootNamespace>probe</RootNamespace>
+    <NoWarn>$(NoWarn);CS8600;CS8602;CS8604;CS0168;CS0219</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="/Users/playviet/Documents/_BZ/AssetRipper/External/Cpp2IL/Cpp2IL.Core/Cpp2IL.Core.csproj" />
+    <PackageReference Include="AssetRipper.Primitives" Version="3.2.0" />
+  </ItemGroup>
+
+</Project>

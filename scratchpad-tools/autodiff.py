@@ -182,7 +182,12 @@ def main():
 
     # The corpus's own types come from the original file, so both sides agree on what a `Pair` is. `Shared`
     # is what `difftest.wrap` opens with; there is nothing to share here, but it has to exist.
+    # The supporting types are built from the original, where a member il2cpp inlined is still private -
+    # `Box._side` is read straight out of `Areas` because `Area()` was inlined into it, and the export widens
+    # the declaration in `Box.cs`, a file this script never opens. Accessibility changes no answer, so widen
+    # it here rather than teach the harness to read a second file.
     support = "public static class Shared { }\n" + '\n'.join(types(original_text))
+    support = re.sub(r'\b(private|protected)\b(?!\s+(?:class|struct|interface|enum)\b)', 'internal', support)
 
     program = f"""
 using System;

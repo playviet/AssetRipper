@@ -1,109 +1,130 @@
 #!/usr/bin/env python3
-"""Cut a C# file into its members, by parsing it rather than by matching text.
+"""Split a C# file into its members, by parsing it rather than by matching text.
 
-Every scorer here started out splitting C# with regular expressions, and every one of them has been wrong in
-a way that cost real time: a call to a method taken for the method itself, accessors and constructors and
-lambdas not found at all (body coverage sat at 78% until they were special-cased one by one), a type
-declaration written on one line not matched, marker strings counted as discarded comparisons.
+**Rebuilt after the original was lost a second time.** The numbers it produces are checked against the
+export the loss was noticed on, so a rebuild that splits differently is caught rather than believed - see
+`il2cpp-the-scorers-were-lost-and-rebuilt`.
 
-`ast-grep` has a C# grammar, so the question "is this a method declaration" has an exact answer. This asks it
-once per file and hands back what everything else needs.
+`members(path)` gives `{name: [source, ...]}` for every member a C# file declares. A name can appear more
+than once: overloads, and a partial class split across nested types. `markers.has_body` is what decides
+whether a member had anything to recover, so members with no body are returned too.
 
-    from csharp import members
-    members(path)   # -> {name: [source of each member declared under that name]}
-
-Falls back to returning nothing if ast-grep is missing, so a caller can keep its old path.
+The splitting is `ast-grep`, which parses the language. A regular expression cannot: a method containing a
+nested type, a lambda with braces in a string, or an attribute with a parenthesis all break it, and
+`il2cpp-parse-csharp-do-not-match-it` records that replacing the regex splitter found nineteen whole
+methods it had been hiding.
 """
-import json
-import os
-import subprocess
 import functools
+import json
+import re
+import subprocess
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-AST_GREP = os.path.join(HERE, "tools-venv", "bin", "ast-grep")
+# The declarations that are members with something to recover. A property is taken whole rather than by its
+# accessors, so that `int X { get; set; }` is one member and not two.
+KINDS = (
+    'method_declaration',
+    'constructor_declaration',
+    'destructor_declaration',
+    'operator_declaration',
+    'conversion_operator_declaration',
+    'property_declaration',
+    'indexer_declaration',
+    'local_function_statement',
+)
 
-# What counts as "a member with a body worth scoring". Accessors are included because a property's getter is
-# where its work is, and local functions because a lambda the compiler lifted is written back as one.
-KINDS = [
-    "method_declaration",
-    "constructor_declaration",
-    "destructor_declaration",
-    "operator_declaration",
-    "conversion_operator_declaration",
-    "accessor_declaration",
-    "local_function_statement",
-]
+RULES = 'id: member\nlanguage: csharp\nrule:\n  any:\n' + ''.join(f'    - kind: {kind}\n' for kind in KINDS)
 
-RULE = """
-id: members
-language: csharp
-rule:
-  any:
-%s
-""" % '\n'.join(f"    - kind: {kind}" for kind in KINDS)
+# The name is the identifier the declaration is known by: the one before the parameter list for anything
+# callable, and before the body for a property.
+CALLABLE = re.compile(r'([A-Za-z_][A-Za-z0-9_]*)\s*(?:<[^<>()]*>)?\s*\(')
+PROPERTY = re.compile(r'([A-Za-z_][A-Za-z0-9_]*)\s*(?:\{|=>)')
+OPERATOR = re.compile(r'\boperator\s+(\S+)')
 
-
-def available():
-    return os.path.exists(AST_GREP)
-
-
-@functools.lru_cache(maxsize=None)
-def _rule_file():
-    path = os.path.join(HERE, ".members.yml")
-    with open(path, "w") as handle:
-        handle.write(RULE)
-    return path
+# `int X { get; private set; }` declares no code, so there is nothing in it to recover and it is not a
+# member this counts - the same reason an interface method or an `abstract` declaration is not. Its
+# accessors are generated, and the recovered file writes them out with real bodies, so counting it would
+# ask for something the original never wrote.
+AUTO_PROPERTY = re.compile(r'\{(?:\s*(?:private|protected|internal|public|init)?\s*(?:get|set|init)\s*;)+\s*\}\s*$')
 
 
-def nodes(path):
-    """Every member declaration in the file, as ast-grep reports it."""
-    if not available():
-        return []
+def is_auto_property(text):
+    return '=>' not in text.split('{')[0] and AUTO_PROPERTY.search(text.strip()) is not None
 
-    run = subprocess.run([AST_GREP, "scan", "--rule", _rule_file(), "--json", path],
-                         capture_output=True, text=True)
-    if run.returncode not in (0, 1) or not run.stdout.strip():
-        return []
 
-    try:
-        return json.loads(run.stdout)
-    except json.JSONDecodeError:
-        return []
+def without_attributes(text):
+    """The declaration with its attribute lists removed.
+
+    An attribute is a call too - `[IteratorStateMachine(typeof(...))]` - and the name is looked for by the
+    parenthesis, so a member behind one was being named after its attribute. Every coroutine in the export
+    carries that attribute and so every coroutine came out named `IteratorStateMachine`, which is why five
+    methods that are plainly there were counted as missing. Brackets are balanced rather than matched to the
+    first `]`, because `typeof(X[])` contains one.
+    """
+    text = text.lstrip()
+
+    while text.startswith('['):
+        depth = 0
+        for at, character in enumerate(text):
+            if character in '[(':
+                depth += 1
+            elif character in '])':
+                depth -= 1
+                if depth == 0:
+                    text = text[at + 1:].lstrip()
+                    break
+        else:
+            return text
+
+    return text
 
 
 def name_of(text):
-    """The identifier a member is declared under, read off the front of its own source.
+    text = without_attributes(text)
+    head = text.split('=>')[0] if '=>' in text.split('{')[0] else text.split('{')[0]
 
-    The parse says where the member is; the name is the last identifier before the parameter list, or - for an
-    accessor, which has neither - the accessor keyword, which the caller pairs with its property.
-    """
-    head = text.split('{', 1)[0].split('=>', 1)[0]
-    opened = head.find('(')
-    if opened >= 0:
-        head = head[:opened]
+    if (found := OPERATOR.search(head)) is not None:
+        return 'operator' + found.group(1)
 
-    words = [w for w in head.replace('\t', ' ').split() if w]
-    if not words:
-        return None
+    if (found := CALLABLE.search(head)) is not None:
+        return found.group(1)
 
-    last = words[-1]
-    # A generic method carries its parameters in the name; the declaration does not.
-    return last.split('<', 1)[0].strip()
+    #A property or an indexer, which has no parameter list to be found by.
+    matches = PROPERTY.findall(text)
+    return matches[0] if matches else None
 
 
+@functools.lru_cache(maxsize=4096)
 def members(path):
-    """name -> the source of every member declared under that name in this file."""
-    found = {}
-    for node in nodes(path):
-        text = node.get("text", "")
-        name = name_of(text)
-        if not name:
+    try:
+        output = subprocess.run(['ast-grep', 'scan', '--inline-rules', RULES, '--json=compact', path],
+                                capture_output=True, text=True).stdout
+        found = json.loads(output) if output.strip() else []
+    except Exception:
+        return {}
+
+    #A member declared inside another - a local function, or a method of a nested type - is returned by
+    #ast-grep alongside the one containing it. Keeping both would count its body twice, so anything whose
+    #range lies inside another match is dropped.
+    found.sort(key=lambda match: (match['range']['byteOffset']['start'],
+                                  -match['range']['byteOffset']['end']))
+
+    result = {}
+    end = -1
+
+    for match in found:
+        span = match['range']['byteOffset']
+
+        if span['start'] < end:
             continue
-        found.setdefault(name, []).append(text)
-    return found
 
+        end = span['end']
 
-if __name__ == '__main__':
-    import sys
-    for name, bodies in sorted(members(sys.argv[1]).items()):
-        print(f"{len(bodies):3}  {name}")
+        if is_auto_property(match['text']):
+            continue
+
+        name = name_of(match['text'])
+
+        if name:
+            result.setdefault(name, []).append(match['text'])
+
+    return result

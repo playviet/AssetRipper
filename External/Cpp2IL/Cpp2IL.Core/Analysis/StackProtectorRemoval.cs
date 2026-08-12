@@ -84,9 +84,106 @@ public static class StackProtectorRemoval
             removedAny = true;
         }
 
-        if (removedAny)
-            graph.RemoveUnreachableBlocks();
+        if (!removedAny)
+            return;
 
+        ForgetTheSavedCopy(graph, definitions);
+        graph.RemoveUnreachableBlocks();
+    }
+
+    /// <summary>
+    /// Takes away the prologue that filled the slot, once nothing checks it any more.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Removing the check leaves the two instructions that set it up: the cookie is still read out of
+    /// thread-local storage and still written to the frame, and neither is anything the recovery can name. So
+    /// a body whose guard was correctly removed still opens with
+    /// <c>_ = "Unmanaged memory load: [v5 @ X24+28]"; _ = 0;</c> - and because that is the <em>first</em>
+    /// statement, it is the first thing to go wrong in ten of the owed bodies, ahead of whatever else they are
+    /// really waiting on. Seventeen sites across the game, every one at <c>+0x28</c>.
+    /// </para>
+    /// <para>
+    /// Only the pair, and only where nothing else reads either half: the value the read produced has to go
+    /// straight into the frame and nowhere else. A cookie read whose value is used for anything is not this.
+    /// </para>
+    /// </remarks>
+    private static void ForgetTheSavedCopy(ISILControlFlowGraph graph, Dictionary<LocalVariable, Instruction> definitions)
+    {
+        var live = graph.Blocks.SelectMany(b => b.Instructions).Where(i => i.OpCode != OpCode.Nop).ToList();
+
+        foreach (var store in live)
+        {
+            if (store is not { OpCode: OpCode.Move, Operands: [{ } into, LocalVariable carried] } || !IsSlot(into))
+                continue;
+
+            if (!definitions.TryGetValue(carried, out var read)
+                || read is not { OpCode: OpCode.Move, Operands: [_, MemoryOperand cookie] }
+                || !IsThreadCookie(cookie, definitions))
+            {
+                continue;
+            }
+
+            if (ReadsElsewhere(live, carried, store, read) || ReadsElsewhere(live, into, store, read))
+                continue;
+
+            store.OpCode = read.OpCode = OpCode.Nop;
+            store.Operands = read.Operands = [];
+        }
+    }
+
+    /// <summary>Somewhere on the frame, however the slot ended up being named.</summary>
+    private static bool IsSlot(object operand)
+        => operand is MemoryOperand memory ? IsFrameSlot(memory) : IsSavedSlot(operand);
+
+    /// <summary>Whether anything but the two instructions of the save names this value or this place.</summary>
+    /// <remarks>
+    /// A frame slot is one place however many locals stand for it, and a place is named either by a local or
+    /// by a base and a distance - so both have to be compared by what they say rather than by object.
+    /// </remarks>
+    private static bool ReadsElsewhere(List<Instruction> live, object what, Instruction store, Instruction read)
+    {
+        //Only a slot is compared by name. Single assignment form gives every version of an ordinary register
+        //a local of its own but they all keep the register's name, so matching on that would say `X8` is read
+        //everywhere any version of x8 is - and refuse every site.
+        var slotName = what is LocalVariable named && (IsSavedSlot(named) || IsFrameAddress(named))
+            ? named.Register.Name
+            : null;
+
+        var place = what as MemoryOperand?;
+
+        foreach (var instruction in live)
+        {
+            if (ReferenceEquals(instruction, store) || ReferenceEquals(instruction, read))
+                continue;
+
+            foreach (var operand in instruction.Operands)
+            {
+                if (ReferenceEquals(operand, what))
+                    return true;
+
+                if (slotName != null && operand is LocalVariable other && other.Register.Name == slotName)
+                    return true;
+
+                if (operand is MemoryOperand memory)
+                {
+                    if (ReferenceEquals(memory.Base, what) || ReferenceEquals(memory.Index, what))
+                        return true;
+
+                    if (slotName != null && memory.Base is LocalVariable through && through.Register.Name == slotName)
+                        return true;
+
+                    if (place is { } slot && memory.Addend == slot.Addend
+                        && memory.Base is LocalVariable was && slot.Base is LocalVariable is_
+                        && was.Register.Name == is_.Register.Name)
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        return false;
     }
 
     /// <summary>
