@@ -273,6 +273,21 @@ public static partial class IlGenerator
             case OpCode.Move:
                 if (instruction.Operands[0] is FieldReference field) // stfld takes instance before value so LoadOperand StoreToOperand doesn't work
                 {
+                    //A member of a struct held in a field is written through the address of that field - see
+                    //TryStoreNestedField in the fork. Where that cannot be done the store is **not** allowed
+                    //to fall through to the ordinary path: `field.Field` is the innermost step and the object
+                    //is the outermost, so storing one into the other names a field the object does not have.
+                    if (field is NestedFieldReference { Path.Length: > 1 } nested)
+                    {
+                        if (!TryStoreNestedField(nested, instruction.Operands[1], method, locals, writeLine, stringCtor))
+                        {
+                            instructions.Add(CilOpCodes.Ldstr, "Unmanaged memory store: " + nested);
+                            instructions.Add(CilOpCodes.Call, importer.ImportMethod(writeLine));
+                        }
+
+                        break;
+                    }
+
                     if (!field.Field.IsStatic && !ValueTypeFieldOwner(field, method, locals)) //A struct's field is stored through its address.
                         LoadLocal(field.Local, method, locals);
 

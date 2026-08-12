@@ -2088,6 +2088,53 @@ public static partial class IlGenerator
     }
 
     /// <summary>
+    /// Writes a member of a struct held in a field, through the address of that field. Answers whether it did.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A struct in a field lies where it is, so <c>obj.field.x</c> is one address and one offset. Reading it
+    /// back has been recovered for a long time; writing it was refused, because <c>stfld</c> of the inner
+    /// field wants the address of the outer one underneath the value and nothing produced that. The store
+    /// stayed a memory operand the generator could not place, and it was dropped in silence.
+    /// </para>
+    /// <para>
+    /// An inlined <c>_ped.position = screenPos</c> writes <c>m_Position.x</c> at <c>+0x108</c> of a
+    /// <c>PointerEventData</c>. The IL is the object, one <c>ldflda</c> per step in front of the last, the
+    /// value, and <c>stfld</c> - which is exactly what C# compiles <c>obj.field.x = v</c> to, and what the
+    /// decompiler writes back out as that.
+    /// </para>
+    /// <para>
+    /// Every step in front of the last has to be a struct: the address of a field holding a *reference* is
+    /// not the object, and storing through it would be writing the reference itself. A static at the head is
+    /// refused as well - <c>ldsflda</c> is a different instruction and a static struct's members usually want
+    /// a setter that may not exist.
+    /// </para>
+    /// </remarks>
+    private static bool TryStoreNestedField(NestedFieldReference nested, object value, MethodDefinition method,
+        Dictionary<LocalVariable, CilLocalVariable> locals, MemberReference writeLine, MemberReference stringCtor)
+    {
+        if (nested.Path[0].IsStatic || nested.Field.IsStatic)
+            return false;
+
+        for (var step = 0; step < nested.Path.Length - 1; step++)
+            if (nested.Path[step].FieldType is not { IsValueType: true })
+                return false;
+
+        var module = method.DeclaringModule!;
+        var instructions = method.CilMethodBody!.Instructions;
+
+        if (!ValueTypeFieldOwner(nested, method, locals))
+            LoadLocal(nested.Local, method, locals);
+
+        for (var step = 0; step < nested.Path.Length - 1; step++)
+            instructions.Add(CilOpCodes.Ldflda, nested.Path[step].ToFieldDescriptor(module));
+
+        LoadOperand(value, method, locals, writeLine, stringCtor, nested.Field.FieldType);
+        instructions.Add(CilOpCodes.Stfld, nested.Field.ToFieldDescriptor(module));
+        return true;
+    }
+
+    /// <summary>
     /// Loads what a <see cref="CilOpCodes.Stfld"/> needs underneath the value, where the field belongs to a
     /// struct held in a local or passed by value. Answers whether it did.
     /// </summary>

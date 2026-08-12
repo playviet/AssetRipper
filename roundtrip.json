@@ -175,7 +175,7 @@
 14
 ],
 "Assembly-CSharp::ETFXPEL.ParticleEffectsLibrary::SpawnParticleEffect": [
-8,
+9,
 19,
 14
 ],
@@ -3260,7 +3260,7 @@
 2
 ],
 "Assembly-CSharp::CFramework.AssetLoader::LoadPrefabFromAddressablesSync": [
-4,
+1,
 11,
 6
 ],
@@ -3415,7 +3415,7 @@
 2
 ],
 "Assembly-CSharp::CFramework.DragHandler::OnBeginDrag": [
-3,
+4,
 7,
 4
 ],

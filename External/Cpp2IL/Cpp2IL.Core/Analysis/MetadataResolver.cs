@@ -174,7 +174,13 @@ public static partial class MetadataResolver
                 //An offset that matched nothing may name a member of a struct held in a field, which is stored
                 //where it lies. Only where the value is being read: writing one back needs the address of each
                 //step, which is a different shape than loading through them.
-                if (field == null && i != 0
+                //Writing one back is the same address, and `obj.field.x = v` is something C# says outright as
+                //long as every step is a field rather than a property - so a store is taken too, on an
+                //instance only. A static's members would need a setter that may not exist, and the address of
+                //one is a different instruction. Until now the store was refused here, the operand stayed an
+                //address the generator could not place, and the write was dropped: an inlined
+                //`_ped.position = screenPos` writes `m_Position.x` at +0x108 and it simply did not happen.
+                if (field == null && (i != 0 || staticOwner == null)
                     && PathToNestedField(staticOwner ?? local.Type, memory.Addend, staticOwner != null,
                         method.AppContext.Binary.is32Bit ? 8 : 0x10) is { Length: > 1 } path
                     && path.All(f => ReachableFrom(f, method)))
@@ -212,6 +218,28 @@ public static partial class MetadataResolver
                 // make sure we have a full GIT for ldsfld. open type is bad.
                 if (staticOwner is GenericInstanceTypeAnalysisContext genericOwner)
                     field = new ConcreteGenericFieldAnalysisContext(field, genericOwner);
+
+                //A number stored where a struct field begins is that struct's first member, not the struct.
+                //The offset cannot tell them apart and neither can ISIL, which carries no width - but the
+                //value can: nothing copies a float into a `Vector2`. `SubCellVisual` writes `_lastOwnerSize.x`
+                //and `.y` as two stores, and with only the second recognised the first came out as
+                //`_lastOwnerSize = (Vector2)width2`. This is the store side of `IlGenerator.Fork.FrontMember`,
+                //which already reasons this way about an array element.
+                if (i == 0 && instruction is { OpCode: OpCode.Move, Operands: [_, { } stored] }
+                    && field.FieldType is { IsValueType: true, IsEnumType: false } held
+                    && held.Namespace != nameof(System)
+                    && FrontMemberOf(held) is { } front && !StructInArithmetic.IsNumber(held)
+                    && TypeOfStored(stored) is { } value && StructInArithmetic.IsNumber(value)
+                    //And the number has to be *that* member. A value the analysis called `Int64` because it
+                    //was eight bytes wide may be the whole struct arriving in a register, and naming its
+                    //first member would throw the rest away - which cost twelve branches when the rule was
+                    //stated over any number at all.
+                    && value.FullName == front.FieldType.FullName)
+                {
+                    instruction.Operands[i] = new NestedFieldReference([field, front], local, (int)memory.Addend);
+                    changed = true;
+                    continue;
+                }
 
                 instruction.Operands[i] = new FieldReference(field, local, (int)memory.Addend);
                 changed = true;

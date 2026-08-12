@@ -952,4 +952,23 @@ public static partial class MetadataResolver
 
         return bounds.Item1 <= target && target <= bounds.Item2;
     }
+
+    /// <summary>What a value being stored is, where that is known.</summary>
+    private static TypeAnalysisContext? TypeOfStored(object operand) => operand switch
+    {
+        LocalVariable local => local.Type,
+        FieldReference field => field.Field.FieldType,
+        _ => null,
+    };
+
+    /// <summary>The member a struct begins with, where it has one that is not the struct itself.</summary>
+    private static FieldAnalysisContext? FrontMemberOf(TypeAnalysisContext type)
+    {
+        foreach (var candidate in type.Fields)
+            if (!candidate.IsStatic && candidate.BackingData?.FieldOffset == 0
+                && !ReferenceEquals(candidate.FieldType, type))
+                return candidate;
+
+        return null;
+    }
 }
