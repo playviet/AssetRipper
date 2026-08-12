@@ -428,6 +428,13 @@ public static partial class IlGenerator
                     break;
                 }
 
+                //`new string(c, n)` compiles to a call to `String::CreateString` on a null receiver, which is
+                //not something C# can be written back as. The constructor of the same arity is in the
+                //metadata, so the call is emitted as that instead. Fork: StringConstructionCall.
+                if (StringConstructionCall(targetMethod, instruction) is { } stringCtorCall
+                    && TryEmitStringConstruction(stringCtorCall, instruction, method, locals, writeLine, stringCtor))
+                    break;
+
                 var importedMethod = importer.ImportMethod(targetMethod.ToMethodDescriptor(module));
 
                 var thisParamIndex = instruction.OpCode == OpCode.Call ? 2 : 1;

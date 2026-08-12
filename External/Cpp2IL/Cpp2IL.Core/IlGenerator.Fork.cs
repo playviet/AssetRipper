@@ -2258,4 +2258,62 @@ public static partial class IlGenerator
         method.CilMethodBody!.Instructions.Add(CilOpCodes.Ldloca, held);
         return true;
     }
+
+    /// <summary>
+    /// The <c>String</c> constructor a call to <c>String::CreateString</c> stands for.
+    /// </summary>
+    /// <remarks>
+    /// A string constructor is not a constructor at the IL level: <c>new string('0', n)</c> compiles to a
+    /// static-looking call to <c>System.String::CreateString(char, int)</c> whose receiver is null, and the
+    /// generator writes it out literally - <c>((string)null).CreateString('0', decimals)</c> - which does not
+    /// compile, so the local it defines and every statement after it are commented out. Two members lose
+    /// their whole body to it, `Utility::RoundDecimalsString` and `StringExtension::Reverse`, and in both it
+    /// is the only thing wrong.
+    /// </remarks>
+    private static MethodAnalysisContext? StringConstructionCall(MethodAnalysisContext target, Instruction instruction)
+    {
+        if (target.Name != "CreateString" || target.DeclaringType?.FullName != "System.String")
+            return null;
+
+        foreach (var candidate in target.DeclaringType.Methods)
+        {
+            if (candidate is { IsStatic: false, Name: ".ctor" }
+                && candidate.Parameters.Count == target.Parameters.Count
+                && candidate.Parameters.Select((p, at) => p.ParameterType.FullName == target.Parameters[at].ParameterType.FullName).All(same => same))
+                return candidate;
+        }
+
+        return null;
+    }
+
+    /// <summary>Emits that constructor as a <c>newobj</c>, with the call's arguments and without its receiver.</summary>
+    private static bool TryEmitStringConstruction(MethodAnalysisContext constructor, Instruction instruction,
+        MethodDefinition method, Dictionary<LocalVariable, CilLocalVariable> locals,
+        MemberReference writeLine, MemberReference stringCtor)
+    {
+        var module = method.DeclaringModule!;
+        var instructions = method.CilMethodBody!.Instructions;
+
+        //`CreateString` is declared as an instance method, so the receiver sits where `this` would and the
+        //arguments begin one later.
+        var first = instruction.OpCode == OpCode.Call ? 3 : 2;
+
+        for (var i = 0; i < constructor.Parameters.Count; i++)
+        {
+            if (first + i >= instruction.Operands.Count)
+                return false;
+
+            LoadOperand(instruction.Operands[first + i], method, locals, writeLine, stringCtor,
+                constructor.Parameters[i].ParameterType);
+        }
+
+        instructions.Add(CilOpCodes.Newobj, module.DefaultImporter!.ImportMethod(constructor.ToMethodDescriptor(module)));
+
+        if (instruction.OpCode == OpCode.Call)
+            StoreToOperand(instruction.Operands[1], method, locals, writeLine);
+        else
+            instructions.Add(CilOpCodes.Pop);
+
+        return true;
+    }
 }
