@@ -592,6 +592,10 @@ public static class ForkPipeline
         // stores, so the whole chain behind it stays alive - the runtime context read, the class read, the
         // size of a `T`, the alloca, the frame the invoker thunk was handed. Reading a frame slot nothing
         // reads back as dead is what lets the chain unwind.
+        // Before the collection below, which is what actually takes the size read, the rounding and the
+        // alloca away once nothing is left calling for them.
+        ClearingASizedByT.Run(method);
+
         // Before the collection below, so that the class pointer the handle was carrying is read by nobody
         // and goes with it. After everything that names a runtime class, which is what there is to say.
         TypeHandleIsTheClassItNames.Run(method);
