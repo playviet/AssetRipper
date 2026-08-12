@@ -100,28 +100,58 @@ public static class InvokerThunk
         return (operands[Receiver], arguments, operands[Answer]);
     }
 
+    /// <summary>What a fully shared body's return buffer is called once it has been recognised.</summary>
+    public const string ReturnBuffer = "returnBuffer";
+
     /// <summary>
-    /// Puts the answer where the thunk would have put it, which is not the register the call was lifted with.
+    /// Sends the answer straight to the method's own return buffer, where the copy out of the thunk's buffer
+    /// is all that stands between the two.
     /// </summary>
     /// <remarks>
-    /// The thunk returns nothing. It writes through the pointer it was handed, so a call rewritten to name its
-    /// callee still leaves the value in a register nobody reads, and everything downstream goes on reading the
-    /// buffer - <c>RandomItem</c> came out as <c>_ = list[index]; return default(T);</c>, the call recovered
-    /// and its answer thrown away. Naming the buffer by what it holds is what lets the store be written as a
-    /// store rather than left as a poke at unmanaged memory: only where nothing better is already known, since
-    /// an address worked out by arithmetic is typed as a number and that is no answer either.
+    /// <para>
+    /// The thunk returns nothing: it writes through the pointer it was handed, so a call rewritten to name its
+    /// callee still leaves the value in a register nobody reads - <c>RandomItem</c> came out as
+    /// <c>_ = list[index]; return default(T);</c>, the call recovered and its answer thrown away. A shared body
+    /// that returns what it just fetched then copies the thunk's buffer into its own, which is
+    /// <c>memcpy(returnBuffer, buffer, sizeof(T))</c>, so answering into the return buffer and taking the copy
+    /// away says the same thing with nothing left over.
+    /// </para>
+    /// <para>
+    /// This is done here rather than in <see cref="IndirectReturnCopy"/>, which folds the same shape for a big
+    /// struct's <c>x8</c> return, because by the time that pass runs the buffer has been typed and its
+    /// dereference resolved into a field of that type - <c>[v52]</c> becomes <c>v52.m_value</c> - and the copy
+    /// no longer matches. Naming the buffer early enough for it to match was built at 1.0.990 and cost 22
+    /// commented statements for one body closed: every site pays and only the ones that fold are paid for.
+    /// Here nothing is touched unless the whole shape is present.
+    /// </para>
     /// </remarks>
-    public static void SendAnswerToItsBuffer(
-        Block block, Instruction call, object result, object? answer, MethodAnalysisContext callee)
+    public static void FoldAnswerIntoTheReturn(MethodAnalysisContext method, Instruction call, object? answer)
     {
-        if (answer is not LocalVariable buffer || callee.ReturnType is not { } returned)
+        if (answer is not LocalVariable buffer || method.AppContext.Binary is not LibCpp2IL.Elf.ElfFile binary)
             return;
 
-        if (buffer.Type is null or { Namespace: nameof(System), Name: "Int64" or "UInt64" or "IntPtr" or "UIntPtr" })
-            buffer.Type = returned.MakeByReferenceType();
+        if (method.Locals.FirstOrDefault(l => l.Name == ReturnBuffer) is not { } returned)
+            return;
 
-        block.Instructions.Insert(block.Instructions.IndexOf(call) + 1,
-            new Instruction(call.Index, OpCode.Move, new MemoryOperand(buffer), result));
+        foreach (var copy in method.ControlFlowGraph!.Instructions)
+        {
+            //Everything an import could have been handed is still on the call here: `KeyFunctionArguments`
+            //cuts it down to the three `memcpy` takes long after this runs, so only the front is matched.
+            if (copy is not { OpCode: OpCode.Call, Operands: [ulong address, _, LocalVariable into, LocalVariable from, ..] })
+                continue;
+
+            if (!ReferenceEquals(into, returned) || !ReferenceEquals(from, buffer))
+                continue;
+
+            if (binary.ImportedFunctionAt(address) is not ("memcpy" or "memmove"))
+                continue;
+
+            call.Operands[1] = returned;
+
+            copy.OpCode = OpCode.Nop;
+            copy.Operands = [];
+            return;
+        }
     }
 
     /// <summary>Everything each local is assigned by, which is what an address has to be traced through.</summary>

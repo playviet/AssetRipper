@@ -57,6 +57,7 @@ public static class RuntimeMethodCallRecovery
                 continue;
 
             List<object> arguments;
+            object? answer = null;
 
             if (read.Addend == Il2CppMethodInfoLayout.InvokerMethod)
             {
@@ -69,6 +70,7 @@ public static class RuntimeMethodCallRecovery
                     continue;
 
                 arguments = callee.IsStatic ? unpacked.Arguments : [unpacked.Receiver, .. unpacked.Arguments];
+                answer = unpacked.Answer;
             }
             //The call was handed every register an argument could have come in, because nothing was known
             //about what it took. Now that the callee is named, the convention says which of them it read.
@@ -89,7 +91,16 @@ public static class RuntimeMethodCallRecovery
             else if (instruction.Operands[1] is LocalVariable result)
             {
                 instruction.OpCode = OpCode.Call;
+
+                //The thunk answers through the pointer it was handed and leaves x0 holding nothing, so the
+                //register the call was lifted with is not where the value is. Saying the answer goes to the
+                //buffer is the same shape a big struct's indirect return already has, which is what lets the
+                //copy out of the buffer be folded away rather than left as a poke at unmanaged memory.
                 instruction.Operands = [callee, result, .. arguments];
+
+                //The thunk answers through the pointer it was handed and leaves x0 holding nothing, so the
+                //value is where that pointer went - and in a shared body it goes straight back out again.
+                InvokerThunk.FoldAnswerIntoTheReturn(method, instruction, answer);
             }
             else
             {

@@ -183,6 +183,67 @@ public static partial class LocalVariables
         }
     }
 
+    /// <summary>
+    /// Names the buffer a fully shared body returns through, and makes the method return it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// One body serves every reference instantiation of a generic, so it cannot know how big a <c>T</c> is and
+    /// cannot return one in a register. il2cpp compiles <c>T RandomItem&lt;T&gt;(IList&lt;T&gt; list)</c> as
+    /// <c>void(IList list, T* ret, MethodInfo*)</c> - the buffer is an ordinary integer argument sitting
+    /// between the declared parameters and the trailing <c>MethodInfo</c>, which is the one register the
+    /// naming above walks straight past. It arrives untyped and unnamed, and everything written through it is
+    /// a poke at unmanaged memory.
+    /// </para>
+    /// <para>
+    /// The <c>Return</c> the lifter built reads x0, where a method with this shape leaves nothing at all, so
+    /// it is returned to the buffer here: after that a call answering into the buffer is the returned value,
+    /// which is what <see cref="IndirectReturnCopy"/> already knows how to fold.
+    /// </para>
+    /// </remarks>
+    private static void SeedSharedReturnBuffer(MethodAnalysisContext method)
+    {
+        if (method.ReturnType is not { } returned || !MentionsAGenericParameter(returned))
+            return;
+
+        //il2cpp appends the buffer and then the `MethodInfo`, so the buffer is the integer register right
+        //before the one the MethodInfo arrived in. Counted off the MethodInfo rather than off the parameter
+        //list, because a float parameter takes no integer register and counting would put it in the wrong
+        //place - and because the MethodInfo's register is read from the body, which is the only thing here
+        //that is certainly right.
+        if (method.ParameterLocals.FirstOrDefault(l => l.IsMethodInfo) is not { Register.Name: { } named })
+            return;
+
+        if (!named.StartsWith('X') || !int.TryParse(named.Substring(1), out var number) || number < 1)
+            return;
+
+        var before = new Register(null, "X" + (number - 1));
+
+        if (method.Locals.FirstOrDefault(l => l.Register.Number == before.Number && l.Register.Version == -1) is not { } local)
+            return;
+
+        //Only where nothing already claims it: that register is the buffer only when the parameters did not
+        //reach it.
+        if (method.ParameterLocals.Contains(local))
+            return;
+
+        local.Name = InvokerThunk.ReturnBuffer;
+        local.Type ??= returned;
+
+        foreach (var instruction in method.ControlFlowGraph!.Instructions)
+            if (instruction is { OpCode: OpCode.Return, Operands: [LocalVariable] })
+                instruction.Operands[0] = local;
+    }
+
+    /// <summary>Whether a type is a shared generic parameter, or is built out of one.</summary>
+    private static bool MentionsAGenericParameter(TypeAnalysisContext type) => type switch
+    {
+        GenericParameterTypeAnalysisContext => true,
+        GenericInstanceTypeAnalysisContext instance => instance.GenericArguments.Any(MentionsAGenericParameter),
+        WrappedTypeAnalysisContext wrapped => wrapped.ElementType is { } element && MentionsAGenericParameter(element),
+        _ => false,
+    };
+
     private static void SeedOwnMethodInfoParameter(MethodAnalysisContext method)
     {
         if (method.DeclaringType?.DeclaringAssembly is not { } assembly)
