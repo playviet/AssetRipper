@@ -229,6 +229,7 @@ public static partial class LocalVariables
         SeedNewobjResults(method);
         SeedMethodInfoTypes(method);
         SeedOwnMethodInfoParameter(method);
+        SeedIndirectReturnBuffer(method);
         SeedComparisonResults(method);
 
         // Everywhere there's a CallVoid after a Newobj, we can resolve the constructor call.

@@ -153,6 +153,36 @@ public static partial class LocalVariables
     /// chain that starts there read as unmanaged memory: the base constructor of a generic type, and every
     /// static field and type such a body reaches.
     /// </summary>
+    /// <summary>
+    /// Types this method's own indirect return buffer, which nothing else ever will.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A composite over sixteen bytes is returned through a caller-provided buffer whose address arrives in
+    /// <c>x8</c>. <see cref="Aapcs64.ReturnsIndirectly"/> knows this and only the <i>caller</i> side uses it:
+    /// <c>x8</c> is not in <c>ParameterOperands</c>, so the callee's own entry value has no type, and every
+    /// store the method makes into its own result comes out as
+    /// <c>Unmanaged memory store: [v8 @ X8+0x10]</c>. Nine members of <c>SegmentRuleEvaluator</c> return
+    /// <c>default</c> because of it, and five more score <c>full</c> while reading those defaults.
+    /// </para>
+    /// <para>
+    /// Only the <b>entry</b> value, which is the unversioned local: <c>x8</c> is an ordinary scratch register
+    /// as well, and 387 of the 459 places it is named in this binary are after a write. Typing one of those
+    /// would call some unrelated temporary the method's result.
+    /// </para>
+    /// </remarks>
+    private static void SeedIndirectReturnBuffer(MethodAnalysisContext method)
+    {
+        if (!Aapcs64.ReturnsIndirectly(method) || method.ReturnType is not { } returned)
+            return;
+
+        foreach (var local in method.Locals)
+        {
+            if (local.Type == null && local.Register is { Version: -1, Name: "X8" })
+                local.Type = returned.MakeByReferenceType();
+        }
+    }
+
     private static void SeedOwnMethodInfoParameter(MethodAnalysisContext method)
     {
         if (method.DeclaringType?.DeclaringAssembly is not { } assembly)

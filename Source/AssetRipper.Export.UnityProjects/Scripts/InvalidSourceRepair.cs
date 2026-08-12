@@ -1367,7 +1367,12 @@ internal static partial class InvalidSourceRepair
 			//CS0122 is a member that cannot be seen at all; CS0271 and CS0272 are a property whose getter or
 			//setter alone is out of reach. il2cpp inlines the method that would have done the writing, so the
 			//recovered write is correct and only the accessor's protection stands in the way.
-			if (diagnostic.Id is not ("CS0122" or "CS0271" or "CS0272"))
+			//CS0191 is an assignment to a `readonly` field from outside a constructor. il2cpp does not keep
+			//`readonly` - it is a compile-time promise, not a runtime one - so a struct whose fields the
+			//compiler zero-filled into the return buffer comes back with those stores in the method body,
+			//which is where they really are. Twenty of `SegmentRuleEvaluator.MakeIdent`'s statements are
+			//exactly this, and the word is what stands in the way, not the write.
+			if (diagnostic.Id is not ("CS0122" or "CS0271" or "CS0272" or "CS0191"))
 			{
 				continue;
 			}
@@ -1398,18 +1403,22 @@ internal static partial class InvalidSourceRepair
 
 				foreach (SyntaxReference reference in symbol.DeclaringSyntaxReferences)
 				{
-					if (!byTree.TryGetValue(reference.SyntaxTree, out SourceFile? declaredIn)
-						|| WideningEdit(reference.GetSyntax()) is not { } edit)
+					if (!byTree.TryGetValue(reference.SyntaxTree, out SourceFile? declaredIn))
 					{
 						continue;
 					}
 
-					if (!planned.TryGetValue(declaredIn, out List<Edit>? here))
+					foreach (Edit edit in diagnostic.Id == "CS0191"
+						? MutableEdits(reference.GetSyntax(), byTree)
+						: WideningEdit(reference.GetSyntax()) is { } widening ? [widening] : [])
 					{
-						planned[declaredIn] = here = [];
-					}
+						if (!planned.TryGetValue(declaredIn, out List<Edit>? here))
+						{
+							planned[declaredIn] = here = [];
+						}
 
-					here.Add(edit);
+						here.Add(edit);
+					}
 				}
 			}
 		}
@@ -1426,6 +1435,46 @@ internal static partial class InvalidSourceRepair
 		}
 
 		return made;
+	}
+
+	/// <summary>The edits that make one field assignable: its own `readonly`, and its struct's.</summary>
+	/// <remarks>
+	/// C# requires every instance field of a `readonly struct` to be readonly (CS8340), so taking the word off
+	/// the field alone would leave a file that does not compile at all - which costs the project every script
+	/// in the assembly, not the one statement this is trying to recover. Both go together or neither does.
+	/// </remarks>
+	private static List<Edit> MutableEdits(SyntaxNode declaration, Dictionary<SyntaxTree, SourceFile> byTree)
+	{
+		List<Edit> edits = [];
+
+		if (declaration.FirstAncestorOrSelf<FieldDeclarationSyntax>() is not { } field)
+		{
+			return edits;
+		}
+
+		foreach (SyntaxToken modifier in field.Modifiers)
+		{
+			if (modifier.IsKind(SyntaxKind.ReadOnlyKeyword))
+			{
+				//The trailing space goes with it, so `readonly int x` does not become ` int x`.
+				edits.Add(new Edit(TextSpan.FromBounds(modifier.SpanStart, field.Declaration.Type.SpanStart), "", Rewritten: true));
+			}
+		}
+
+		if (edits.Count > 0
+			&& field.FirstAncestorOrSelf<StructDeclarationSyntax>() is { } owner
+			&& byTree.ContainsKey(owner.SyntaxTree))
+		{
+			foreach (SyntaxToken modifier in owner.Modifiers)
+			{
+				if (modifier.IsKind(SyntaxKind.ReadOnlyKeyword))
+				{
+					edits.Add(new Edit(TextSpan.FromBounds(modifier.SpanStart, owner.Keyword.SpanStart), "", Rewritten: true));
+				}
+			}
+		}
+
+		return edits;
 	}
 
 	/// <summary>The edit that makes one declaration reachable from the rest of the assembly.</summary>

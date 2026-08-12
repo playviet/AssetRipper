@@ -212,13 +212,6 @@ public static class ForkPipeline
         // and the object it read the class from are all right there in the walk.
         InterfaceCallRecovery.Run(method);
 
-        // A dispatch reads two adjacent words - the method pointer and the MethodInfo beside it - and the two
-        // passes above rewrite the call around the first while leaving the second standing. **Here**, after
-        // both of them and after the type propagation that runs `VirtualCallRecovery`, because the signal it
-        // reads is that the method pointer's own local has stopped being read, which is only true once the
-        // call has been rewritten.
-        ResolvedCallMethodInfo.Run(method);
-
         // Preparing a class the first time something touches it is the runtime's business, not the program's.
         // Taking the call leaves the test that guarded it reading a value nobody wants, which the collection
         // at the end of the pipeline then removes along with the class pointer it was read from.
