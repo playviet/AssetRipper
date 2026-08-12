@@ -1173,6 +1173,9 @@ internal sealed class VectorLanes
     /// </remarks>
     private bool Store(uint word, Arm64Instruction instruction, Action<OpCode, object[]> emit)
     {
+        if (StorePair(instruction, emit))
+            return true;
+
         if (instruction.Mnemonic is not (Arm64Mnemonic.STR or Arm64Mnemonic.STUR)
             || instruction.Op1Kind != Arm64OperandKind.Memory
             || instruction.MemBase == Arm64Register.INVALID
@@ -1182,6 +1185,20 @@ internal sealed class VectorLanes
 
         if (VectorNumber(instruction.Op0Reg) is not { } stored)
             return false;
+
+        //A register with no lanes at all is one nothing in this method has taken apart - an incoming float
+        //parameter, most often, which arrives one field to a register. Spilling it is still a write, and
+        //dropping it left the slot the reload names with nothing reaching it: `GizmosDrawer::DrawPoint`
+        //spills `position.x` and `position.y` across a call and came back with
+        //`float num12 = default(float); float num11 = num12 + num8;` - the parameter gone from a body that
+        //otherwise compiled. Written whole, because what the register holds is one value and splitting it
+        //would be inventing lanes.
+        if (!width.ContainsKey(stored) && !pending.ContainsKey(stored)
+            && GeneralNumber(instruction.MemBase) is { } spillTo && OffsetOf(word) is { } spillAt)
+        {
+            emit(OpCode.Move, [Place(spillTo, spillAt), Lane(stored, 0)]);
+            return true;
+        }
 
         //A register filled by a whole-register load has only a *pending* entry - nothing has yet said how
         //wide its lanes are - so the width lookup below failed and the store fell through to `Invalidate`,
@@ -1220,6 +1237,50 @@ internal sealed class VectorLanes
                 Lane(stored, lane * elementWidth),
             ]);
         }
+
+        return true;
+    }
+
+    /// <summary>
+    /// A pair of vector registers spilled together, which is how the compiler saves two of them at once.
+    /// </summary>
+    /// <remarks>
+    /// <c>STP V1, V3, [X31 + 0x10]</c> is two whole-register writes, sixteen bytes apart, and neither was
+    /// being lifted at all - the mnemonic is not <c>STR</c>, so this fell through to <c>Invalidate</c> and the
+    /// two registers were forgotten along with the slots they went to. A pair's immediate <em>is</em> scaled
+    /// by the disassembler, unlike the single 128-bit form, so it is taken as written.
+    /// </remarks>
+    private bool StorePair(Arm64Instruction instruction, Action<OpCode, object[]> emit)
+    {
+        if (instruction.Mnemonic != Arm64Mnemonic.STP
+            || instruction.Op2Kind != Arm64OperandKind.Memory
+            || instruction.MemBase == Arm64Register.INVALID
+            || instruction.MemAddendReg != Arm64Register.INVALID
+            || instruction.MemIsPreIndexed
+            || BytesOf(instruction.Op0Reg) is not (4 or 8 or 16)
+            || BytesOf(instruction.Op0Reg) != BytesOf(instruction.Op1Reg))
+        {
+            return false;
+        }
+
+        if (VectorNumber(instruction.Op0Reg) is not { } first || VectorNumber(instruction.Op1Reg) is not { } second
+            || GeneralNumber(instruction.MemBase) is not { } into)
+        {
+            return false;
+        }
+
+        //Only where neither has lanes of its own. One that does is a vector the method computed with, and
+        //writing it as a single value would say the other three quarters of it are not there.
+        if (width.ContainsKey(first) || width.ContainsKey(second)
+            || pending.ContainsKey(first) || pending.ContainsKey(second))
+        {
+            return false;
+        }
+
+        var apart = BytesOf(instruction.Op0Reg);
+
+        emit(OpCode.Move, [Place(into, instruction.MemOffset), Lane(first, 0)]);
+        emit(OpCode.Move, [Place(into, instruction.MemOffset + apart), Lane(second, 0)]);
 
         return true;
     }
