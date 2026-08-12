@@ -616,18 +616,25 @@ public static partial class LocalVariables
         if (method.Parameters.Count == 0)
             return;
 
-        // Normal params
-        var paramIndex = 0;
+        // Normal params, matched by the name each local was given rather than by its position in this list.
+        //
+        // `CreateAll` names a local from `Parameters[i]` at the parameter's own index, and then only adds it
+        // to `ParameterLocals` if the register it should be in has an entry local at all - so a parameter
+        // passed somewhere this does not look for it (an aggregate past the eight vector registers, which
+        // arrives on the caller's stack) is skipped, and walking the compacted list by position gives every
+        // parameter after it the type of the one before. `NearestPointOnLine(Vector3, Vector3, Vector3,
+        // bool)` came out with `isNormalized` - correctly named, correctly in X0 - typed `UnityEngine.Vector3`,
+        // and `And v42, isNormalized (Vector3), 1` is not something the rest of the pipeline can make
+        // anything of.
+        //
+        // The name is the parameter it belongs to, and two parameters cannot share one.
         foreach (var local in method.ParameterLocals)
         {
             if (local.IsThis || local.IsMethodInfo)
                 continue;
 
-            if (paramIndex >= method.Parameters.Count)
-                break;
-
-            local.Type = method.Parameters[paramIndex].ParameterType;
-            paramIndex++;
+            if (method.Parameters.FirstOrDefault(p => p.ParameterName == local.Name) is { } parameter)
+                local.Type = parameter.ParameterType;
         }
     }
 

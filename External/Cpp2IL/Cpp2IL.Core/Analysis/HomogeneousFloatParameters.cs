@@ -201,6 +201,21 @@ public static class HomogeneousFloatParameters
             var first = vectorCount;
             vectorCount += floats;
 
+            //Eight is all there are, here as on the call side. A parameter that does not fit in what is left
+            //of v0..v7 arrives on the caller's stack, and so does every one after it - so the registers this
+            //walk would name for it hold something else entirely. `VectorExtensions::NearestPointOnLine`
+            //takes three `Vector3`s, which is nine floats: the third was being read out of V6, V7 and **V8**
+            //while the body loads it from `[X31+0x60]`, and V6 and V7 are never written at all, so its `.x`
+            //and `.y` were phis with no definition and the whole body collapsed.
+            //
+            //Refusing does not recover the argument - it is on the stack and the stores that put it there
+            //are gone by the time anything could read them - but it stops the method claiming a value it
+            //does not have. Seventeen members overflow and eleven of them scored `full` while doing it, so
+            //`full` is expected to fall here: an honest marker for a confident wrong answer is the trade
+            //this project takes.
+            if (first + floats > Aapcs64.RegistersPerRun)
+                continue;
+
             if (floats < 2 || FloatFields(type) is not { } fields || fields.Count != floats)
                 continue;
 
