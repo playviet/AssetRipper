@@ -160,7 +160,7 @@ public static class StateMachineFieldLayout
             if (field.IsStatic)
                 continue;
 
-            if (Sized(field.FieldType) is not var (size, alignment) || size <= 0)
+            if (Sized(field.FieldType, 0) is not var (size, alignment) || size <= 0)
                 return null;
 
             at = (at + alignment - 1) / alignment * alignment;
@@ -176,17 +176,27 @@ public static class StateMachineFieldLayout
     /// A reference is a pointer, and so is the machine's own <c>T</c>: a body shared between instantiations
     /// only ever runs for reference ones, which is what makes any of this answerable.
     /// </remarks>
-    private static (long Size, long Alignment)? Sized(TypeAnalysisContext? type)
+    private static (long Size, long Alignment)? Sized(TypeAnalysisContext? type, int depth = 0)
     {
+        if (depth > 4)
+            return null;
+
         if (type is null)
             return null;
 
         if (type is GenericParameterTypeAnalysisContext || !type.IsValueType)
             return (8, 8);
 
-        //A struct built on the machine's own `T` records no layout either, and every one that turns up here -
-        //the builder and the awaiter - is one reference wide. `Aapcs64.SizeOf` adds the declared fields up and
-        //gets twenty-eight for `AsyncTaskMethodBuilder<T>`, which put every field after it in the wrong place.
+        //A struct built on the machine's own `T` records no layout either, and the ones that turn up here are
+        //wrappers round a single reference - the builder and the awaiter. `Aapcs64.SizeOf` adds the declared
+        //fields up without alignment and gets twenty-eight for `AsyncTaskMethodBuilder<T>`, which put every
+        //field after it in the wrong place; laying it out from its own fields gets four, because a type from
+        //another assembly arrives here with none.
+        //
+        //Eight is a guess, and it is the check below that decides whether it was the right one:
+        //`<LoadAsync>d__2` agrees at every offset it reads and is named; `<LoadFromAddressables>d__7` holds an
+        //`AsyncOperationHandle<T>`, which is three fields and twenty-four bytes, so its offsets do not line up
+        //and it is left alone.
         if (MentionsAGenericParameter(type, 0))
             return (8, 8);
 
