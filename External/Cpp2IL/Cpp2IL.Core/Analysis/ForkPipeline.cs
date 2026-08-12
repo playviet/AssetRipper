@@ -585,5 +585,13 @@ public static class ForkPipeline
         // initialisation guard had left holding `Il2CppClass<BoardSettingSO>`.
         ArrayAccessRecovery.Run(method);
         ArrayElementAddress.Run(method);
+
+        // Last, because it is a question about what everything above left behind: every pass that recovers a
+        // call replaces machinery with the statement it stood for, and the machinery does not go anywhere.
+        // Dead code elimination cannot take it because a store into the frame counts as a use of what it
+        // stores, so the whole chain behind it stays alive - the runtime context read, the class read, the
+        // size of a `T`, the alloca, the frame the invoker thunk was handed. Reading a frame slot nothing
+        // reads back as dead is what lets the chain unwind.
+        DeadFrameArithmetic.Run(method);
     }
 }
