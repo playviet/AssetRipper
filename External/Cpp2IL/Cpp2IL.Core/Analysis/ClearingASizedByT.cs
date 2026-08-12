@@ -87,6 +87,14 @@ public static class ClearingASizedByT
             {
                 filled = carried;
             }
+            //Or the source is not a buffer at all but the value itself, which is what a `T` handed straight to
+            //the copy is: `values[^1] = value` compiles to `memcpy(&element, value, sizeof(T))` where the
+            //second operand is already typed `T`, because a reference instantiation passes the object and only
+            //a value type would pass its address. An integer there is an address and says nothing.
+            else if (call.Operands[first + 1] is LocalVariable value && IsAValue(value.Type))
+            {
+                filled = value;
+            }
             else
             {
                 continue;
@@ -112,6 +120,17 @@ public static class ClearingASizedByT
             }
         }
     }
+
+    /// <summary>
+    /// Whether what a copy was handed is the value rather than somewhere to find it.
+    /// </summary>
+    /// <remarks>
+    /// An address is untyped or wears the integer type the arithmetic that made it gave it. Anything the
+    /// analysis has called a managed type is the thing itself - and for a shared body that is a `T`, which is
+    /// a reference, which is passed rather than pointed at.
+    /// </remarks>
+    private static bool IsAValue(TypeAnalysisContext? type)
+        => type is not null && type is not { Namespace: nameof(System), Name: "Int64" or "UInt64" or "IntPtr" or "UIntPtr" or "Int32" or "UInt32" };
 
     /// <summary>Whether a length is a class's own size, however much arithmetic stands in the way.</summary>
     /// <remarks>
