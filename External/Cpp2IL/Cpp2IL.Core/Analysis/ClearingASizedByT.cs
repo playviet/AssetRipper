@@ -6,7 +6,7 @@ using Cpp2IL.Core.Model.Contexts;
 namespace Cpp2IL.Core.Analysis;
 
 /// <summary>
-/// Takes away the <c>memset</c> that clears a scratch buffer of a shared <c>T</c>.
+/// Says what a <c>memset</c> or <c>memcpy</c> the size of a shared <c>T</c> leaves in its buffer.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -26,6 +26,11 @@ namespace Cpp2IL.Core.Analysis;
 /// survives, and taking the call away is what lets everything feeding it be seen as dead.
 /// </para>
 /// <para>
+/// A copy the same size is the same idea one step on: the buffer now holds whatever the other buffer held,
+/// and where that is known - because this pass named it when it was filled - the copy says so. Where it is
+/// not, the copy is between two places nothing can name and it is left alone.
+/// </para>
+/// <para>
 /// Only where the length came from a class's own size. A <c>memset</c> of a length the program worked out is
 /// somebody's <c>Array.Clear</c> and is left alone.
 /// </para>
@@ -43,32 +48,62 @@ public static class ClearingASizedByT
             if (instruction.Destination is LocalVariable destination)
                 definitions.TryAdd(destination, instruction);
 
-        var live = graph.Blocks.SelectMany(b => b.Instructions).ToList();
+        //What each scratch buffer holds, named by the value the operation that filled it answered with. The
+        //buffers themselves are addresses and nothing can be said about them; what they carry is a `T`.
+        var holds = new Dictionary<LocalVariable, LocalVariable>();
 
-        foreach (var call in live)
+        foreach (var call in graph.Instructions)
         {
             if (call.OpCode is not (OpCode.Call or OpCode.CallVoid) || call.Operands.Count < 2
-                || call.Operands[0] is not ulong address || binary.ImportedFunctionAt(address) != "memset")
+                || call.Operands[0] is not ulong address)
             {
                 continue;
             }
 
+            var named = binary.ImportedFunctionAt(address);
+
+            if (named is not ("memset" or "memcpy" or "memmove"))
+                continue;
+
             //`Call` puts its answer at operand one and `CallVoid` has none, so the arguments start after.
             var first = call.OpCode == OpCode.Call ? 2 : 1;
 
-            if (call.Operands.Count < first + 3 || Constant(call.Operands[first + 1]) is not 0)
+            if (call.Operands.Count < first + 3 || !SizeOfAClass(call.Operands[first + 2], definitions, 0))
                 continue;
 
-            if (!SizeOfAClass(call.Operands[first + 2], definitions, 0))
-                continue;
+            //What the buffer is going to hold: nothing, for a clear; whatever the other buffer held, for a
+            //copy - and if that is not known, this is a copy between two places nothing can name and there is
+            //nothing to say about it.
+            object filled;
 
-            //The answer is the buffer, and the buffer holds a zeroed `T` - which is `default(T)` and nothing
-            //else. Saying that keeps the value the body actually wanted while the size, the rounding and the
-            //alloca stop being read at all, which is what lets them go.
+            if (named == "memset")
+            {
+                if (Constant(call.Operands[first + 1]) is not 0)
+                    continue;
+
+                filled = 0;
+            }
+            else if (call.Operands[first + 1] is LocalVariable from && holds.TryGetValue(from, out var carried))
+            {
+                filled = carried;
+            }
+            else
+            {
+                continue;
+            }
+
+            //The answer is the buffer, and what it holds is now known - saying so keeps the value the body
+            //wanted while the size, the rounding and the alloca stop being read at all, which is what lets the
+            //collection take them.
+            var into = call.Operands[first] as LocalVariable;
+
             if (first == 2 && call.Operands[1] is LocalVariable answer)
             {
                 call.OpCode = OpCode.Move;
-                call.Operands = [answer, 0];
+                call.Operands = [answer, filled];
+
+                if (into != null)
+                    holds[into] = answer;
             }
             else
             {
