@@ -8,7 +8,7 @@ third-party plugin with no source are all zero work and must not be in the queue
 Matching is by namespace + type + member + arity, never by short name: `Common.HomeMenu` and `CF.HomeMenu`
 are different types, and matching loosely invented five defects that do not exist.
 
-    inventory.py <export>/ExportedProject [out.md]
+    inventory.py <export>/ExportedProject [out.md]      # writes RECOVERY-FILES.md unless told otherwise
 """
 import collections, os, pickle, re, sys
 
@@ -19,6 +19,7 @@ from markers import classify, has_body, statements
 
 GAMEHUB = '/Users/playviet/Documents/_BZ/game-hub/Assets'
 CACHE = os.path.join(SP, 'origin-index.pickle')
+BARE = os.path.join(SP, 'bare-returns.tsv')
 NS = re.compile(r'^\s*namespace\s+([A-Za-z_][\w.]*)', re.M)
 TYPE = re.compile(r'\b(?:class|struct|interface|enum|record)\s+([A-Za-z_][A-Za-z0-9_]*)')
 EMPTY_IF = re.compile(r'^if\s*\(.*\)$')
@@ -55,6 +56,26 @@ def arity(text):
     return n
 
 
+def bare_returns():
+    """Every method the binary compiles to a single RET, by type, member and parameter count.
+
+    `void SetX(this Vector2 v, float x) => v.x = x;` writes to a copy of a by-value struct and the C#
+    compiler discards it too, so the binary is one `RET` and an empty export is the *right* answer. Counting
+    those as owed counts a defect that is not there - five of them in `VectorExtensions` alone. Regenerate
+    the file with probe2's `bare` mode; the header of it says how.
+    """
+    found = set()
+    if not os.path.exists(BARE):
+        return found
+    for line in open(BARE, encoding='utf8'):
+        if line.startswith('#'):
+            continue
+        parts = line.rstrip('\n').split('\t')
+        if len(parts) == 4 and parts[3].isdigit():
+            found.add((parts[1], parts[2], int(parts[3])))
+    return found
+
+
 def origin_index():
     if os.path.exists(CACHE):
         return pickle.load(open(CACHE, 'rb'))
@@ -79,9 +100,12 @@ def namespace_of(text, path):
 
 def main():
     export = sys.argv[1]
-    out = sys.argv[2] if len(sys.argv) > 2 else None
+    #The queue is a file in the repository, not something to read off a terminal. Left optional it was
+    #silently not written for six rounds while its numbers were being quoted from the stale copy on disk.
+    out = sys.argv[2] if len(sys.argv) > 2 else os.path.join(os.path.dirname(SP), 'RECOVERY-FILES.md')
     root = os.path.join(export, 'Assets', 'Scripts', 'Assembly-CSharp')
     index = origin_index()
+    bare = bare_returns()
 
     rows = []
     for directory, _sub, files in os.walk(root):
@@ -105,7 +129,8 @@ def main():
                 except Exception:
                     pass
 
-            whole = gap = notmine = empty = 0
+            whole = gap = notmine = empty = nothing = 0
+            fullnames = [(ns + '.' + t) if ns else t for t in types]
             owed = []
             for member, texts in members(path).items():
                 for t in texts:
@@ -132,11 +157,15 @@ def main():
                     if not st or all(EMPTY_IF.match(s) for s in st):
                         empty += 1
                         continue
+                    #The original says something; the binary does not. There is nothing here to recover.
+                    if any((f, member, want) in bare for f in fullnames):
+                        nothing += 1
+                        continue
                     gap += 1
                     owed.append((member, kind, len(st)))
 
             rows.append(dict(path=os.path.relpath(path, root), whole=whole, gap=gap,
-                             notmine=notmine, empty=empty, owed=owed,
+                             notmine=notmine, empty=empty, nothing=nothing, owed=owed,
                              origin=os.path.relpath(candidates[0], GAMEHUB) if candidates else None))
 
     rows.sort(key=lambda r: (-r['gap'], r['path']))
@@ -160,6 +189,7 @@ def main():
     lines.append('| **files that owe something** | **%d** |' % len(with_gap))
     lines.append('| bodies whole | %d |' % total_whole)
     lines.append('| **bodies owed** | **%d** |' % total_gap)
+    lines.append('| not whole, one RET in the binary | %d |' % sum(r['nothing'] for r in rows))
     lines.append('| not whole, no original | %d |' % sum(r['notmine'] for r in rows))
     lines.append('| not whole, empty in original | %d |' % sum(r['empty'] for r in rows))
     lines.append('')
