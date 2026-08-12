@@ -596,6 +596,10 @@ public static class ForkPipeline
         // stores, so the whole chain behind it stays alive - the runtime context read, the class read, the
         // size of a `T`, the alloca, the frame the invoker thunk was handed. Reading a frame slot nothing
         // reads back as dead is what lets the chain unwind.
+        // Before the two below: turning the helper into an addition is what gives the field recovery below
+        // something it can name, and what makes the class read and the step behind it dead.
+        FieldFromItsRuntimeInfo.Run(method);
+
         // Before the collection below, which is what actually takes the size read, the rounding and the
         // alloca away once nothing is left calling for them.
         ClearingASizedByT.Run(method);
