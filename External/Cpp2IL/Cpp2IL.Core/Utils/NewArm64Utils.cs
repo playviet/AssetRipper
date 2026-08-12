@@ -25,7 +25,7 @@ public static partial class NewArm64Utils
 
                 var bytes = binary.GetRawBinaryContent().Slice((int)rawStart, (int)(rawStartOfNextMethod - rawStart));
 
-                return PutDisplacedInstructionsBack(Disassemble(bytes, virtAddress), binary);
+                return PutDisplacedInstructionsBack(DecodeWhatDisarmRefused(Disassemble(bytes, virtAddress), bytes, virtAddress), binary);
             }
         }
 
