@@ -104,9 +104,34 @@ public static class StackProtectorRemoval
         if (Read(test.Operands[1], definitions) is not { } left || Read(test.Operands[2], definitions) is not { } right)
             return false;
 
-        return (IsThreadCookie(left, definitions) && IsFrameSlot(right))
-            || (IsThreadCookie(right, definitions) && IsFrameSlot(left));
+        if ((IsThreadCookie(left, definitions) && IsFrameSlot(right))
+            || (IsThreadCookie(right, definitions) && IsFrameSlot(left)))
+        {
+            return true;
+        }
+
+        //And the saved copy where the slot has been named as a value rather than read through its address.
+        //`STUR X8, [X29 - 8]` is a store into the frame, and by the time this runs the slot has a variable of
+        //its own - so the operand is `stack_-8`, not a memory read, and `Read` walks its one copy back to the
+        //cookie it was filled from. Both sides then look like the cookie, neither looks like a frame slot,
+        //and the pair test can never match: **59 canary sites in 19 generic-method bodies**, against one in
+        //all 3283 plain ones, because a shared generic allocas a `T`-sized buffer and a variable-length frame
+        //is what makes the compiler emit the guard at all.
+        //
+        //Exactly one side being the slot is what says which is which. Two reads of the cookie compared
+        //against each other is nothing else: the value is the thread's and the program never sees it.
+        if (IsSavedSlot(test.Operands[1]) != IsSavedSlot(test.Operands[2])
+            && IsThreadCookie(left, definitions) && IsThreadCookie(right, definitions))
+        {
+            return true;
+        }
+
+        return false;
     }
+
+    /// <summary>The slot itself, named as a value rather than read through its address.</summary>
+    private static bool IsSavedSlot(object operand) =>
+        operand is LocalVariable local && local.Register.Name.StartsWith(StackSlots.ValuePrefix);
 
     /// <summary>
     /// The memory the operand reads: either written down in the comparison itself, or one copy away in the
