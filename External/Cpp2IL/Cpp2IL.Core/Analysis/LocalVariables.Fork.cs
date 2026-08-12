@@ -16,6 +16,36 @@ namespace Cpp2IL.Core.Analysis;
 public static partial class LocalVariables
 {
     /// <summary>
+    /// A name for the local a register becomes, which is not one of the method's own parameter names.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Locals are named <c>v0, v1, v2</c> in the order their registers are first seen, and a parameter's local
+    /// is renamed afterwards to what the signature calls it. When the signature calls a parameter <c>v2</c> -
+    /// which it does, because the original source of these methods names its arguments that way - two
+    /// different locals end up called <c>v2</c>, and <see cref="IlGenerator"/> resolves a load by name: the
+    /// store goes to the local, the load comes from the parameter.
+    /// </para>
+    /// <para>
+    /// <c>VectorExtensions.GetAngleInDegree(v1, v2)</c> lost its whole body to this, twice, while
+    /// <c>GetAngleInRadian</c> - the identical code whose locals happened to be numbered differently - is
+    /// recovered whole. The collision is decided here, where the name is chosen, rather than at the load,
+    /// because by then the two are indistinguishable.
+    /// </para>
+    /// </remarks>
+    private static string AutoName(MethodAnalysisContext method, int index)
+    {
+        var name = $"v{index}";
+
+        //A parameter called `v2_` as well is not a shape anything has produced, but the loop costs nothing and
+        //the alternative is the same silent defect one character along.
+        while (method.Parameters.Any(parameter => parameter.Name == name))
+            name += "_";
+
+        return name;
+    }
+
+    /// <summary>
     /// Gives an untyped value the type of whatever it is being compared against.
     /// </summary>
     /// <remarks>

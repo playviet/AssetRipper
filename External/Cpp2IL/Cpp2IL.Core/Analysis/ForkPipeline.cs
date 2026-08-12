@@ -528,6 +528,13 @@ public static class ForkPipeline
         // two instructions this does not match.
         RgctxGuardFolding.Run(method);
 
+        // And again here, because the answer above arrives long after the earlier pair ran at line 389 and
+        // 413. Without this the branch stands, its arm stays reachable, and the
+        // `il2cpp_codegen_initialize_method` call inside it is an honest-looking marker on a body that has
+        // nothing else wrong with it.
+        ConstantBranchFolding.Run(method);
+        UnreachableBlockRemover.Run(method);
+
 
         // A mask to thirty-two bits on something that has no more than thirty-two is the register's width and
         // not arithmetic, and it makes a `Color32` stop looking like one. Late, where the value has its type.

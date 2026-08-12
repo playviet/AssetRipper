@@ -84,7 +84,13 @@ public static class ListIdiomRecovery
             return false;
 
         instruction.OpCode = OpCode.CallVoid;
-        instruction.Operands = [add, receiver, item];
+
+        //Everything after the item as well, because for a float aggregate the item is only its first lane.
+        //A Vector2 arrives in two registers and the lifter appends the second, so rebuilding the operand list
+        //from `receiver` and `item` alone threw the y away - and `list.Add(v)` came out as
+        //`list.Add((Vector2)num3)` in five places, in a shape no later pass could put back together because
+        //copy propagation had by then removed the `FMOV S1, S9` the lane came from.
+        instruction.Operands = [add, receiver, .. instruction.Operands.Skip(receiverIndex + 1)];
         DropBookkeeping(block, holder);
         return true;
     }

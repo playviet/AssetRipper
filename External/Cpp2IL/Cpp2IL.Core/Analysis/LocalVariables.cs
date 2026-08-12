@@ -29,7 +29,7 @@ public static partial class LocalVariables
         for (var i = 0; i < registers.Count; i++)
         {
             var register = registers[i];
-            locals.Add(register, new LocalVariable($"v{i}", register));
+            locals.Add(register, new LocalVariable(AutoName(method, i), register));
         }
 
         // Replace registers with locals

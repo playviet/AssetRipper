@@ -188,6 +188,17 @@ public static class InlinedConstructorRecovery
 
             if (arguments.Count == constructor.Parameters.Count)
                 return arguments;
+
+            //A constructor whose fields are not named after its parameters, taken in order instead. The
+            //writes are already known to be consecutive, to the fresh object, with nothing else touching it
+            //(see WritesFollowing), so their order is the constructor body's own; requiring the whole type
+            //sequence to line up is what stops two same-typed parameters being taken the wrong way round.
+            //Without this, one name that does not match rejects the entire constructor - DOTween's
+            //`WaitForCompletion(Tween tween)` assigns it to a field called `t`, and six of its members were
+            //built with `null` and a commented `waitForCompletion.t = t;` after them.
+            if (constructor.Parameters.Count == writes.Count
+                && constructor.Parameters.Select((p, at) => p.ParameterType.FullName == writes[at].Field.FieldType.FullName).All(same => same))
+                return writes.Select(w => w.Write.Operands[1]).ToList();
         }
 
         return null;

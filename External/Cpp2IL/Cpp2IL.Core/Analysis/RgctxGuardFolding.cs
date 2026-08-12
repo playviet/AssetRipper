@@ -47,9 +47,14 @@ public static class RgctxGuardFolding
                 || !IsZero(against) || !AsksAboutTheContext(read))
                 continue;
 
-            //The context is there, so "is it null" is false and "is it not null" is true.
-            instruction.OpCode = OpCode.Move;
-            instruction.Operands = [answer, equal ? 0L : 1L];
+            //The context is there, so "is it null" is false and "is it not null" is true. Said by substituting
+            //the answer for the read and leaving this a comparison, rather than by rewriting it into a Move:
+            //`ConstantBranchFolding` folds a comparison of two constants and nothing else, so a Move left the
+            //branch standing, its arm alive, and `il2cpp_codegen_initialize_method` inside that arm as a
+            //`Method not found @21BD244` marker - which is the whole of what six one-line generic extension
+            //methods had wrong with them.
+            instruction.Operands = [answer, 1L, against];
+            ConstantBranchFolding.HasSettledAnswer(instruction);
         }
     }
 

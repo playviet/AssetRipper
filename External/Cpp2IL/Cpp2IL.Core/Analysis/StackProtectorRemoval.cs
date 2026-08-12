@@ -164,9 +164,39 @@ public static class StackProtectorRemoval
     private static bool IsThreadCookie(MemoryOperand operand, Dictionary<LocalVariable, Instruction> definitions) =>
         operand.Addend == GuardSlot
         && operand.Index is null
-        && operand.Base is LocalVariable local
+        && Origin(operand.Base, definitions) is { } local
         && !IsFrameAddress(local)
         && !definitions.ContainsKey(local);
+
+    /// <summary>
+    /// The register a base ultimately came from, following copies and frame slots back.
+    /// </summary>
+    /// <remarks>
+    /// In a shared generic body the thread pointer is read once and then <b>spilled to the frame and reloaded</b>
+    /// before each epilogue check, because a variable-length frame plus the alloca leaves no register to keep
+    /// it in. The reloaded local <i>is</i> defined here, so asking the base directly whether anything wrote it
+    /// says no in the simple bodies and yes in every generic one - which is why the canary survived in
+    /// <c>CompareArray</c>, <c>Remove</c>, <c>Add</c>, <c>AddRange</c>, <c>ResizeArray</c>,
+    /// <c>TryGetKeyByValue</c> and <c>GetKeysByValue</c> and nowhere else. This is the same walk
+    /// <see cref="Read"/> already does for the operand, applied to the memory operand's base.
+    /// </remarks>
+    private static LocalVariable? Origin(object? operand, Dictionary<LocalVariable, Instruction> definitions)
+    {
+        for (var hop = 0; hop < 4; hop++)
+        {
+            if (operand is not LocalVariable local)
+                return null;
+
+            if (!definitions.TryGetValue(local, out var made)
+                || made.OpCode != OpCode.Move
+                || made.Operands.Count < 2)
+                return local;
+
+            operand = made.Operands[1];
+        }
+
+        return operand as LocalVariable;
+    }
 
     private static bool IsFrameSlot(MemoryOperand operand) =>
         operand.Index is null && operand.Base is LocalVariable local && IsFrameAddress(local);
@@ -184,7 +214,14 @@ public static class StackProtectorRemoval
     {
         var live = block.Instructions.Where(i => i.OpCode is not (OpCode.Nop or OpCode.Jump)).ToList();
 
-        return live.Count == 0 || (live.Count == 1 && live[0].OpCode == OpCode.Throw);
+        //Or one call that never comes back. Where `__stack_chk_fail` is dropped as an import the block is
+        //empty, but the compiler sometimes follows it with a local function - `__cxa_begin_catch` into
+        //`std::terminate` - which no method table names, so an unresolved `Call` is left standing and the
+        //block stops looking emptied. That call is still only reached by a smashed stack.
+        return live.Count == 0
+            || (live.Count == 1 && live[0].OpCode is OpCode.Throw)
+            || (live.Count == 1 && live[0].OpCode is OpCode.Call or OpCode.CallVoid
+                && live[0].Operands is [ulong, ..]);
     }
 
     /// <summary>Where each local is written. In SSA that is one place, which is what makes this exact.</summary>

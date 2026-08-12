@@ -95,7 +95,7 @@ public static class OriginalSourceSubstitution
 			return report;
 		}
 
-		CSharpParseOptions parseOptions = GetParseOptions(unityVersion);
+		CSharpParseOptions parseOptions = GetParseOptions(unityVersion, assembly);
 		Dictionary<string, List<SourceType>> index = BuildIndex(sourceDirectories, parseOptions, fileSystem, report);
 		if (index.Count == 0)
 		{
@@ -611,9 +611,36 @@ public static class OriginalSourceSubstitution
 	/// How the compiler will read a source file for this build: which of Unity's version gates are open. Anything
 	/// that parses source without these sees a different file from the one the editor will compile.
 	/// </summary>
-	internal static CSharpParseOptions GetParseOptions(UnityVersion version)
+	internal static CSharpParseOptions GetParseOptions(UnityVersion version, AssemblyDefinition? assembly = null)
 	{
 		List<string> symbols = new();
+
+		//The class library the game was built against is a second family of gates, and it is not derivable from the
+		//Unity version - it is a project setting. It can be read off the assembly, though: a build at the .NET
+		//Standard level references `netstandard`, and one at the .NET Framework level references `mscorlib` and the
+		//profile assemblies that only exist there.
+		//
+		//This cost the single worst file in the recovery queue. `DOTweenModuleUnityVersion` guards six methods with
+		//`#if UNITY_2018_1_OR_NEWER && (NET_4_6 || NET_STANDARD_2_0)`; with neither symbol defined the source
+		//appeared not to declare them, the whole file was rejected, and fourteen bodies stayed decompiled - while
+		//its two sibling modules, which have no such gate, were substituted and are byte-identical to the original.
+		if (assembly?.ManifestModule is { } module)
+		{
+			bool Names(string name) => module.AssemblyReferences.Any(reference => reference.Name == name);
+
+			if (Names("netstandard"))
+			{
+				//Both are defined at either .NET Standard level; 2.1 is left out because nothing here distinguishes
+				//2.0 from 2.1, and a symbol left out is the harmless direction.
+				symbols.Add("NET_STANDARD");
+				symbols.Add("NET_STANDARD_2_0");
+			}
+			else if (Names("mscorlib"))
+			{
+				symbols.Add("NET_4_6");
+				symbols.Add("NET_UNITY_4_8");
+			}
+		}
 
 		//Unity numbered its majors 5, then by year, then from 6000. A major that does not exist contributes symbols
 		//no source refers to, which is cheaper than a table of real releases that goes stale.
