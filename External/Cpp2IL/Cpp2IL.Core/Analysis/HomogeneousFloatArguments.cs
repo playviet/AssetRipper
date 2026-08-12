@@ -93,6 +93,16 @@ public static class HomogeneousFloatArguments
             if (floats < 2 || first + i >= instruction.Operands.Count)
                 continue;
 
+            //Eight is all there are. An aggregate that does not fit in what is left of v0..v7 is copied to
+            //the stack whole, and every argument after it goes to the stack too - so the registers the walk
+            //above named for it hold something else entirely, usually a callee-saved copy or one of this
+            //method's own parameters. Assembling from them writes a struct out of whatever happened to be
+            //there: `Debug.DrawLine(start, end, colour)` wants ten SIMD registers, and `GizmosDrawer::DrawCross`
+            //came out passing `new Color(x, y, z, crossSize)` - it compiles, it carries no marker, and the
+            //alpha channel is a length. Left alone the argument stays a bare float and says so.
+            if (start + floats > 8)
+                continue;
+
             if (FloatConstructor(type, floats) is not { } constructor)
                 continue;
 
