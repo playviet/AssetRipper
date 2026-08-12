@@ -74,7 +74,16 @@ public static class SlotAddressRead
                     //It needs a type, and what was read out of the slot is what says it: a load with no type
                     //for its destination would give an `object` local that a number cannot be stored into,
                     //which is a worse statement than the marker.
-                    if (Held(instruction, operand) is not { } held)
+                    //A write is different from a read. Reading a slot into a destination that has no type
+                    //would give an `object` local a number cannot be stored into, which is a worse statement
+                    //than the marker - so a read still needs an answer. **Writing** one does not: the slot
+                    //holds whatever is put into it, and where that is itself untyped the slot is untyped too
+                    //and the two are declared alike, which is a statement that compiles and is true. Without
+                    //this the store had nowhere to go and the generator dropped it in silence; 55 of them.
+                    var writing = operand == 0 && instruction is { OpCode: OpCode.Move, Operands: [_, LocalVariable] };
+                    var held = Held(instruction, operand);
+
+                    if (held is null && !writing)
                         continue;
 
                     slot = new LocalVariable(wanted, new Register(null, wanted), held);
