@@ -110,7 +110,7 @@ public static class FieldAddressSinking
         //As above: recorded from the struct's own start, so no header to add.
         var wanted = offset;
 
-        return owner.Fields.FirstOrDefault(f => !f.IsStatic && f.BackingData?.FieldOffset == wanted
+        return owner.Fields.FirstOrDefault(f => !f.IsStatic && f.Offset == wanted
             && f.FieldType is { IsValueType: false });
     }
 

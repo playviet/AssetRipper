@@ -96,7 +96,7 @@ public static class FieldAddressThroughCopies
         //kinds - see FieldAddressRecovery.FieldAt, where adding the header was wrong and untested.
         var wanted = offset;
 
-        return owner.Fields.FirstOrDefault(f => !f.IsStatic && f.BackingData?.FieldOffset == wanted);
+        return owner.Fields.FirstOrDefault(f => !f.IsStatic && f.Offset == wanted);
     }
 
     /// <summary>

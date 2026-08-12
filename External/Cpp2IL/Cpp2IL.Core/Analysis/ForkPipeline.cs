@@ -31,6 +31,7 @@ public static class ForkPipeline
     /// <summary>Runs where locals have just been given their types and fields.</summary>
     public static void AfterTypesAndFieldsResolved(MethodAnalysisContext method)
     {
+
         // Again, now that locals are typed: a class-initialisation guard is recognised by the runtime
         // class pointer it reads out of, and that pointer is only typed by the pass above. On builds
         // where the initialised flag is not at the offset the first pass looks for - a metadata 31
@@ -596,6 +597,16 @@ public static class ForkPipeline
         // stores, so the whole chain behind it stays alive - the runtime context read, the class read, the
         // size of a `T`, the alloca, the frame the invoker thunk was handed. Reading a frame slot nothing
         // reads back as dead is what lets the chain unwind.
+        // A generic state machine records no field offsets at all, so the layout has to be worked out - and
+        // it is only used where every distance this method reaches for is one the layout puts a field at.
+        // Late, because those distances are what it is checked against, and they are only all here by now;
+        // the field recovery is then run again over what the offsets have made nameable.
+        if (StateMachineFieldLayout.Run(method))
+        {
+            FieldAddressRecovery.Run(method);
+            FieldAddressThroughCopies.Run(method);
+        }
+
         // Before the two below, because settling the value-type question is what takes the class read - and
         // with it the runtime generic context - out of the way of everything else.
         SharingMeansAReference.Run(method);

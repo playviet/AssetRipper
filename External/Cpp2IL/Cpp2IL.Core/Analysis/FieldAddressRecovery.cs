@@ -126,7 +126,7 @@ public static class FieldAddressRecovery
 
         var definition = (owner as GenericInstanceTypeAnalysisContext)?.GenericType ?? owner;
 
-        return definition.Fields.FirstOrDefault(f => f.IsStatic && f.BackingData?.FieldOffset == offset);
+        return definition.Fields.FirstOrDefault(f => f.IsStatic && f.Offset == offset);
     }
 
     /// <summary>The instance field lying at that distance into the type, if one does.</summary>
@@ -140,7 +140,7 @@ public static class FieldAddressRecovery
     /// value-type bases, so nothing had ever tested it, and it was wrong.
     /// </remarks>
     private static FieldAnalysisContext? FieldAt(TypeAnalysisContext owner, long offset, int header)
-        => owner.Fields.FirstOrDefault(f => !f.IsStatic && f.BackingData?.FieldOffset == offset);
+        => owner.Fields.FirstOrDefault(f => !f.IsStatic && f.Offset == offset);
 
     /// <summary>Every place the address is used, or null where one of them is not a use this can name.</summary>
     private static List<(Instruction Instruction, int Operand)>? Uses(Graphs.ISILControlFlowGraph graph,

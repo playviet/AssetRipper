@@ -119,7 +119,7 @@ public static partial class MetadataResolver
                     ? local.Type.Fields
                     : ((staticOwner as GenericInstanceTypeAnalysisContext)?.GenericType ?? staticOwner).Fields;
 
-                var field = candidates.FirstOrDefault(f => f.IsStatic == (staticOwner != null) && HasStorage(f) && f.BackingData?.FieldOffset == memory.Addend);
+                var field = candidates.FirstOrDefault(f => f.IsStatic == (staticOwner != null) && HasStorage(f) && f.Offset == memory.Addend);
 
                 //A generic type's statics have no recorded offsets either, and its storage begins at nothing.
                 if (field == null && staticOwner != null)
@@ -140,7 +140,7 @@ public static partial class MetadataResolver
                     for (var baseType = local.Type.BaseType; baseType is not null && field == null; baseType = baseType.BaseType)
                     {
                         var declaring = (baseType as GenericInstanceTypeAnalysisContext)?.GenericType ?? baseType;
-                        field = declaring.Fields.FirstOrDefault(f => !f.IsStatic && f.BackingData?.FieldOffset == memory.Addend);
+                        field = declaring.Fields.FirstOrDefault(f => !f.IsStatic && f.Offset == memory.Addend);
 
                         //A generic base records no offsets either, and the layout of one can be walked - but
                         //only where the walk is right. Measured over the game it named more fields wrongly
