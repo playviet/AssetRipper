@@ -157,7 +157,19 @@ internal static partial class InvalidSourceRepair
 					&& (resolved is not IFieldSymbol hidden
 						|| SymbolEqualityComparer.Default.Equals(hidden.Type, property.Type)))
 				{
-					return $"{access.Expression}.{property.Name}";
+					//And the qualifier has to be allowed to say it. `IsAccessible` answers for the *member*
+					//- a protected one is reachable from a derived type - and not for what it is written
+					//on: `((Graphic)this).useLegacyMeshGeneration` is CS1540, because a protected member
+					//may only be reached through the derived type or something below it. ILSpy writes that
+					//cast because the field it found is declared on the base; dropping it says the same
+					//thing and compiles. `SlicedFilledImage..ctor` is one line and was lost entirely to it.
+					var qualifier = access.Expression is CastExpressionSyntax { Expression: ThisExpressionSyntax } cast
+						&& accessor.DeclaredAccessibility is Accessibility.Protected
+							or Accessibility.ProtectedOrInternal or Accessibility.ProtectedAndInternal
+						? cast.Expression.ToString()
+						: access.Expression.ToString();
+
+					return $"{qualifier}.{property.Name}";
 				}
 			}
 		}

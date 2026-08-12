@@ -72,8 +72,19 @@ public static class StructAtADeclaredNumber
                 //`Move returnVal1 (Single), this.input (Vector2)`, and by the call itself the argument is
                 //already the plain local, so nothing at the call site can see it.
                 case OpCode.Move:
-                    if (instruction.Operands.Count == 2 && instruction.Operands[0] is LocalVariable into)
-                        changed |= Narrow(instruction, 1, into.Type);
+                    //A field is a place that declares what it holds just as a local does, and the same read
+                    //reaches both: `currentCode = identifier` and `identifier == currentCode` are the two
+                    //statements of `ApplyFontBasedOnLocale`, and narrowing only the local half left the other
+                    //assigning a `LocaleIdentifier` to a `string`.
+                    if (instruction.Operands.Count == 2)
+                    {
+                        changed |= Narrow(instruction, 1, instruction.Operands[0] switch
+                        {
+                            LocalVariable into => into.Type,
+                            FieldReference place => place.Field.FieldType,
+                            _ => null,
+                        });
+                    }
 
                     continue;
             }
@@ -85,7 +96,17 @@ public static class StructAtADeclaredNumber
     /// <summary>Replaces a struct read with the member of it the declaration asks for, where one matches.</summary>
     private static bool Narrow(Instruction instruction, int operand, TypeAnalysisContext? declared)
     {
-        if (declared == null || !StructInArithmetic.IsNumber(declared))
+        //Any declared type, not only a number. The gate was `IsNumber` because the shape was first seen on a
+        //float, but nothing about the reasoning is arithmetic: a place declares what it holds, and an
+        //eight-byte load landing on a struct field's own offset is the member at its front whatever that
+        //member happens to be. `Locale.m_Identifier` is a sixteen-byte `LocaleIdentifier` whose first member
+        //is a `string`, so `ApplyFontBasedOnLocale` compared a `LocaleIdentifier` to a `string` and assigned
+        //one to the other - both bodies commented away entirely.
+        //
+        //Not `object`, which is what a place declares when it knows nothing and would make every struct read
+        //its own first member. The exactness that keeps this safe is the `FullName` match below, which is
+        //untouched.
+        if (declared == null || declared.FullName is "System.Object" or "System.Void")
             return false;
 
         //Exactly the declared type, not merely something narrower than the struct. Following a struct down to
