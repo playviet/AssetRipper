@@ -981,7 +981,15 @@ public static partial class IlGenerator
                 if (TryStoreArrayElement(memory, method, locals))
                     break;
 
+                //A store this cannot place is dropped - and until now dropped in silence, which is the worst
+                //of the three things that can happen to a value. A read that cannot be placed says so and
+                //answers nought; a write that cannot be placed simply does not happen, and the method
+                //afterwards reads whatever was there before. `IListExtension::Swap` spills a parameter to the
+                //frame, the store is discarded, and the reload comes back zero - it compiles, it carries no
+                //marker, and no scorer in this project could see it.
                 instructions.Add(CilOpCodes.Pop);
+                instructions.Add(CilOpCodes.Ldstr, "Unmanaged memory store: " + operand.ToString());
+                instructions.Add(CilOpCodes.Call, importer.ImportMethod(writeLine));
                 break;
 
             default:
