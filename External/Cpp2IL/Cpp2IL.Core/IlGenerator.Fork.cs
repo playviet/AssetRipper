@@ -2088,6 +2088,73 @@ public static partial class IlGenerator
     }
 
     /// <summary>
+    /// The constructor of a four-byte packed struct and the byte fields it takes, in the order they lie.
+    /// </summary>
+    /// <remarks>
+    /// <c>Color32</c> is four bytes and the compiler hands one round as a single 32-bit number - so a field
+    /// initialiser written <c>new Color32(0x1a, 0xbc, 0x9c, 0xFF)</c> arrives as the constant
+    /// <c>4288461850</c> and came out <c>(Color32)4288461850L</c>, which C# will not say. The bytes are in
+    /// the number and the fields are in the metadata; nothing here is inferred. The parameter names have to
+    /// match the fields they stand for, which is what refuses a constructor that takes them in another order
+    /// or means something else by them.
+    /// </remarks>
+    private static (MethodAnalysisContext Constructor, FieldAnalysisContext[] Bytes)? PackedBytes(TypeAnalysisContext? type)
+    {
+        if (type is not { IsValueType: true } || Analysis.Aapcs64.SizeOf(type) is not 4)
+            return null;
+
+        var bytes = type.Fields
+            .Where(f => !f.IsStatic && f.FieldType.FullName == "System.Byte"
+                && f.BackingData?.FieldOffset is >= 0 and < 4)
+            .OrderBy(f => f.BackingData!.FieldOffset)
+            .ToArray();
+
+        if (bytes.Length != 4 || bytes[0].BackingData!.FieldOffset != 0)
+            return null;
+
+        foreach (var candidate in type.Methods)
+        {
+            if (candidate.Name != ".ctor" || candidate.Parameters.Count != 4)
+                continue;
+
+            var matches = true;
+
+            for (var i = 0; i < 4 && matches; i++)
+            {
+                matches = candidate.Parameters[i].ParameterType.FullName == "System.Byte"
+                    && candidate.Parameters[i].ParameterName == bytes[i].Name;
+            }
+
+            if (matches)
+                return (candidate, bytes);
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// The thirty-two bits a constant stands for, where it is one a four-byte struct could have been packed
+    /// into.
+    /// </summary>
+    /// <remarks>
+    /// A float is taken by its bits, because that is how the compiler moved it - <c>brownColor</c> reaches the
+    /// generator as <c>-2.66289398E+38</c>, whose pattern is <c>0xFF485579</c>. **A double is refused**: one
+    /// of these is a NaN, and widening a float NaN to double is not required to keep the payload, so the
+    /// number that arrives may no longer be the bytes that were written.
+    /// </remarks>
+    private static uint? PackedBitsOf(object operand) => operand switch
+    {
+        int i => unchecked((uint)i),
+        uint u => u,
+        long l when l is >= uint.MinValue and <= uint.MaxValue => (uint)l,
+        ulong u when u <= uint.MaxValue => (uint)u,
+        float f => System.BitConverter.SingleToUInt32Bits(f),
+        _ => null,
+    };
+
+    /// <summary>
+    /// Writes a member of a struct held in a field, through the address of that field. Answers whether it did.
+    /// </summary>    /// <summary>
     /// Writes a member of a struct held in a field, through the address of that field. Answers whether it did.
     /// </summary>
     /// <remarks>

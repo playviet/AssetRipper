@@ -728,6 +728,17 @@ public static partial class IlGenerator
             return;
         }
 
+        // A four-byte struct of bytes reaches us as one number, because that is how the compiler moved it.
+        // See PackedBytes in the fork.
+        if (PackedBytes(expectedType) is { } packed && PackedBitsOf(operand) is { } bits)
+        {
+            for (var at = 0; at < 4; at++)
+                instructions.Add(CilOpCodes.Ldc_I4, (int)(bits >> (8 * at) & 0xFF));
+
+            instructions.Add(CilOpCodes.Newobj, importer.ImportMethod(packed.Constructor.ToMethodDescriptor(module)));
+            return;
+        }
+
         switch (operand)
         {
             case int i:
