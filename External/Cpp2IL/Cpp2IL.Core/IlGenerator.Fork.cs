@@ -1314,7 +1314,24 @@ public static partial class IlGenerator
     /// only the Unity gate saw it - none of the source-based scorers compile anything.
     /// </remarks>
     private static TypeAnalysisContext? ComparableType(TypeAnalysisContext? type)
-        => type is { IsValueType: true } && !IsNumeric(type) ? null : type;
+    {
+        var comparable = type is { IsValueType: true } && !IsNumeric(type) ? null : type;
+
+        //Remembered so that `ConvertToWidthOf` can tell this expectation from a declared one. Here the width
+        //wanted is the *other operand's*, which the analysis inferred; everywhere else it is a field's, a
+        //parameter's or a return type's, which the metadata states. Narrowing to an inferred width is what
+        //took `Corpus::Mix` from 321186724655 to -935822545.
+        arithmeticExpectation[expectationsSeen++ & 1] = comparable;
+
+        return comparable;
+    }
+
+    /// <summary>The last two widths asked for by an arithmetic or a comparison, which nothing declared.</summary>
+    [System.ThreadStatic] private static TypeAnalysisContext?[]? arithmetic;
+
+    [System.ThreadStatic] private static int expectationsSeen;
+
+    private static TypeAnalysisContext?[] arithmeticExpectation => arithmetic ??= new TypeAnalysisContext?[2];
 
     /// <summary>
     /// The struct an integer zero stands for, where that is what it is standing for.
@@ -1528,16 +1545,29 @@ public static partial class IlGenerator
         var from = StoredAs(declared);
         var to = StoredAs(expectedType);
 
-        //Widening only. Narrowing to 32 bits was built and measured: it took `Corpus::Mix` from 321186724655
-        //to -935822545, because the width being narrowed to is one the analysis *inferred* and the value was
-        //really 64 bits. A conversion that cannot lose anything needs no such confidence; one that can is a
-        //wrong answer wherever the inference was wrong, and the marker it replaces was the better outcome.
+        //A conversion that cannot lose anything needs no confidence in the width it is going to.
         if (IsSixtyFourBitInteger(to) && IsThirtyTwoBitInteger(from))
+        {
             instructions.Add(CilOpCodes.Conv_I8);
+            return;
+        }
+
+        //One that can lose something needs the width to be **declared**. Narrowing to a width the analysis
+        //*inferred* was built and measured: it took `Corpus::Mix` from 321186724655 to -935822545, because
+        //the other operand of the arithmetic had been called 32 bits and the value was really 64. A field, a
+        //parameter and a return type are all stated by the metadata, and the program itself truncates when it
+        //stores 64 bits into one of them - so writing the truncation down is what the program does. It is the
+        //largest thing the decompiler's own notes complain about: **293** say "Expected I4, but got I8".
+        if (IsThirtyTwoBitInteger(to) && IsSixtyFourBitInteger(from) && !WasInferred(expectedType))
+            instructions.Add(CilOpCodes.Conv_I4);
     }
 
     private static bool IsSixtyFourBitInteger(TypeAnalysisContext? type) =>
         StoredAs(type)?.Type is Il2CppTypeEnum.IL2CPP_TYPE_I8 or Il2CppTypeEnum.IL2CPP_TYPE_U8;
+
+    /// <summary>Whether this expectation is one <see cref="ComparableType"/> just produced.</summary>
+    private static bool WasInferred(TypeAnalysisContext? expected)
+        => arithmetic is { } asked && (ReferenceEquals(asked[0], expected) || ReferenceEquals(asked[1], expected));
 
     /// <summary>
     /// The integer a value is actually held as - which for an enum is what it derives from, not itself.
