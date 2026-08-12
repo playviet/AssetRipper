@@ -12,3 +12,5 @@ bin
 *.blend1
 launchSettings.json
 .DS_Store
+# inventory.py rebuilds this from the original sources; it is a cache, not a record.
+tools/origin-index.pickle
