@@ -200,8 +200,12 @@ public static class InaccessibleFieldRecovery
     {
         yield return char.ToLowerInvariant(bare[0]) + bare[1..];
 
-        if (char.IsLower(bare[0]))
-            yield return char.ToUpperInvariant(bare[0]) + bare[1..];
+        //And the name unchanged. Capitalising was conditional on the first letter being small, so a field
+        //already written `m_Identifier` never had `Identifier` tried at all - only `identifier`, which matches
+        //nothing. `Locale.m_Identifier` is `Identifier` and `LocaleIdentifier.m_Code` is `Code`; every
+        //`m_Xxx` whose property is exactly `Xxx` was unreachable, and `m_OnClick` only worked because Unity
+        //happens to lowercase that one.
+        yield return char.ToUpperInvariant(bare[0]) + bare[1..];
 
         for (var i = 1; i < bare.Length; i++)
         {
