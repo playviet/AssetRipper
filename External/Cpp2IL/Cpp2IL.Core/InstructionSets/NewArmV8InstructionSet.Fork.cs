@@ -814,12 +814,74 @@ public partial class NewArmV8InstructionSet
         //there are. The test is the *raw* return type, because it has to be exactly a type parameter -
         //`ArrayExtension::ResizeArray<T>` returns `T[]`, which is a pointer like any other and takes no
         //buffer, and its MethodInfo is in `x3` today, correctly.
-        if (context.Definition?.RawReturnType?.Type is LibCpp2IL.BinaryStructures.Il2CppTypeEnum.IL2CPP_TYPE_VAR
-            or LibCpp2IL.BinaryStructures.Il2CppTypeEnum.IL2CPP_TYPE_MVAR)
+        var stepped = context.Definition?.RawReturnType?.Type is LibCpp2IL.BinaryStructures.Il2CppTypeEnum.IL2CPP_TYPE_VAR
+            or LibCpp2IL.BinaryStructures.Il2CppTypeEnum.IL2CPP_TYPE_MVAR;
+
+        if (stepped)
             used++;
 
-        if (used < 8)
-            operands.Add(RegisterFor(Arm64Register.X0 + used));
+        if (used >= 8)
+            return;
+
+        //And the body has the last word. Whether a hidden buffer exists is a property of the code il2cpp
+        //generated, not of the signature: it emits reference-shared bodies that answer in `x0` and fully
+        //shared ones that answer through a pointer for declarations that look identical.
+        //`IListExtension::RandomItem` and `::RemoveRandom` are both `static T (IList<T>)` and only the first
+        //has the buffer. So where the register the rule above chose is never opened as a `MethodInfo*` and
+        //the one beside it is, the one beside it is the MethodInfo - which is not a guess, since nothing
+        //else in the world is read at `klass` and `rgctx_data`.
+        var chosen = Arm64Register.X0 + used;
+        var beside = Arm64Register.X0 + (stepped ? used - 1 : used + 1);
+
+        if (beside is >= Arm64Register.X0 and <= Arm64Register.X7
+            && !OpensAsAMethodInfo(context, chosen) && OpensAsAMethodInfo(context, beside))
+        {
+            chosen = beside;
+        }
+
+        operands.Add(RegisterFor(chosen));
+    }
+
+    /// <summary>
+    /// Whether the body reads this register at one of the two places only a <c>MethodInfo*</c> is read at.
+    /// </summary>
+    /// <remarks>
+    /// <c>MethodInfo::klass</c> is 0x20 and <c>::rgctx_data</c> 0x38, and a shared body opens by reading one
+    /// of them - that is how it finds out what it was called as. Only the top of the method, and only before
+    /// anything writes the register, so a later reuse of it says nothing.
+    /// </remarks>
+    private static bool OpensAsAMethodInfo(MethodAnalysisContext context, Arm64Register register)
+    {
+        if (context.UnderlyingPointer == 0 || context.AppContext?.Binary is not { } binary)
+            return false;
+
+        try
+        {
+            var read = 0;
+
+            foreach (var instruction in Utils.NewArm64Utils.GetArm64MethodBodyAtVirtualAddress(binary, context.UnderlyingPointer))
+            {
+                if (++read > 24)
+                    return false;
+
+                if (instruction.Mnemonic == Arm64Mnemonic.LDR && instruction.MemBase == register
+                    && instruction.MemAddendReg == Arm64Register.INVALID
+                    && instruction.MemOffset is 0x20 or 0x38)
+                {
+                    return true;
+                }
+
+                //A write to it, and whatever it held before is gone.
+                if (instruction.Op0Reg == register)
+                    return false;
+            }
+        }
+        catch
+        {
+            //A body this cannot read back says nothing either way.
+        }
+
+        return false;
     }
 
     /// <summary>

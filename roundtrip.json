@@ -3225,9 +3225,9 @@
 2
 ],
 "Assembly-CSharp::CFramework.AssetLoader::LoadSync": [
-4,
+5,
 6,
-4
+5
 ],
 "Assembly-CSharp::CFramework.AssetLoader::IsExist": [
 1,
@@ -3245,9 +3245,9 @@
 2
 ],
 "Assembly-CSharp::CFramework.AssetLoader::LoadFromAddressablesSync": [
-4,
+5,
 8,
-4
+5
 ],
 "Assembly-CSharp::CFramework.AssetLoader::IsExistInAddressables": [
 2,
@@ -7840,9 +7840,9 @@
 1
 ],
 "Assembly-CSharp::CFramework.IListExtension::RemoveRandom": [
-1,
+2,
 5,
-1
+2
 ],
 "Assembly-CSharp::CFramework.IListExtension::IsEmpty": [
 0,
@@ -8215,9 +8215,9 @@
 3
 ],
 "Assembly-CSharp::CFramework.TransformExtension::FindChild": [
-0,
+2,
 4,
-1
+2
 ],
 "Assembly-CSharp::CFramework.TransformExtension::FindDeepestChild": [
 3,
