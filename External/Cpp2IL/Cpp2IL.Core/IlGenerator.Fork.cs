@@ -2113,7 +2113,7 @@ public static partial class IlGenerator
     private static bool TryStoreNestedField(NestedFieldReference nested, object value, MethodDefinition method,
         Dictionary<LocalVariable, CilLocalVariable> locals, MemberReference writeLine, MemberReference stringCtor)
     {
-        if (nested.Path[0].IsStatic || nested.Field.IsStatic)
+        if (nested.Field.IsStatic)
             return false;
 
         for (var step = 0; step < nested.Path.Length - 1; step++)
@@ -2123,10 +2123,25 @@ public static partial class IlGenerator
         var module = method.DeclaringModule!;
         var instructions = method.CilMethodBody!.Instructions;
 
-        if (!ValueTypeFieldOwner(nested, method, locals))
-            LoadLocal(nested.Local, method, locals);
+        //A struct in *static* storage is reached the same way, from the address of the static itself. Only
+        //where the project can name that static: an inaccessible one would need a setter, which is a call and
+        //not a place.
+        var first = 0;
 
-        for (var step = 0; step < nested.Path.Length - 1; step++)
+        if (nested.Path[0].IsStatic)
+        {
+            if (!MetadataResolver.ReachableFrom(nested.Path[0], CurrentContext!))
+                return false;
+
+            instructions.Add(CilOpCodes.Ldsflda, nested.Path[0].ToFieldDescriptor(module));
+            first = 1;
+        }
+        else if (!ValueTypeFieldOwner(nested, method, locals))
+        {
+            LoadLocal(nested.Local, method, locals);
+        }
+
+        for (var step = first; step < nested.Path.Length - 1; step++)
             instructions.Add(CilOpCodes.Ldflda, nested.Path[step].ToFieldDescriptor(module));
 
         LoadOperand(value, method, locals, writeLine, stringCtor, nested.Field.FieldType);

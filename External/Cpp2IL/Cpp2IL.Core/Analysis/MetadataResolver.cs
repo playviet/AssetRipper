@@ -180,7 +180,7 @@ public static partial class MetadataResolver
                 //one is a different instruction. Until now the store was refused here, the operand stayed an
                 //address the generator could not place, and the write was dropped: an inlined
                 //`_ped.position = screenPos` writes `m_Position.x` at +0x108 and it simply did not happen.
-                if (field == null && (i != 0 || staticOwner == null)
+                if (field == null
                     && PathToNestedField(staticOwner ?? local.Type, memory.Addend, staticOwner != null,
                         method.AppContext.Binary.is32Bit ? 8 : 0x10) is { Length: > 1 } path
                     && path.All(f => ReachableFrom(f, method)))
