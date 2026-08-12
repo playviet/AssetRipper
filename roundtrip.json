@@ -7540,7 +7540,7 @@
 6
 ],
 "Assembly-CSharp::CFramework.GizmosDrawer::DrawArrowEnd": [
-5,
+4,
 8,
 5
 ],
@@ -7550,7 +7550,7 @@
 4
 ],
 "Assembly-CSharp::CFramework.GizmosDrawer::DrawPoint": [
-6,
+5,
 10,
 6
 ],

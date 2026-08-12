@@ -846,9 +846,20 @@ public partial class NewArmV8InstructionSet
     /// Whether the body reads this register at one of the two places only a <c>MethodInfo*</c> is read at.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// <c>MethodInfo::klass</c> is 0x20 and <c>::rgctx_data</c> 0x38, and a shared body opens by reading one
-    /// of them - that is how it finds out what it was called as. Only the top of the method, and only before
-    /// anything writes the register, so a later reuse of it says nothing.
+    /// of them - that is how it finds out what it was called as. Only the top of the method, and only while
+    /// something still holds the value, so a later reuse of the register says nothing.
+    /// </para>
+    /// <para>
+    /// <b>Following the copy is the whole of it.</b> A body that has a metadata-init preamble saves the
+    /// pointer first and reads it afterwards: <c>SingletonMonoBehaviour&lt;T&gt;::get_I</c> does
+    /// <c>MOV X19, X0</c>, then clobbers <c>X0</c> with an <c>ADRP</c> four instructions later, and only then
+    /// reads <c>LDR X0, [X19 + 0x20]</c>. Asking about <c>X0</c> alone answers no, the register the signature
+    /// chose is left in place, and the whole
+    /// <c>methodInfo -&gt; klass -&gt; rgctx_data -&gt; entry -&gt; static_fields</c> chain is unmanaged memory -
+    /// eight bodies whose <i>only</i> defect that is.
+    /// </para>
     /// </remarks>
     private static bool OpensAsAMethodInfo(MethodAnalysisContext context, Arm64Register register)
     {
@@ -858,22 +869,36 @@ public partial class NewArmV8InstructionSet
         try
         {
             var read = 0;
+            var holding = new HashSet<Arm64Register> { register };
 
             foreach (var instruction in Utils.NewArm64Utils.GetArm64MethodBodyAtVirtualAddress(binary, context.UnderlyingPointer))
             {
-                if (++read > 24)
+                if (++read > 40)
                     return false;
 
-                if (instruction.Mnemonic == Arm64Mnemonic.LDR && instruction.MemBase == register
+                if (instruction.Mnemonic == Arm64Mnemonic.LDR && holding.Contains(instruction.MemBase)
                     && instruction.MemAddendReg == Arm64Register.INVALID
                     && instruction.MemOffset is 0x20 or 0x38)
                 {
                     return true;
                 }
 
-                //A write to it, and whatever it held before is gone.
-                if (instruction.Op0Reg == register)
+                //A copy carries it, so the copy holds it too.
+                if (instruction.Mnemonic == Arm64Mnemonic.MOV
+                    && instruction.Op1Reg != Arm64Register.INVALID && holding.Contains(instruction.Op1Reg)
+                    && instruction.Op0Reg != Arm64Register.INVALID)
+                {
+                    holding.Add(instruction.Op0Reg);
+                    continue;
+                }
+
+                //A write to one of them, and whatever that one held is gone. Only when nothing holds it any
+                //more is the answer no.
+                if (instruction.Op0Reg != Arm64Register.INVALID && holding.Remove(instruction.Op0Reg)
+                    && holding.Count == 0)
+                {
                     return false;
+                }
             }
         }
         catch

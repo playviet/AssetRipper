@@ -244,8 +244,17 @@ public static partial class LocalVariables
 
         while (changed)
         {
+            //Stopping is better than throwing. Every pass here is meant to be monotonic, but a few are not -
+            //`SharpenFromReturn` replaces a type rather than filling one in - so two of them can disagree
+            //about one local for ever. Throwing loses the **whole body**, which AssetRipper then writes out
+            //as a method that raises the exception: nine of those in this game, and the scorer counted each
+            //as a whole method because it has one statement and no marker of its own. What five thousand
+            //rounds settled is worth keeping; the warning says the answer is not final.
             if (MaxTypePropagationLoopCount != -1 && ++loopCount > MaxTypePropagationLoopCount)
-                throw new DecompilerException($"Type and field resolution not settling! (looped {MaxTypePropagationLoopCount} times)");
+            {
+                method.AddWarning($"Type and field resolution not settling! (looped {MaxTypePropagationLoopCount} times)");
+                break;
+            }
 
             changed = false;
             changed |= MetadataResolver.ResolveCallsViaMethodInfo(method);
