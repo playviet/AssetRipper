@@ -2421,4 +2421,24 @@ public static partial class IlGenerator
 
         return true;
     }
+
+    /// <summary>
+    /// Throws the object the method built, where <see cref="Analysis.ThrowTheConstructedException"/> has said
+    /// which one it is.
+    /// </summary>
+    /// <remarks>
+    /// The opcode carries a <em>type</em> and the generator makes a fresh instance of it, which is right for
+    /// the throws the runtime raises on its own account and wrong for every <c>throw new Foo(message)</c> the
+    /// program wrote - there the object exists already, with its message in it, and a new one of some other
+    /// type was being thrown in its place.
+    /// </remarks>
+    private static bool TryThrowTheObject(Instruction instruction, MethodDefinition method,
+        Dictionary<LocalVariable, CilLocalVariable> locals)
+    {
+        if (instruction.Operands is not [LocalVariable thrown] || !locals.TryGetValue(thrown, out var held))
+            return false;
+
+        method.CilMethodBody!.Instructions.Add(CilOpCodes.Ldloc, held);
+        return true;
+    }
 }

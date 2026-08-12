@@ -398,7 +398,8 @@ public static partial class IlGenerator
                 break;
 
             case OpCode.Throw:
-                if (instruction.Operands is [TypeAnalysisContext exceptionType]
+                if (TryThrowTheObject(instruction, method, locals)) { }
+                else if (instruction.Operands is [TypeAnalysisContext exceptionType]
                     && exceptionType.Methods.FirstOrDefault(m => m.Name == ".ctor" && m.Parameters.Count == 0) is { } exceptionCtor)
                     instructions.Add(CilOpCodes.Newobj, importer.ImportMethod(exceptionCtor.ToMethodDescriptor(module)));
                 else
