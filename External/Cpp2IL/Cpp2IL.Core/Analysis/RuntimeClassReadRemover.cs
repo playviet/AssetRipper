@@ -76,6 +76,30 @@ public static class RuntimeClassReadRemover
             {
                 instruction.Operands[1] = 1;
                 ConstantBranchFolding.HasSettledAnswer(instruction);
+
+                //And the comparison that reads the mask, because that is the instruction the branch's
+                //condition is defined by and the only one the folding looks at. Marking the masking alone
+                //takes the marker away and leaves the branch - so the arm that calls
+                //`il2cpp_codegen_initialize_method` stays, as a dead `else` nothing can reach.
+                if (instruction.Operands[0] is LocalVariable masked)
+                {
+                    foreach (var reader in method.ControlFlowGraph!.Instructions)
+                    {
+                        if (reader.OpCode is not (OpCode.CheckEqual or OpCode.CheckNotEqual) || reader.Operands.Count <= 2)
+                            continue;
+
+                        //The mask is one, so the comparison reads one. Saying so rather than leaving the
+                        //local is what lets the folding evaluate it - it looks at the condition's own
+                        //definition and needs both sides to be numbers there.
+                        for (var side = 1; side <= 2; side++)
+                            if (ReferenceEquals(reader.Operands[side], masked))
+                            {
+                                reader.Operands[side] = 1;
+                                ConstantBranchFolding.HasSettledAnswer(reader);
+                            }
+                    }
+                }
+
                 changed = true;
                 continue;
             }
