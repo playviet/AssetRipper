@@ -26,6 +26,9 @@ namespace Cpp2IL.Core;
 /// </remarks>
 public static class Il2CppClassLayout
 {
+    /// <summary>The type this class stands for, whose second word carries the flags and the type code.</summary>
+    public const long ByValArg = 0x20;
+
     public const long ElementClass = 0x40;
     public const long CastClass = 0x48;
     public const long DeclaringType = 0x50;
