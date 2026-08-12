@@ -65,6 +65,21 @@ public static class RuntimeClassReadRemover
                 continue;
             }
 
+            //And the same answer where the compiler kept the bit somewhere of its own. A method that touches
+            //several types gets one byte in `.bss` per body saying whether *this method's* metadata has been
+            //prepared, tested as `ldrb w8, [x21 + 0xBBE]` then `and #1` - so the read names an absolute
+            //address and no class at all, and none of the tests below see it. Nothing managed reads a byte at
+            //a fixed address and masks its lowest bit; anything that could is a constant the pool folding has
+            //already answered. And the answer is the same one: by the time this code runs, it is prepared.
+            if (instruction.OpCode == OpCode.And && instruction.Operands is
+                    [_, MemoryOperand { Base: null, Index: null, Scale: 0, Addend: not 0 }, 1L or 1 or 1U or 1UL])
+            {
+                instruction.Operands[1] = 1;
+                ConstantBranchFolding.HasSettledAnswer(instruction);
+                changed = true;
+                continue;
+            }
+
             //The bit saying the type is ready, wherever it is read - on its own or inside the comparison
             //that tests it. Both become the answer it always has by the time this code runs.
             for (var i = 0; i < instruction.Operands.Count; i++)
