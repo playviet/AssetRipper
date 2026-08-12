@@ -56,10 +56,30 @@ public static class RuntimeMethodCallRecovery
             if (holder.Type is not RuntimeMethodInfoAnalysisContext { RepresentedMethod: var callee })
                 continue;
 
+            List<object> arguments;
+
+            if (read.Addend == Il2CppMethodInfoLayout.InvokerMethod)
+            {
+                //The thunk has a convention of its own and it is not the callee's: what it is handed is a
+                //uniform frame it unpacks itself. Read as the callee's, X1 - the `MethodInfo` the thunk needs
+                //to do the unpacking - is handed over as the first argument, and the arguments that were
+                //really passed are never read at all. `keys.Add(pair.Key)` came out as `keys.Add(MethodInfo)`,
+                //and it compiles, so nothing but running it said otherwise.
+                if (InvokerThunk.Read(callee, instruction, method) is not { } unpacked)
+                    continue;
+
+                arguments = callee.IsStatic ? unpacked.Arguments : [unpacked.Receiver, .. unpacked.Arguments];
+            }
             //The call was handed every register an argument could have come in, because nothing was known
             //about what it took. Now that the callee is named, the convention says which of them it read.
-            if (Aapcs64.ArgumentsOf(callee, instruction.Operands) is not { } arguments)
+            else if (Aapcs64.ArgumentsOf(callee, instruction.Operands) is { } direct)
+            {
+                arguments = direct;
+            }
+            else
+            {
                 continue;
+            }
 
             if (ReferenceEquals(callee.ReturnType, voidType))
             {

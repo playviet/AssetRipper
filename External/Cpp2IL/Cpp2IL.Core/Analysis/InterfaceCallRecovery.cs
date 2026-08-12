@@ -37,6 +37,9 @@ public static class InterfaceCallRecovery
     /// <summary>What one entry of a method table takes up: the method's address and its runtime method.</summary>
     private const int SlotWidth = 0x10;
 
+    /// <summary>Where the runtime method sits inside a table entry, the method's own address being the front.</summary>
+    private const int MethodInfoInEntry = 0x8;
+
     /// <summary>Where a class records how many interfaces it has offsets for, which opens the walk.</summary>
     private const int InterfaceCountOffset = 0x12E;
 
@@ -49,10 +52,34 @@ public static class InterfaceCallRecovery
     /// </summary>
     private const int MaximumSlot = 1024;
 
+    /// <summary>
+    /// The body as it stands <em>at this pass's own position</em>, which is not what a dump at the end of the
+    /// pipeline shows: a hundred later passes delete what they cannot express, so a shape diagnosed from the
+    /// end may already be gone here, or only exist here. Three rounds were spent fixing shapes that were not
+    /// present where the fix ran before this was added.
+    /// </summary>
+    private static void Trace(MethodAnalysisContext method)
+    {
+        if (System.Environment.GetEnvironmentVariable("IFACE_TRACE") is not { } wanted || !method.Name.Contains(wanted))
+            return;
+
+        System.Console.WriteLine($"===== {method.DeclaringType?.FullName}::{method.Name} (at InterfaceCallRecovery)");
+
+        foreach (var block in method.ControlFlowGraph!.Blocks)
+        {
+            System.Console.WriteLine($"  b{block.ID} [{block.BlockType}] preds={string.Join(",", block.Predecessors.Select(x => "b" + x.ID))} succs={string.Join(",", block.Successors.Select(x => "b" + x.ID))}");
+
+            foreach (var instruction in block.Instructions)
+                System.Console.WriteLine("      " + instruction);
+        }
+    }
+
     public static bool Run(MethodAnalysisContext method)
     {
         if (method.AppContext.Binary.is32Bit)
             return false;
+
+        Trace(method);
 
         var voidType = method.AppContext.SystemTypes.SystemVoidType;
         var definitions = new Dictionary<LocalVariable, List<Instruction>>();
@@ -75,12 +102,27 @@ public static class InterfaceCallRecovery
             if (MethodInSlot(dispatch.Interface, dispatch.Slot) is not { } callee || callee.IsStatic)
                 continue;
 
-            //The call was handed every register an argument could have come in, because nothing was known
-            //about what it took. Now that the callee is named, the convention says which of them it read.
-            if (Aapcs64.ParametersOf(callee, instruction.Operands) is not { } parameters)
-                continue;
+            List<object> arguments;
 
-            List<object> arguments = [dispatch.Receiver, .. parameters];
+            if (dispatch.ThroughInvoker)
+            {
+                //Nothing about this call is in the registers the callee would have read: the thunk was handed
+                //a uniform frame and unpacks it itself, so the arguments are in memory and X1 - which the
+                //convention below would hand over as the first of them - is the `MethodInfo`.
+                if (InvokerThunk.Read(callee, instruction, method) is not { } unpacked)
+                    continue;
+
+                arguments = [dispatch.Receiver, .. unpacked.Arguments];
+            }
+            else
+            {
+                //The call was handed every register an argument could have come in, because nothing was known
+                //about what it took. Now that the callee is named, the convention says which of them it read.
+                if (Aapcs64.ParametersOf(callee, instruction.Operands) is not { } parameters)
+                    continue;
+
+                arguments = [dispatch.Receiver, .. parameters];
+            }
 
             if (ReferenceEquals(callee.ReturnType, voidType))
             {
@@ -209,10 +251,10 @@ public static class InterfaceCallRecovery
     /// runtime helper the walk falls back on - so it is written more than once. Only the walk says anything,
     /// and it is the one this reads.
     /// </summary>
-    private static (TypeAnalysisContext Interface, int Slot, LocalVariable Receiver, LocalVariable RuntimeClass)? Dispatch(
+    private static (TypeAnalysisContext Interface, int Slot, LocalVariable Receiver, LocalVariable RuntimeClass, bool ThroughInvoker)? Dispatch(
         object target, Dictionary<LocalVariable, List<Instruction>> definitions, MethodAnalysisContext method)
     {
-        foreach (var (found, fromClass) in Entries(target, definitions))
+        foreach (var (found, fromClass, throughInvoker) in Entries(target, definitions))
         {
             if (fromClass < VTableOffset64)
                 continue;
@@ -240,7 +282,7 @@ public static class InterfaceCallRecovery
             if (InterfaceComparedAgainst(walked, method, definitions) is not { } interfaceType)
                 continue;
 
-            return (interfaceType, (int)(inVtable / SlotWidth) + alreadyCounted, receiver, runtimeClass);
+            return (interfaceType, (int)(inVtable / SlotWidth) + alreadyCounted, receiver, runtimeClass, throughInvoker);
         }
 
         return null;
@@ -266,7 +308,7 @@ public static class InterfaceCallRecovery
     /// same address; both are read here.
     /// </para>
     /// </remarks>
-    private static IEnumerable<(LocalVariable Found, long FromClass)> Entries(
+    private static IEnumerable<(LocalVariable Found, long FromClass, bool ThroughInvoker)> Entries(
         object target, Dictionary<LocalVariable, List<Instruction>> definitions)
     {
         //The table entry is either folded straight into the call or still read into a local of its own.
@@ -277,13 +319,38 @@ public static class InterfaceCallRecovery
             _ => null,
         };
 
+        //A callee whose signature mentions the shared T is not entered through the table entry's own pointer:
+        //il2cpp calls the invoker thunk instead, which lives in the `MethodInfo` that is the entry's second
+        //half. So the read handed to this pass is two hops from the table rather than one, and the offset it
+        //carries is the `MethodInfo`'s - 0x10 - which is nothing like a distance into a method table. That is
+        //why `IList<T>.get_Item` is refused where `ICollection<T>.get_Count` in the same body is not: the
+        //return type decides which pointer the compiler reaches through, and nothing else differs.
+        var throughInvoker = false;
+
+        if (read is { Base: LocalVariable holder, Addend: var reached }
+            && reached != Il2CppMethodInfoLayout.MethodPointer && Il2CppMethodInfoLayout.IsEntryPoint(reached)
+            && ReadThrough(holder, definitions) is { Base: LocalVariable } inner)
+        {
+            read = inner;
+            throughInvoker = reached == Il2CppMethodInfoLayout.InvokerMethod;
+        }
+
         if (read is not { Base: LocalVariable through } entry)
             yield break;
 
+        //The method pointer is the front of a table entry and its `MethodInfo` is the second half, so a walk
+        //ending at either is measured from the same place - eight bytes apart. Taking that eight off here
+        //means everything below sees one shape, whether the call went through the pointer or the invoker.
+        var addend = entry.Addend == MethodInfoInEntry
+            ? 0
+            : entry.Addend >= VTableOffset64 && (entry.Addend - VTableOffset64) % SlotWidth == MethodInfoInEntry
+                ? entry.Addend - MethodInfoInEntry
+                : entry.Addend;
+
         //Left in the addressing mode: what it is measured from is the addition the walk ends with.
-        if (entry.Addend != 0)
+        if (addend != 0)
         {
-            yield return (through, entry.Addend);
+            yield return (through, addend, throughInvoker);
             yield break;
         }
 
@@ -291,7 +358,7 @@ public static class InterfaceCallRecovery
         foreach (var address in Sources(through, definitions))
             if (address is { OpCode: OpCode.Add, Operands: [_, LocalVariable found, { } added] }
                 && Constant(added) is { } fromClass)
-                yield return (found, fromClass);
+                yield return (found, fromClass, throughInvoker);
     }
 
     /// <summary>The memory a local was read from, where it was read exactly once and through an object.</summary>
