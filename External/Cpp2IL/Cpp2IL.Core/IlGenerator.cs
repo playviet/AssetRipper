@@ -825,6 +825,12 @@ public static partial class IlGenerator
                 instructions.Add(CilOpCodes.Ldfld, field.Field.ToFieldDescriptor(module));
                 break;
             case MemoryOperand memory:
+                //A by-reference parameter is read *through*, not loaded. Before the branch below, because
+                //that one loads the local itself - which for a by-ref parameter is the address. Fork:
+                //TryLoadThroughByRef, the read-side twin of TryStoreThroughByRef.
+                if (TryLoadThroughByRef(memory, method, locals))
+                    break;
+
                 if (memory.Index == null && memory.Addend == 0 && memory.Scale == 0
                     && memory.Base is LocalVariable local2)
                 {

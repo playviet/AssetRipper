@@ -145,7 +145,18 @@ public static class GenericFieldLayout
     /// </remarks>
     private static long? Measured(TypeAnalysisContext type, int pointerSize, int depth)
     {
-        if (depth > 4 || !type.IsValueType || type.IsEnumType || type.Namespace == nameof(System))
+        //An enum is as wide as the thing it is stored as, and its own declaration says which: the instance
+        //field every enum has. Refusing it ended the walk at the first enum field and recorded nothing for it
+        //or anything after it - `InterruptSnapshot<T>` laid out five fields correctly and lost `levelType` at
+        //+0x30 and everything past it.
+        if (type.IsEnumType)
+        {
+            var underlying = Definition(type)?.Fields.FirstOrDefault(f => !f.IsStatic)?.FieldType;
+
+            return underlying is null ? null : MetadataResolver.LaidOutSize(underlying, pointerSize);
+        }
+
+        if (depth > 4 || !type.IsValueType || type.Namespace == nameof(System))
             return null;
 
         var declared = Definition(type);

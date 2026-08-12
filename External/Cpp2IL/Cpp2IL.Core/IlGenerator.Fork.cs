@@ -347,6 +347,72 @@ public static partial class IlGenerator
     }
 
     /// <summary>
+    /// Reads through this method's own by-reference parameter, rather than loading the address itself.
+    /// Answers whether it did.
+    /// </summary>
+    /// <remarks>
+    /// The read-side twin of <see cref="TryStoreThroughByRef"/>, and it was simply missing: the store knew
+    /// that <c>[reason @ X3 (System.String&amp;)]</c> means "the string reason points at", and the load did not,
+    /// so <c>LoadOperand</c> fell into the branch that loads the local - which for a by-ref parameter puts the
+    /// <i>address</i> on the stack. The decompiler wrote that back as
+    /// <c>Unsafe.AsPointer(ref reason)</c> and commented the statement out.
+    /// <para>
+    /// Seven bodies are blocked by nothing else, four of them the whole of
+    /// <c>InterstitialGate</c> - whose condition chains all survive and which lose only their one call to
+    /// <c>Log(reason, …)</c>.
+    /// </para>
+    /// <para>
+    /// The by-ref test has to come first, and has to require a real parameter of this method: the branch it
+    /// precedes legitimately handles a slot-address local, where loading the local <i>is</i> the value.
+    /// </para>
+    /// </remarks>
+    private static bool TryLoadThroughByRef(MemoryOperand memory, MethodDefinition method,
+        Dictionary<LocalVariable, CilLocalVariable> locals)
+    {
+        if (memory is not { Index: null, Scale: 0, Base: LocalVariable slot }
+            || slot.Type is not ByRefTypeAnalysisContext { ElementType: { } pointee }
+            || CurrentContext is not { } context)
+        {
+            return false;
+        }
+
+        if (method.Parameters.FirstOrDefault(p => p.Name == slot.Name) is not { } parameter
+            || parameter.ParameterType is not ByReferenceTypeSignature)
+        {
+            return false;
+        }
+
+        var module = method.DeclaringModule!;
+        var instructions = method.CilMethodBody!.Instructions;
+
+        //A member of the struct it points at, rather than the whole of it.
+        if (memory.Addend != 0)
+        {
+            if (!pointee.IsValueType || IsAPrimitive(pointee)
+                || MemberAt(pointee, memory.Addend, context) is not { } member)
+            {
+                return false;
+            }
+
+            instructions.Add(CilOpCodes.Ldarg, parameter);
+            instructions.Add(CilOpCodes.Ldfld, member.ToFieldDescriptor(module));
+            return true;
+        }
+
+        var signature = pointee.ToTypeSignature(module);
+
+        instructions.Add(CilOpCodes.Ldarg, parameter);
+
+        //`ldind.ref` takes no operand at all; `ldobj` names the type it reads.
+        if (pointee.IsValueType)
+            instructions.Add(CilOpCodes.Ldobj, module.DefaultImporter!.ImportType(signature.ToTypeDefOrRef()));
+        else
+            instructions.Add(CilOpCodes.Ldind_Ref);
+
+        return true;
+    }
+
+    /// <summary>
     /// Hands a callee this method's own by-reference parameter, which is already the address it wants.
     /// Answers whether it did.
     /// </summary>
@@ -1607,12 +1673,51 @@ public static partial class IlGenerator
             || owner.FullName != held.FullName)
             return false;
 
-        LoadLocal(reference.Local, method, locals);
+        //A field of a struct is addressed through the struct's own address. `ldflda` wants an object
+        //reference or a managed pointer, and a value type loaded by `ldloc` is neither - the decompiler said
+        //so, "Expected native int or pointer, but got O", and commented the statement out. Every async
+        //kick-off in the game is this shape: the state machine is a struct in a stack slot and
+        //`builder.Start(ref sm)` / `return builder.Task` both address a field of it.
+        if (held.IsValueType)
+        {
+            if (!LoadAddressOfLocal(reference.Local, method, locals))
+                return false;
+        }
+        else
+        {
+            LoadLocal(reference.Local, method, locals);
+        }
 
         for (var i = 0; i < path.Length - 1; i++)
             instructions.Add(CilOpCodes.Ldfld, path[i].ToFieldDescriptor(module));
 
         instructions.Add(CilOpCodes.Ldflda, path[^1].ToFieldDescriptor(module));
+        return true;
+    }
+
+    /// <summary>The address of a local, however it is held. Answers whether there is one to take.</summary>
+    private static bool LoadAddressOfLocal(LocalVariable local, MethodDefinition method,
+        Dictionary<LocalVariable, CilLocalVariable> locals)
+    {
+        var instructions = method.CilMethodBody!.Instructions;
+
+        //`this` in a value type's method is already a managed pointer.
+        if (local.IsThis)
+        {
+            instructions.Add(CilOpCodes.Ldarg_0);
+            return true;
+        }
+
+        if (method.Parameters.FirstOrDefault(p => p.Name == local.Name) is { } parameter)
+        {
+            instructions.Add(CilOpCodes.Ldarga, parameter);
+            return true;
+        }
+
+        if (!locals.TryGetValue(local, out var slot))
+            return false;
+
+        instructions.Add(CilOpCodes.Ldloca, slot);
         return true;
     }
 

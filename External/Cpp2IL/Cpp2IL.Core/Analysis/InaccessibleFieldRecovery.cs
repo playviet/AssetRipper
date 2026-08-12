@@ -211,6 +211,21 @@ public static class InaccessibleFieldRecovery
             yield return bare[i..];
             yield return char.ToLowerInvariant(bare[i]) + bare[(i + 1)..];
         }
+
+        //Mono's own class library writes its fields in snake case - `HttpClient.base_address` stands for
+        //`BaseAddress` - and none of the shapes above reach across the underscore.
+        if (bare.Contains('_'))
+        {
+            var joined = string.Concat(bare.Split('_')
+                .Where(part => part.Length > 0)
+                .Select(part => char.ToUpperInvariant(part[0]) + part[1..]));
+
+            if (joined.Length > 0)
+            {
+                yield return joined;
+                yield return char.ToLowerInvariant(joined[0]) + joined[1..];
+            }
+        }
     }
 
     /// <summary>The property name a backing field's name is made from, or null if it is not one.</summary>
