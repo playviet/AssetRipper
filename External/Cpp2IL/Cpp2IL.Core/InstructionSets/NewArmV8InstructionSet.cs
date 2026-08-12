@@ -1225,7 +1225,9 @@ public partial class NewArmV8InstructionSet : Cpp2IlInstructionSet
             //read it is lost - which is what was happening to every spilled local and every saved
             //register in the prologue.
             if (reg == Arm64Register.X31 && instruction.MemAddendReg == Arm64Register.INVALID)
-                return new StackOffset((int)offset);
+                //Through Scaled (fork): a 128-bit immediate is reported unscaled, so the slot was named at a
+                //sixteenth of its offset and a `q` spill and its reload disagreed about which one they meant.
+                return new StackOffset((int)Scaled(instruction, offset));
 
             //TODO Handle more stuff here
             return MemoryOperandFor(instruction, reg, offset);
