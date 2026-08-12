@@ -1197,7 +1197,7 @@
 "Assembly-CSharp::UnityEngine.UI.ProceduralImage.ProceduralImage::EncodeAllInfoIntoVertices": [
 4,
 6,
-4
+5
 ],
 "Assembly-CSharp::UnityEngine.UI.ProceduralImage.ProceduralImage::EncodeFloats_0_1_16_16": [
 1,
@@ -3192,7 +3192,7 @@
 "Assembly-CSharp::CFramework.AssetLoader+<InstantiateFromAddressables>d__10::MoveNext": [
 9,
 20,
-11
+10
 ],
 "Assembly-CSharp::CFramework.AssetLoader+<InstantiateFromAddressables>d__10::SetStateMachine": [
 1,
@@ -7482,7 +7482,7 @@
 "Assembly-CSharp::CFramework.FPSCounter::Awake": [
 12,
 18,
-13
+12
 ],
 "Assembly-CSharp::CFramework.FPSCounter::Update": [
 7,
@@ -7715,9 +7715,9 @@
 2
 ],
 "Assembly-CSharp::CFramework.ColorExtension::TryGetColorAt": [
-2,
+1,
 3,
-2
+1
 ],
 "Assembly-CSharp::CFramework.ColorExtension::GetColorAt": [
 1,
@@ -8045,7 +8045,7 @@
 3
 ],
 "Assembly-CSharp::CFramework.RendererExtension::SmoothDampTextureOffset": [
-1,
+3,
 5,
 3
 ],

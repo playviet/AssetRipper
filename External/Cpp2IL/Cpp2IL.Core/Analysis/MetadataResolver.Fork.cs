@@ -214,31 +214,36 @@ public static partial class MetadataResolver
     {
         var header = method.AppContext.Binary.is32Bit ? 8 : 0x10;
 
+        var definition = (type as GenericInstanceTypeAnalysisContext)?.GenericType ?? type;
+
+        FieldAnalysisContext? Named(FieldAnalysisContext field)
+            => type is GenericInstanceTypeAnalysisContext instance
+                ? new ConcreteGenericFieldAnalysisContext(field, instance)
+                : field;
+
+        //A struct the metadata records **from the value** rather than from the boxed object, and it is asked
+        //first because otherwise the boxed reading of one offset matches the unboxed reading of another and
+        //answers with the wrong field: `Token` has `Value/Ident/A/B` at 8/0x10/0x18/0x20, so a read at 0x10
+        //came back as `B`. `UnityEngine.Rect` is the same, with `m_XMin` at 0 and `m_Height` at 12, while a
+        //class records its first field at 0x10. **A field beginning at nought is what says a type is written
+        //down that way**, and then the distance is already the distance.
+        if (definition.Fields.Any(f => !f.IsStatic && f.BackingData?.FieldOffset == 0))
+        {
+            foreach (var field in definition.Fields)
+                if (!field.IsStatic && field.BackingData?.FieldOffset == offset)
+                    return Named(field);
+
+            return null;
+        }
+
+        //An instantiation records no offsets at all and is laid out here, at boxed offsets.
         if (FieldOfOpenGeneric(type, offset + header, method) is { } generic)
             return generic;
 
-        //A struct whose layout il2cpp records is read straight off it, at the same boxed offsets.
-        var definition = (type as GenericInstanceTypeAnalysisContext)?.GenericType ?? type;
-
+        //And otherwise the layout il2cpp records, read straight off it at those same boxed offsets.
         foreach (var field in definition.Fields)
             if (!field.IsStatic && field.BackingData?.FieldOffset == offset + header)
-                return type is GenericInstanceTypeAnalysisContext instance
-                    ? new ConcreteGenericFieldAnalysisContext(field, instance)
-                    : field;
-
-        //And a struct the metadata records from the value rather than from the boxed object. `UnityEngine.Rect`
-        //has `m_XMin` at 0 and `m_Height` at 12 - there is no header in front of them - while a class records
-        //its first field at 0x10. A field beginning at nought is what says the whole type is laid out that way,
-        //and then the distance is already the distance. `CellDraggable::RaycastBoardCell` hands an `out Rect`
-        //to a callee and reads `.y` and `.height` back out of the slots the callee wrote.
-        if (!definition.Fields.Any(f => !f.IsStatic && f.BackingData?.FieldOffset == 0))
-            return null;
-
-        foreach (var field in definition.Fields)
-            if (!field.IsStatic && field.BackingData?.FieldOffset == offset)
-                return type is GenericInstanceTypeAnalysisContext laidOut
-                    ? new ConcreteGenericFieldAnalysisContext(field, laidOut)
-                    : field;
+                return Named(field);
 
         return null;
     }
@@ -971,4 +976,33 @@ public static partial class MetadataResolver
 
         return null;
     }
+
+    /// <summary>
+    /// The struct a local stands for - itself where it holds one, or what it points at where it is a
+    /// managed reference to one.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// An <c>out</c> or <c>ref</c> parameter arrives as a <see cref="ByRefTypeAnalysisContext"/>, whose
+    /// <c>IsValueType</c> is <b>false</b> and which declares no fields of its own - so every field lookup in
+    /// <c>ResolveFieldOffsets</c> misses, including the one that exists for a struct reached by address. A
+    /// distance from that pointer is a distance into the struct exactly as it would be from the value.
+    /// </para>
+    /// <para>
+    /// <c>SegmentRuleEvaluator::ResolveIdent</c> reads <c>tok.Ident</c> eight times through a
+    /// <c>Token&amp;</c>; every one was unmanaged memory, and because they were all read as the same
+    /// unresolved zero <b>the eight comparisons that make up the method's decision tree folded to
+    /// constants</b> - a loss no marker counts.
+    /// </para>
+    /// <para>
+    /// A byref to a *class* is not this: that is a pointer to a pointer, and a distance from it is not a
+    /// field of anything.
+    /// </para>
+    /// </remarks>
+    private static TypeAnalysisContext? StructBehind(TypeAnalysisContext type) => type switch
+    {
+        ByRefTypeAnalysisContext { ElementType: { IsValueType: true } pointee } => pointee,
+        { IsValueType: true } => type,
+        _ => null,
+    };
 }

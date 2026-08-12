@@ -167,8 +167,8 @@ public static partial class MetadataResolver
                     //while most types record their fields from the front of the boxed object - see
                     //FieldOfStructValue in the fork, which answers for both. Last, so nothing that matched
                     //outright is second-guessed.
-                    if (field == null && local.Type.IsValueType)
-                        field = FieldOfStructValue(local.Type, memory.Addend, method);
+                    if (field == null && StructBehind(local.Type) is { } pointee)
+                        field = FieldOfStructValue(pointee, memory.Addend, method);
                 }
 
                 //An offset that matched nothing may name a member of a struct held in a field, which is stored
