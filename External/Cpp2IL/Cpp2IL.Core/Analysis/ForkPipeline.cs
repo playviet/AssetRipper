@@ -464,6 +464,10 @@ public static class ForkPipeline
         // and `SubCellVisual::UpdateFaceTracking` lost it.
         SlotAddressRead.Run(method);
 
+        // And the same address where it is passed rather than read, which is what a `ref` argument is. Beside
+        // the pass above and for the same reason: naming the slot in the argument is what gives it a reader.
+        SlotAddressArgument.Run(method);
+
         LocalVariables.RemoveUnused(method);
 
         // Again, now that a receiver read from a field is the field itself rather than a copy of it: what
