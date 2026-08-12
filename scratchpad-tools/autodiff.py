@@ -18,7 +18,6 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
-import difftest  # noqa: E402
 
 PROJECT = os.path.join(HERE, "autodiff")
 

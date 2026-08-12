@@ -49,3 +49,24 @@ Keep it frozen between rounds or the denominator moves under the measurement: a 
 calls makes the *ground truth* richer as well as the export, and the two changes cancel. Regenerate it
 deliberately, and record the new baseline when you do. At 1.0.993 it is **whole 1037, partial 1567,
 dead 153** — not comparable with the 972 quoted before this dump was rebuilt.
+
+## The execution oracle is gone, and cannot be restored from here
+
+`difftest.py` had already vanished when this backup was made, and `autodiff.py` imported it - but only
+vestigially: everything `autodiff` needs it defines itself, so the import is simply removed and `autodiff`
+runs again.
+
+**What is actually lost is the corpus.** `scratchpad/corpus/` and `scratchpad/corpus6/` are empty directory
+shells - no `.cs` files - and `scratchpad/ecorpus6/` has no exported project. So there is nothing to run the
+oracle *on*: no original source, no recovered source, no binary.
+
+Rebuilding it needs Unity: a small project whose every method has known source, built to arm64 il2cpp,
+exported, and then
+
+```sh
+python3 autodiff.py <corpus>/Assets/.../Corpus.cs <export>/ExportedProject/.../Corpus.cs 400
+```
+
+Until then the loop has four scorers, not five, and **nothing can tell a method that is right from one that
+only looks right**. Where a change is inert on the four, the check used instead has been diffing the exported
+C# of the affected bodies by hand - which works, and does not scale.
