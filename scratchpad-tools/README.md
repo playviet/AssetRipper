@@ -31,3 +31,21 @@ scores differently looks exactly like a code regression.
 
 `tools/` holds the ones the repository itself depends on (`inventory.py` and its `csharp.py`/`markers.py`),
 which are not duplicated here.
+
+## The roundtrip dump
+
+`roundtrip.py` does not read the binary itself - it reads a dump of what the ISIL says every method does,
+which `probe2 … roundtrip` writes. It defaulted to `/tmp/rt.jsonl`, and `/tmp` is cleaned, so the scorer
+started failing mid-session with a missing file.
+
+`rt.jsonl.gz` here is the frozen reference, taken at **1.0.993**. Restore and use it explicitly:
+
+```sh
+gunzip -c scratchpad-tools/rt.jsonl.gz > $SP/rt.jsonl
+python3 $SP/roundtrip.py <export>/ExportedProject $SP/rt.jsonl
+```
+
+Keep it frozen between rounds or the denominator moves under the measurement: a pass that resolves more
+calls makes the *ground truth* richer as well as the export, and the two changes cancel. Regenerate it
+deliberately, and record the new baseline when you do. At 1.0.993 it is **whole 1037, partial 1567,
+dead 153** — not comparable with the 972 quoted before this dump was rebuilt.
