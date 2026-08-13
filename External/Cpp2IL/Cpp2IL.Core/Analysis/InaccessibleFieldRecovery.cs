@@ -198,6 +198,12 @@ public static class InaccessibleFieldRecovery
     /// </remarks>
     private static IEnumerable<string> Names(string bare)
     {
+        //A handful the class library names by what the field *is* and the property by what the caller wants.
+        //No naming rule reaches these: `_size` and `Count` share no substring. Only where the types agree, as
+        //everywhere else here, so a wrong guess cannot land.
+        if (bare is "size")
+            yield return "Count";
+
         yield return char.ToLowerInvariant(bare[0]) + bare[1..];
 
         //And the name unchanged. Capitalising was conditional on the first letter being small, so a field
