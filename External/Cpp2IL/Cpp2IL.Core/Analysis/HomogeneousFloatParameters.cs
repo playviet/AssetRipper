@@ -40,7 +40,13 @@ public static class HomogeneousFloatParameters
         //`Mathf.Max` is a compare and a select, and only the compare was rewritten - so the select kept the
         //whole `Rect` where one of its floats belonged, and `FindOverlapCell` came out choosing between a
         //struct and a number. Eight sites in this assembly, eighty-four in the game.
-        or OpCode.Select;
+        or OpCode.Select
+        //And the copy, which is where a lane crosses into a callee-saved register. Leaving single assignment
+        //form behind emits one of these per live value at a join, and they are the only reader a lane often
+        //has - so `GenerateFilledSprite` rewrote `vertices.w - vertices.y` in one instruction and left
+        //`Move v172 (Single), v50 @ V1 (Single)` unnamed two lines later, six lanes to `default(float)` in
+        //that body alone. A copy of the **whole** struct is excluded below; it is not a lane read.
+        or OpCode.Move;
 
     public static void Run(MethodAnalysisContext method)
     {
@@ -100,6 +106,16 @@ public static class HomogeneousFloatParameters
                         if (held.Register < overwritten && !renamed.Contains(local.Register.Number))
                             continue;
 
+                        //A copy into somewhere that holds the struct itself is the struct being copied, not
+                        //one of its fields being read: `Vector4 vector = vertices;`. The first register of
+                        //the run is both the struct and its first field, so only the destination can tell
+                        //the two apart.
+                        if (instruction.OpCode == OpCode.Move && instruction.Operands[0] is LocalVariable copy
+                            && copy.Type is { } into && into.FullName == held.Struct.Type?.FullName)
+                        {
+                            continue;
+                        }
+
                         instruction.Operands[i] = new FieldReference(held.Field, held.Struct, held.Offset);
 
                         //A select answers with whichever arm it took, so once an arm is one field of the
@@ -108,7 +124,7 @@ public static class HomogeneousFloatParameters
                         //first typed operand - and `SetTypeIfUnknown` only fills nulls, so nothing would
                         //correct it. `FindOverlapCell`'s `Mathf.Max(dragWorldRect.xMin, cornersBuf[0].x)`
                         //came out choosing between a `Rect` and a number.
-                        if (instruction.OpCode == OpCode.Select && instruction.Operands[0] is LocalVariable answer
+                        if (instruction.OpCode is OpCode.Select or OpCode.Move && instruction.Operands[0] is LocalVariable answer
                             && answer.Type?.FullName == held.Struct.Type?.FullName)
                         {
                             answer.Type = held.Field.FieldType;
