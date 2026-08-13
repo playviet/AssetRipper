@@ -46,6 +46,25 @@ public static class FieldAddressSinking
 
         foreach (var instruction in graph.Instructions)
         {
+            //A second field's address worked out from the first, which is what the compiler writes when two
+            //fields are near each other: `&CampaignName` is `this + 56` and `&UtmCampaign` is that less 24,
+            //never `this + 32`. Only an address this pass already knows, so the owner and the arithmetic are
+            //both settled - and instructions are walked in order, so the first is always registered first.
+            if (instruction.OpCode is OpCode.Add or OpCode.Subtract && instruction.Operands.Count == 3
+                && instruction.Operands[0] is LocalVariable derived
+                && instruction.Operands[1] is LocalVariable from && addresses.TryGetValue(from, out var already)
+                && instruction.Operands[2] is (long or int or ulong or uint) && already.Owner.Type is { } owns)
+            {
+                var away = System.Convert.ToInt64(instruction.Operands[2]);
+                var moved = already.Offset + (instruction.OpCode == OpCode.Add ? away : -away);
+
+                if (FieldAt(owns, moved, header) is { } alongside)
+                {
+                    addresses[derived] = (instruction, alongside, already.Owner, (int)moved);
+                    continue;
+                }
+            }
+
             if (instruction.OpCode != OpCode.Add || instruction.Operands.Count != 3
                 || instruction.Operands[0] is not LocalVariable made
                 || instruction.Operands[1] is not LocalVariable { Type: { } owner } held
@@ -146,6 +165,15 @@ public static class FieldAddressSinking
                             //ends the chain. A member that already holds a **reference** is not an address:
                             //`FieldAddressRecovery` resolved it to the field's own value, and the null test
                             //or the call it feeds is asking about that value, not about where it lives.
+                            //An instruction that derives *another* address from this one is not asking for
+                            //the value; the pass rewrites that one on its own account, so the chain simply
+                            //does not follow it.
+                            if (instruction.Operands[0] is LocalVariable next && addresses.TryGetValue(next, out var derivedHere)
+                                && ReferenceEquals(derivedHere.Addition, instruction))
+                            {
+                                continue;
+                            }
+
                             if (instruction.OpCode is not (OpCode.Move or OpCode.Select)
                                 && !(carried.Type is { IsValueType: false } && !addresses.ContainsKey(carried)))
                                 return Refuse("notACopy " + instruction);
