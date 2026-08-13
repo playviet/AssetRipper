@@ -78,8 +78,82 @@ public static class Il2CppDefaultsTable
             changed = true;
         }
 
+        return TypeHandles(method) || changed;
+    }
+
+    /// <summary>
+    /// The type a class pointer stands for, which is the class plus the offset of its <c>byval_arg</c>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <c>typeof(int)</c> has no metadata usage of its own where the type is a built-in one. The compiler
+    /// reads the class out of the table this file is about and then takes the address of its
+    /// <c>byval_arg</c>, which is the <c>Il2CppType*</c> that <c>Type.GetTypeFromHandle</c> is handed:
+    /// </para>
+    /// <code>
+    /// Move v56, [4DCD108]                              // il2cpp_defaults
+    /// Move v59 (Il2CppClass&lt;bool&gt;), [v56 + 0x28]  // the class, which `Run` above names
+    /// Add  v69 (RuntimeTypeHandle), v59, 32            // and its byval_arg
+    /// Call Type.GetTypeFromHandle, v72, v69
+    /// </code>
+    /// <para>
+    /// so the handle is an <em>addition</em> rather than a load, and <c>IlGenerator</c>'s
+    /// <c>TryLoadTypeToken</c> emits <c>ldtoken</c> only for an operand that <b>is</b> a type - a local
+    /// merely typed <c>System.RuntimeTypeHandle</c> is not one. The statement came out as a cast from an
+    /// integer to a handle and went, and took the assignment it was part of with it. In
+    /// <c>TypeExtensions</c>'s one static constructor the thirteen <c>typeof(Vector2)</c>…
+    /// <c>typeof(GUIStyle)</c> recover, because those have a metadata usage, and the thirteen
+    /// <c>typeof(bool)</c>…<c>typeof(string)</c> do not. This addition is the whole difference.
+    /// </para>
+    /// <para>
+    /// The rule is <b>not</b> restricted to the defaults table, although that is where it was found: a
+    /// class pointer plus <c>byval_arg</c> is that class's type wherever the pointer came from, and the
+    /// class has already been named by the time this runs - <c>Run</c> above, <see cref="RgctxResolver"/>
+    /// and the metadata resolver all put a <c>RuntimeClassTypeAnalysisContext</c> on the local. Asking only
+    /// which class it is, rather than where it was read from, is both simpler and wider.
+    /// </para>
+    /// <para>
+    /// Monotone: afterwards the instruction is a <c>Move</c>, so it cannot fire twice, and the fixpoint
+    /// still settles.
+    /// </para>
+    /// </remarks>
+    private static bool TypeHandles(MethodAnalysisContext method)
+    {
+        var changed = false;
+
+        foreach (var instruction in method.ControlFlowGraph!.Instructions)
+        {
+            if (instruction is not { OpCode: OpCode.Add, Operands: [LocalVariable handle, LocalVariable klass, { } addend] }
+                || Number(addend) != Il2CppClassLayout.ByValArg)
+            {
+                continue;
+            }
+
+            //Only where the destination is the handle itself. The same addition with anything else on the
+            //left is address arithmetic on a class, which is a different question with its own passes.
+            if (handle.Type?.FullName != "System.RuntimeTypeHandle")
+                continue;
+
+            if (klass.Type is not RuntimeClassTypeAnalysisContext { RepresentedType: { } named })
+                continue;
+
+            instruction.OpCode = OpCode.Move;
+            instruction.Operands = [handle, named];
+            changed = true;
+        }
+
         return changed;
     }
+
+    /// <summary>The constant an operand spells, whichever width the lifter recorded it at.</summary>
+    private static long? Number(object operand) => operand switch
+    {
+        long value => value,
+        ulong value => (long)value,
+        int value => value,
+        uint value => value,
+        _ => null,
+    };
 
     /// <summary>The built-in type a slot of the table holds the class of, if this is a slot at all.</summary>
     public static TypeAnalysisContext? SlotType(long addend, ApplicationAnalysisContext appContext)
