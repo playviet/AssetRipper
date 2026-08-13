@@ -46,6 +46,24 @@ public static class SharedStandInRetyping
                 if (instruction.OpCode != OpCode.Move || instruction.Operands.Count != 2)
                     continue;
 
+                //Except the copies single assignment form leaves behind when it is taken apart. Those are
+                //not "the two hold the same value": they are one register's several tenants meeting at a
+                //join, and a name that fits the value arriving on one edge is not a name for the values on
+                //the others. `SsaForm` mints them with a negative index and nothing else in the tree does.
+                //
+                //`TrackingManager::FlushUserProperties` calls `SetUserProperty(string, object)` nine times.
+                //Eight of the null checks fall into one `Throw NullReferenceException`, so X2 gets a phi
+                //there and destruction writes a copy on each edge. One of those edges carries
+                //`_cachedLevel.ToString()`, a genuine `System.String` - and because
+                //`GenericSharingRecovery.StandsIn` says `System.Object` stands in for **every** reference
+                //type, `Adopt` overwrote the join with `System.String` and then walked it back along the
+                //other seven edges. Four boxed integers came out as
+                //`string text = (string)(object)advCount;` - which compiles, is written by no scorer as a
+                //defect, and throws `InvalidCastException` the moment it runs. The two calls that are right
+                //are exactly the two whose block has no edge into that throw.
+                if (instruction.Index < 0)
+                    continue;
+
                 //A copy says the two hold the same value, so whichever end can be named names both.
                 again |= Adopt(instruction.Operands[0], TypeOf(instruction.Operands[1]));
                 again |= Adopt(instruction.Operands[1], TypeOf(instruction.Operands[0]));
