@@ -5190,12 +5190,12 @@
 3
 ],
 "Assembly-CSharp::CFramework.PoolManager::DespawnAll": [
-7,
+6,
 9,
 7
 ],
 "Assembly-CSharp::CFramework.PoolManager::DestroyAll": [
-7,
+6,
 9,
 7
 ],
@@ -6815,7 +6815,7 @@
 4
 ],
 "Assembly-CSharp::CFramework.TrackingManager::FlushUserProperties": [
-20,
+17,
 29,
 20
 ],
@@ -7590,7 +7590,7 @@
 2
 ],
 "Assembly-CSharp::CFramework.SegmentRuleEvaluator::Accept": [
-3,
+1,
 4,
 3
 ],
@@ -10790,7 +10790,7 @@
 17
 ],
 "Assembly-CSharp::CF.BoardController::ComputeHighlights": [
-19,
+18,
 23,
 19
 ],
