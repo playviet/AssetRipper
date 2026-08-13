@@ -39,8 +39,13 @@ namespace Cpp2IL.Core.Analysis;
 /// whatever was in v8 - so no scorer was ever going to report this.
 /// </para>
 /// <para>
-/// Only the callee side. A stacked argument at a <em>call</em> is written into the caller's own frame before
-/// the branch, which is a different set of slots entirely and is not what this says.
+/// <b>Only the callee side.</b> A stacked argument at a <em>call</em> is written into the caller's own frame
+/// before the branch, which is a different set of slots entirely. Applying this there as well was built at
+/// 1.1.22 and measured **worse**: `full` 3219 -> 3216, commented 698 -> 711, unmanaged 532 -> 536. The
+/// offsets are named raw, so an outgoing `StackOffset(0)` becomes the same `stack_0` as the caller's *own*
+/// first stacked parameter - the `default(...)` count fell by 59 not because 59 values were recovered but
+/// because 59 became a confident wrong one. Recovering the call side needs the store into the outgoing slot
+/// to be found and followed, which is a different piece of work.
 /// </para>
 /// </remarks>
 public static class ParametersOnTheStack

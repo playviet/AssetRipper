@@ -7815,9 +7815,9 @@
 5
 ],
 "Assembly-CSharp::CFramework.GizmosDrawer::DrawCross": [
-8,
+5,
 9,
-8
+6
 ],
 "Assembly-CSharp::CFramework.GizmosDrawer::DrawArrowEnd": [
 5,
@@ -7825,19 +7825,19 @@
 6
 ],
 "Assembly-CSharp::CFramework.GizmosDrawer::DrawRectangle": [
-4,
+3,
 5,
 4
 ],
 "Assembly-CSharp::CFramework.GizmosDrawer::DrawPoint": [
-7,
+8,
 12,
 8
 ],
 "Assembly-CSharp::CFramework.GizmosDrawer::DrawRay": [
-8,
+6,
 10,
-8
+6
 ],
 "Assembly-CSharp::CFramework.GizmosDrawer::DrawGizmoPoint": [
 1,
@@ -7845,7 +7845,7 @@
 1
 ],
 "Assembly-CSharp::CFramework.GizmosDrawer::DrawCube": [
-4,
+3,
 5,
 4
 ],
