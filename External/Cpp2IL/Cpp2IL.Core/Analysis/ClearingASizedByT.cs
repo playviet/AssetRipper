@@ -51,6 +51,7 @@ public static class ClearingASizedByT
         //What each scratch buffer holds, named by the value the operation that filled it answered with. The
         //buffers themselves are addresses and nothing can be said about them; what they carry is a `T`.
         var holds = new Dictionary<LocalVariable, LocalVariable>();
+        var pointerSize = method.AppContext.Binary.is32Bit ? 4 : 8;
 
         foreach (var call in graph.Instructions)
         {
@@ -75,6 +76,7 @@ public static class ClearingASizedByT
             //copy - and if that is not known, this is a copy between two places nothing can name and there is
             //nothing to say about it.
             object filled;
+            var fromAnElement = false;
 
             if (named == "memset")
             {
@@ -95,8 +97,29 @@ public static class ClearingASizedByT
             {
                 filled = value;
             }
+            //Or it is an element of an array of `T`, whose address the compiler worked out a step at a time
+            //because it could not know the stride when it compiled the body. `SharedElementIsAPointer` has
+            //answered the stride by then - a shared body's `T` is a reference - so what is left is the
+            //ordinary chain, and reading it back is `array[i]`. `ArrayElementAddress` folds the same chain
+            //wherever it is *read through*; here the only use is this copy, so it is folded here instead.
+            else if (ElementAt(call.Operands[first + 1], definitions, pointerSize) is { } element)
+            {
+                filled = element;
+                fromAnElement = true;
+            }
             else
             {
+                continue;
+            }
+
+            //Where only the *source* was an element, the value goes into the buffer the copy filled -
+            //**not** into the call's answer, which is a register the copy happens to return and nothing reads.
+            //Saying it there let the collection take the whole chain, and `RandomInArray` returned an empty
+            //buffer.
+            if (fromAnElement && call.Operands[first] is LocalVariable buffer)
+            {
+                call.OpCode = OpCode.Move;
+                call.Operands = [buffer, filled];
                 continue;
             }
 
@@ -138,6 +161,69 @@ public static class ClearingASizedByT
     /// call is handed is two or three steps from the read - and which steps depends only on how the frame is
     /// laid out, never on what is being cleared.
     /// </remarks>
+    /// <summary>
+    /// The array element an address is, where it was worked out as <c>array + index*width + 0x20</c>.
+    /// </summary>
+    /// <remarks>
+    /// Only the copy's <em>source</em> is asked. Doing the same for its destination - which would be
+    /// <c>output[i] = input[i]</c> - was built at 1.1.20 and measured **byte-identical on every scorer**:
+    /// the copies inside `ResizeArray` and `AddRange` are stepped by a walking pointer rather than by a
+    /// multiply per iteration, so no element address is worked out for this to find. That is the
+    /// no-subscript family, and it is a different root.
+    /// </remarks>
+    private static MemoryOperand? ElementAt(object operand, Dictionary<LocalVariable, Instruction> definitions, int pointerSize)
+    {
+        //Past the header, which is the last step and the one that says this is an element and not a field.
+        if (operand is not LocalVariable address || !definitions.TryGetValue(address, out var made)
+            || made is not { OpCode: OpCode.Add, Operands: [_, LocalVariable summed, { } past] }
+            || Constant(past) != (pointerSize == 4 ? 0x10 : 0x20))
+        {
+            return null;
+        }
+
+        if (!definitions.TryGetValue(summed, out var sum)
+            || sum is not { OpCode: OpCode.Add, Operands: [_, { } left, { } right] })
+        {
+            return null;
+        }
+
+        //Either order: the array plus the scaled index, or the scaled index plus the array.
+        foreach (var (holder, offset) in new[] { (left, right), (right, left) })
+        {
+            if (holder is not LocalVariable array
+                || array.Type is not (SzArrayTypeAnalysisContext or ArrayTypeAnalysisContext)
+                || ArrayTypeInference.Width(Elements(array.Type)!, pointerSize) is not { } width || width <= 0)
+            {
+                continue;
+            }
+
+            if (offset is not LocalVariable scaled || !definitions.TryGetValue(scaled, out var step))
+                continue;
+
+            var index = step switch
+            {
+                { OpCode: OpCode.Multiply, Operands: [_, LocalVariable subscript, { } by] } when Constant(by) == width => subscript,
+                { OpCode: OpCode.Multiply, Operands: [_, { } by, LocalVariable subscript] } when Constant(by) == width => subscript,
+                { OpCode: OpCode.ShiftLeft, Operands: [_, LocalVariable subscript, { } places] }
+                    when Constant(places) is { } shift && 1L << (int)shift == width => subscript,
+                _ => null,
+            };
+
+            if (index != null)
+                return new MemoryOperand(array, index, pointerSize == 4 ? 0x10 : 0x20, (int)width);
+        }
+
+        return null;
+    }
+
+    /// <summary>What an array holds, however it is written.</summary>
+    private static TypeAnalysisContext? Elements(TypeAnalysisContext? type) => type switch
+    {
+        SzArrayTypeAnalysisContext single => single.ElementType,
+        ArrayTypeAnalysisContext ranked => ranked.ElementType,
+        _ => null,
+    };
+
     private static bool SizeOfAClass(object operand, Dictionary<LocalVariable, Instruction> definitions, int depth)
     {
         if (depth > 4)

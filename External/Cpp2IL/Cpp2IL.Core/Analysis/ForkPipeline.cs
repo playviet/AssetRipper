@@ -341,6 +341,10 @@ public static class ForkPipeline
         // `Unmanaged memory load: [v397 @ X8_v20 (System.Int32[])+18]`, reading a header field of a type the
         // recovery had by then worked out. Before the arithmetic below, which would otherwise call the index
         // a number of its own and leave nothing for the subscript to be built from.
+        // Before the fold below, which needs the stride to be a number. Inside a shared body it is: `T` is a
+        // reference there, so the element size the compiler asked the class for is the pointer size.
+        SharedElementIsAPointer.Run(method);
+
         // Directly above it, and for the same reason one level down: where the index was not free at the load
         // the compiler works the element's address out a step at a time, and the addition chain that results
         // is an array access to nobody - not to the recovery below, and not to the generator, which reads an
