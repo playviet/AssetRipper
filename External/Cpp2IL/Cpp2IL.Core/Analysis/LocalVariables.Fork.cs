@@ -663,8 +663,11 @@ public static partial class LocalVariables
             for (var side = 1; side <= 2; side++)
             {
                 if (instruction.Operands[side] is LocalVariable local
-                    && local.Type is null or { IsValueType: false })
+                    && local.Type is null or { IsValueType: false }
+                    && !AnswerOfACallThatDeclaresItsType(method, local))
+                {
                     local.Type = width;
+                }
             }
         }
     }
@@ -851,6 +854,53 @@ public static partial class LocalVariables
     /// object.
     /// </para>
     /// </remarks>
+    /// <summary>
+    /// Whether a local is the answer of a call whose return type is a declaration, rather than a width.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A bitwise operation is good evidence that a value is a number, and seeding it as one is what
+    /// <see cref="il2cpp-a-bitwise-operand-is-not-a-reference">a whole round</see> was for. But a packed small
+    /// struct is masked with exactly the same instructions - <c>Color32</c> is four bytes in one register, and
+    /// <c>and x21, x0, #0xFFFFFF</c> is how its alpha is dropped - so where the value came out of a call that
+    /// says what it returns, the callee's declaration is the better witness and the width must not overrule
+    /// it. <c>MultiCutoutOverlay::DrawFeatherBorder</c> is sixteen of the assembly's notes on its own, and
+    /// four <c>AddGradientQuad</c> calls with it.
+    /// </para>
+    /// <para>
+    /// Only a declaration counts. A call answering with <c>System.Object</c>, a runtime handle or a shared
+    /// body's own generic parameter says <b>less</b> than the width does, and letting those refuse the seed
+    /// would undo the round this seed exists for.
+    /// </para>
+    /// <para>
+    /// The seed runs before the type fixpoint, so it wins the race by accident rather than by knowing more:
+    /// `SetTypeIfUnknown` never revises, and the call's own typing arrives afterwards and is refused.
+    /// </para>
+    /// </remarks>
+    private static bool AnswerOfACallThatDeclaresItsType(MethodAnalysisContext method, LocalVariable local)
+    {
+        if (method.ControlFlowGraph is not { } graph)
+            return false;
+
+        foreach (var instruction in graph.Instructions)
+        {
+            if (instruction.OpCode != OpCode.Call || instruction.Operands.Count < 2
+                || !ReferenceEquals(instruction.Operands[1], local)
+                || instruction.Operands[0] is not MethodAnalysisContext callee)
+            {
+                continue;
+            }
+
+            if (callee.ReturnType is { } returned && returned.FullName != "System.Object"
+                && returned is not GenericParameterTypeAnalysisContext && !IsRuntimeStandIn(returned))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private static bool AnsweredByACall(MethodAnalysisContext method, LocalVariable local)
     {
         if (method.ControlFlowGraph is not { } graph)

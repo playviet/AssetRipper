@@ -185,6 +185,13 @@ public static class InvokerThunk
         if (operand is not LocalVariable local)
             return null;
 
+        //A local that *is* a stack slot stands for where the slot is. `OutParameterWriteback` folds a slot
+        //and the address of it into one variable, so asking what assigned it lands on the value somebody put
+        //*in* the frame rather than on the frame - and the frame's own first word then looks like a store
+        //into whatever that value was.
+        if (OutParameterWriteback.OffsetOfSlot(local.Register.Name) is not null)
+            return (local, 0);
+
         return Single(local, definitions) switch
         {
             { OpCode: OpCode.Add, Operands: [_, LocalVariable from, { } by] } when Constant(by) is { } forward
@@ -255,6 +262,12 @@ public static class InvokerThunk
     /// <summary>What an instruction puts at an address, where it puts anything there at all.</summary>
     private static object? Stores(Instruction instruction, LocalVariable holder, long offset)
     {
+        if (instruction is { OpCode: OpCode.Move, Operands: [LocalVariable slot, { } put] }
+            && InSlot(slot, holder, offset))
+        {
+            return put;
+        }
+
         if (instruction is not { OpCode: OpCode.Move, Operands: [MemoryOperand destination, { } value] })
             return null;
 
@@ -263,6 +276,29 @@ public static class InvokerThunk
 
         return ReferenceEquals(into, holder) || into.Name == holder.Name ? value : null;
     }
+
+    /// <summary>
+    /// Whether a store went into the frame's word at <paramref name="offset"/>, written as a named slot.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The frame is on the stack, and <c>StackAnalyzer</c> gives a stack slot a <em>name</em> rather than a
+    /// memory operand - so <c>str x0, [sp, #8]</c> arrives as <c>Move stack_-28, X0</c> and there is no
+    /// addend anywhere for the test above to compare. Every frame filled in from a register looked unfilled,
+    /// and the call was refused with its arguments intact three instructions away.
+    /// </para>
+    /// <para>
+    /// The name spells the offset, so the arithmetic that the addend was doing is done on the name instead:
+    /// the frame's own slot plus the word index. Both prefixes are admissible, because
+    /// <see cref="OutParameterWriteback"/> renames only the slots whose address is taken and a five-word
+    /// frame has its address taken once - <c>AnonymousSerializableFormatter::Serialize</c> is
+    /// <c>stackaddr_-28</c> followed by four <c>stack_</c> slots.
+    /// </para>
+    /// </remarks>
+    private static bool InSlot(LocalVariable slot, LocalVariable holder, long offset) =>
+        OutParameterWriteback.OffsetOfSlot(slot.Register.Name) is { } at
+        && OutParameterWriteback.OffsetOfSlot(holder.Register.Name) is { } frame
+        && at == frame + offset;
 
     /// <summary>The one instruction a local is assigned by, looking through the copies in the way.</summary>
     private static Instruction? Single(LocalVariable local, Dictionary<LocalVariable, List<Instruction>> definitions)

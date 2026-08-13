@@ -165,7 +165,15 @@ public static class OutParameterWriteback
                             break;
                         }
 
-                        if (later.OpCode is OpCode.Call or OpCode.CallVoid && operand > 1)
+                        //`IndirectCall` counts too, and it is the one that matters: an invoker thunk is
+                        //always indirect - the code pointer comes out of the MethodInfo - and its fourth
+                        //argument is the frame the arguments are written into. Left out, the frame's store
+                        //keeps the slot's name but is ordered *after* the read, so single assignment form
+                        //hands the call the version before it and the store is dead by the time
+                        //`InvokerThunk` looks for it. `JsonHelper::getJsonArray` gave `JsonUtility.FromJson`
+                        //a frame nothing had filled in, and the json it had just concatenated went nowhere.
+                        //The operand layout is the same as `Call`'s - target, destination, arguments.
+                        if (later.OpCode is OpCode.Call or OpCode.CallVoid or OpCode.IndirectCall && operand > 1)
                             uses.Add((later, operand));
                         else
                             onlyCalls = false;
@@ -315,6 +323,13 @@ public static class OutParameterWriteback
 
         return found;
     }
+
+    /// <summary>The offset a slot's name spells, whichever of the two prefixes it wears.</summary>
+    /// <remarks>
+    /// Public because <see cref="InvokerThunk"/> has to do the same arithmetic on the same names: a thunk's
+    /// argument frame is stack slots, and which slot holds which parameter is the name plus the word index.
+    /// </remarks>
+    public static int? OffsetOfSlot(string name) => OffsetOfSlotNamed(name);
 
     private static int? OffsetOfSlotNamed(string name)
     {
