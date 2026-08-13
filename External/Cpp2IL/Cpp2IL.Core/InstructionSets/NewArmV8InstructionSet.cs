@@ -239,6 +239,11 @@ public partial class NewArmV8InstructionSet : Cpp2IlInstructionSet
                 Add(address, OpCode.Move, ConvertOperand(instruction, 0), expanded);
                 break;
 
+            //Moving a float into a general register moves its bits, which is a call and not a move - see
+            //`FloatBitsInAnInteger`. Above the ordinary move below, which is what it would otherwise be.
+            case Arm64Mnemonic.FMOV when Reinterpretation(instruction, context) is { } bits:
+                Add(address, OpCode.Call, bits, ConvertOperand(instruction, 0), ConvertOperand(instruction, 1));
+                break;
             case Arm64Mnemonic.MOV:
             case Arm64Mnemonic.MOVZ:
             case Arm64Mnemonic.FMOV:

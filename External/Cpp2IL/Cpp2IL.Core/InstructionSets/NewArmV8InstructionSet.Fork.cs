@@ -1558,4 +1558,32 @@ public partial class NewArmV8InstructionSet
         return new Register(null, offset == 0 ? number : $"{number}#{offset}");
     }
 
+
+    /// <summary>
+    /// The library call an <c>FMOV</c> into a general register is, or nothing where it is an ordinary move.
+    /// </summary>
+    /// <remarks>
+    /// See <see cref="Analysis.FloatBitsInAnInteger"/> for what it is and why it is a call rather than a
+    /// conversion. The test is the two register banks: a general destination and a vector source is a
+    /// reinterpretation, and the width of the pair says which of the two methods it is.
+    /// </remarks>
+    private static MethodAnalysisContext? Reinterpretation(Arm64Instruction instruction, MethodAnalysisContext context)
+    {
+        if (instruction.Op0Kind != Arm64OperandKind.Register || instruction.Op1Kind != Arm64OperandKind.Register)
+            return null;
+
+        var into = instruction.Op0Reg;
+        var from = instruction.Op1Reg;
+
+        //Thirty-two bits of float into a word, or sixty-four of double into an extended register. Anything
+        //else - a vector destination, or a pair of different widths - is not this.
+        if (into is >= Arm64Register.W0 and <= Arm64Register.W31 && from is >= Arm64Register.S0 and <= Arm64Register.S31)
+            return Analysis.FloatBitsInAnInteger.Naming(context.AppContext, false);
+
+        if (into is >= Arm64Register.X0 and <= Arm64Register.X31 && from is >= Arm64Register.D0 and <= Arm64Register.D31)
+            return Analysis.FloatBitsInAnInteger.Naming(context.AppContext, true);
+
+        return null;
+    }
+
 }
