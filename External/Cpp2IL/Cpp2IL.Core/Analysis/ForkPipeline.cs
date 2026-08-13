@@ -484,6 +484,11 @@ public static class ForkPipeline
         // well the slot is known.
         TypeAcrossANamedSlot.Run(method);
 
+        // And a base that has only just been given a type still reads its members as distances. The resolver
+        // is monotone and only replaces an operand nothing has resolved, so asking it again here costs the
+        // sites it already did and answers the ones that had no type when it ran inside the fixpoint.
+        MetadataResolver.ResolveFieldOffsets(method);
+
         LocalVariables.RemoveUnused(method);
 
         // Again, now that a receiver read from a field is the field itself rather than a copy of it: what
