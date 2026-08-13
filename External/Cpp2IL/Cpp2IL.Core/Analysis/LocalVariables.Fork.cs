@@ -203,7 +203,7 @@ public static partial class LocalVariables
     /// </remarks>
     private static void SeedSharedReturnBuffer(MethodAnalysisContext method)
     {
-        if (method.ReturnType is not { } returned || !MentionsAGenericParameter(returned))
+        if (method.ReturnType is not { } returned || !ReturnedThroughABuffer(returned))
             return;
 
         //il2cpp appends the buffer and then the `MethodInfo`, so the buffer is the integer register right
@@ -234,6 +234,41 @@ public static partial class LocalVariables
             if (instruction is { OpCode: OpCode.Return, Operands: [LocalVariable] })
                 instruction.Operands[0] = local;
     }
+
+    /// <summary>
+    /// Whether a return travels through a buffer the caller passes rather than in a register.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Only a <c>T</c> whose size the body cannot know does. Two ways it can know after all, and asking merely
+    /// whether the type <em>mentions</em> a parameter missed both:
+    /// </para>
+    /// <list type="bullet">
+    /// <item>a <b>reference-constrained</b> parameter is a pointer whatever it is instantiated as, so
+    /// <c>T : ScriptableObject</c> comes back in x0 and there is no buffer at all. Inventing one took the
+    /// register the <c>MethodInfo</c> arrived in, called it <c>returnBuffer</c> and typed it <c>T</c>, so
+    /// every read of <c>MethodInfo-&gt;klass</c> after it was a read of unmanaged memory through a `T` -
+    /// 47 sites across <c>ScriptableObjectConfig</c> and <c>GoogleDesignConfigSo</c>, the two files those
+    /// bodies are owed from;</item>
+    /// <item>a <b>reference type built on</b> a parameter is still a reference. <c>List&lt;T&gt;</c> is a class
+    /// however wide a <c>T</c> is.</item>
+    /// </list>
+    /// <para>
+    /// What is left is a bare unconstrained parameter, and a value type built out of one - a
+    /// <c>KeyValuePair&lt;T, W&gt;</c> - which is genuinely of unknown width.
+    /// </para>
+    /// </remarks>
+    private static bool ReturnedThroughABuffer(TypeAnalysisContext type) => type switch
+    {
+        GenericParameterTypeAnalysisContext parameter => !IsCertainlyAReference(parameter),
+        { IsValueType: true } => MentionsAGenericParameter(type),
+        _ => false,
+    };
+
+    /// <summary>Whether a generic parameter can only ever be instantiated with a reference type.</summary>
+    private static bool IsCertainlyAReference(GenericParameterTypeAnalysisContext parameter)
+        => parameter.Attributes.HasFlag(System.Reflection.GenericParameterAttributes.ReferenceTypeConstraint)
+            || parameter.ConstraintTypes.Any(t => t is { IsValueType: false, IsInterface: false });
 
     /// <summary>Whether a type is a shared generic parameter, or is built out of one.</summary>
     private static bool MentionsAGenericParameter(TypeAnalysisContext type) => type switch

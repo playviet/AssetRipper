@@ -77,7 +77,11 @@ public static class FieldFromItsRuntimeInfo
                 continue;
             }
 
-            if (Named(call.Operands[first + 1], definitions) is not { } field || field.Offset < 0)
+            //Nought is not an offset here, it is the absence of one: a generic type records none, which is
+            //the whole reason the compiler looked the field up at run time. Emitting `object + 0` would put a
+            //confident wrong answer where a marker was. Where `StateMachineFieldLayout` has worked the layout
+            //out and it agreed with the code, the offset is real and this fires.
+            if (Named(call.Operands[first + 1], definitions) is not { } field || field.Offset <= 0)
                 continue;
 
             call.OpCode = OpCode.Add;
@@ -93,14 +97,19 @@ public static class FieldFromItsRuntimeInfo
 
         long step = 0;
 
-        if (made is { OpCode: OpCode.Add, Operands: [_, LocalVariable from, { } by] })
+        if (made is { OpCode: OpCode.Add, Operands: [_, { } stepped, { } by] })
         {
-            if (Constant(by) is not { } stepped || stepped < 0 || stepped % FieldInfoWidth != 0)
+            if (Constant(by) is not { } away || away < 0 || away % FieldInfoWidth != 0)
                 return null;
 
-            step = stepped;
+            step = away;
 
-            if (!definitions.TryGetValue(from, out made))
+            //The list is either still a local of its own, or - where copy propagation folded the load into
+            //the addition, which is the shape it usually leaves - the read itself. Only the first was matched,
+            //and the whole of `JsonExtension`'s iterator family is the second.
+            if (stepped is MemoryOperand folded)
+                made = new Instruction(made.Index, OpCode.Move, made.Operands[0], folded);
+            else if (stepped is not LocalVariable from || !definitions.TryGetValue(from, out made))
                 return null;
         }
 
