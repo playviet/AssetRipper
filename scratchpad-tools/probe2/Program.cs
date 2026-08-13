@@ -1348,6 +1348,33 @@ if (args[3] == "hfa")
 	return;
 }
 
+// rawisil <type> [method] - the ISIL straight out of the lifter, before a single analysis pass.
+//
+// `dump` and `isil` both call Analyze() first, so neither can tell a lifter that never produced an
+// instruction from a pass that deleted it. This one asks the instruction set directly.
+if (args[3] == "rawisil")
+{
+	foreach (TypeAnalysisContext type in app.AllTypes)
+	{
+		if (!type.Name.Contains(args[4])) continue;
+		foreach (MethodAnalysisContext m in type.Methods)
+		{
+			if (args.Length > 5 && !m.Name.Contains(args[5])) continue;
+			if (m.UnderlyingPointer == 0) continue;
+
+			Console.WriteLine($"===== {type.FullName}::{m.Name} @ {m.UnderlyingPointer:X}");
+
+			try
+			{
+				System.Collections.Generic.List<Instruction> lifted = app.InstructionSet.GetIsilFromMethod(m);
+				for (int i = 0; i < lifted.Count; i++) Console.WriteLine($"    {i,4} {lifted[i]}");
+			}
+			catch (Exception e) { Console.WriteLine("    threw " + e.Message); }
+		}
+	}
+	return;
+}
+
 if (args[3] == "isil")
 {
 	foreach (TypeAnalysisContext type in app.AllTypes)
@@ -1756,6 +1783,96 @@ if (args[3] == "helpers")
 	Console.WriteLine($"{made.Count} distinct addresses, {made.Values.Sum()} calls");
 	foreach (KeyValuePair<ulong, int> pair in made.OrderByDescending(p => p.Value).Take(args.Length > 4 ? int.Parse(args[4]) : 30))
 		Console.WriteLine($"{pair.Value,6}  0x{pair.Key:X}  withResult={resultUsed.GetValueOrDefault(pair.Key),5}  eg {anExample[pair.Key]}");
+	return;
+}
+
+if (args[3] == "leftover")
+{
+	// The second word of a dispatch pair. A virtual or interface call reads `LDP X8, X1, [entry]`; the
+	// pass that recovers the call takes the first word and leaves the second - a MethodInfo* sitting in an
+	// argument register - and the next call picks it up as one of its own arguments. Silent: the local is
+	// typed from the parameter it lands in, so no marker is produced and every scorer calls the body whole.
+	int sites = 0, atEight = 0, undefinedBase = 0, untypedBase = 0, reachingAny = 0, neverRead = 0;
+	System.Collections.Generic.List<string> deadIn = new();
+	System.Collections.Generic.HashSet<string> bodies = new();
+	System.Collections.Generic.List<string> lines = new();
+	System.Collections.Generic.Dictionary<string, int> byRegister = new();
+
+	foreach (TypeAnalysisContext type in app.AllTypes)
+	{
+		if (type.DeclaringAssembly.Name != "Assembly-CSharp") continue;
+		if (args.Length > 4 && args[4].Length > 0 && !type.Name.Contains(args[4])) continue;
+
+		foreach (MethodAnalysisContext m in type.Methods)
+		{
+			if (m.UnderlyingPointer == 0) continue;
+			try { m.Analyze(); } catch { continue; }
+			if (m.ControlFlowGraph is null) continue;
+
+			System.Collections.Generic.HashSet<LocalVariable> defined = new();
+			foreach (Instruction i in m.ControlFlowGraph.Instructions)
+				if (i.Destination is LocalVariable d) defined.Add(d);
+
+			System.Collections.Generic.HashSet<string> parameters = new();
+			foreach (LocalVariable pl in m.ParameterLocals) parameters.Add(pl.Register.Name);
+
+			foreach (Instruction read2 in m.ControlFlowGraph.Instructions)
+			{
+				if (read2.OpCode != OpCode.Move || read2.Operands.Count != 2) continue;
+				if (read2.Operands[0] is not LocalVariable loaded) continue;
+				if (read2.Operands[1] is not MemoryOperand { Index: null, Scale: 0, Addend: 8 } entry) continue;
+				if (entry.Base is not LocalVariable rooted) continue;
+				atEight++;
+				bool undefined = !defined.Contains(rooted) && !parameters.Contains(rooted.Register.Name);
+				if (undefined) undefinedBase++;
+				if (rooted.Type is null) untypedBase++;
+
+				// Does anything at all read what this loaded?
+				bool read = false;
+				foreach (Instruction other in m.ControlFlowGraph.Instructions)
+				{
+					if (ReferenceEquals(other, read2)) continue;
+					for (int k = other.OpCode == OpCode.Call || other.OpCode == OpCode.CallVoid ? 0 : 1; k < other.Operands.Count; k++)
+					{
+						object o = other.Operands[k];
+						if (ReferenceEquals(o, loaded)) { read = true; break; }
+						if (o is MemoryOperand mo && (ReferenceEquals(mo.Base, loaded) || ReferenceEquals(mo.Index, loaded))) { read = true; break; }
+					}
+					if (read) break;
+				}
+				if (!read) { neverRead++; if (deadIn.Count < 30) deadIn.Add($"{type.Name}::{m.Name}"); }
+
+				// Where it goes: an argument of a call that DID resolve, which is the silent part.
+				foreach (Instruction call in m.ControlFlowGraph.Instructions)
+				{
+					if (!call.IsCall || call.Operands.Count == 0) continue;
+					if (call.Operands[0] is not MethodAnalysisContext callee) continue;
+
+					int at = -1;
+					for (int k = 1; k < call.Operands.Count; k++)
+						if (ReferenceEquals(call.Operands[k], loaded)) { at = k; break; }
+					if (at < 0) continue;
+
+					reachingAny++;
+					if (!undefined) continue;
+					sites++;
+					bodies.Add($"{type.Name}::{m.Name}");
+					string bare = loaded.Register.Name.Split('_')[0];
+					byRegister[bare] = byRegister.GetValueOrDefault(bare) + 1;
+					if (lines.Count < 40)
+						lines.Add($"{type.Name}::{m.Name}  {loaded.Name} ({loaded.Type?.FullName ?? "<null>"}) -> operand {at} of {callee.FullName}");
+				}
+			}
+
+			m.ReleaseAnalysisData();
+		}
+	}
+
+	Console.WriteLine($"{atEight} reads at [base+8]; {undefinedBase} with an undefined base, {untypedBase} with an untyped base, {neverRead} whose result NOTHING reads");
+	foreach (string d in deadIn) Console.WriteLine("  dead in " + d);
+	Console.WriteLine($"{reachingAny} of them reach a resolved call as an argument; {sites} of those have an undefined base, in {bodies.Count} bodies");
+	foreach (var e in byRegister.OrderByDescending(x => x.Value)) Console.WriteLine($"{e.Value,6}  {e.Key}");
+	foreach (string l in lines) Console.WriteLine("  " + l);
 	return;
 }
 
