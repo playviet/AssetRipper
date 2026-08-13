@@ -529,6 +529,23 @@ public static class ForkPipeline
         // recovered exactly and still not something the project can write.
         InaccessibleFieldRecovery.Run(method);
 
+        // Two passes that have to run again first, in this order, because each needs what the one before it
+        // produces and both need what everything above them has just typed.
+        //
+        // A floating point constant reaches recovery as its own bit pattern, and `FloatLiteralRecovery`
+        // reinterprets one only where something *else* in the same expression is known to be floating point.
+        // Upstream runs it before a single pass in this hook, so a struct's field, a named lane and a
+        // static's member are all still untyped when it looks: `Vector3.one * 0.85f` came out as
+        // `one.y * 1062836634L`. The evidence rule already knew that shape and had simply not been shown it.
+        FloatLiteralRecovery.Run(method);
+
+        // And then the answer that constant types. A lane the vector splitter writes has no declared type, so
+        // inference settles it on the register's width - `Int64` on a multiply of two `Single`s - and the
+        // assembler below refuses any part that is not a float, so the three lanes were never put back
+        // together and `tf.localScale = ...` was commented out whole. This has to be after the line above:
+        // until the constant is a float there is nothing in the instruction saying the arithmetic is.
+        StructInArithmetic.Run(method);
+
         HomogeneousFloatArguments.Run(method);
 
         // A shared generic body opens by asking whether its own runtime context is filled in yet. It is, by

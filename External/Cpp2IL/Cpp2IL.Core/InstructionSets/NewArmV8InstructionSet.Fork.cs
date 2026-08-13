@@ -1505,4 +1505,57 @@ public partial class NewArmV8InstructionSet
         var converted = ConvertOperand(instruction, operand);
         return converted is Register { Name: "X31" } ? 0L : converted;
     }
+
+    /// <summary>
+    /// The name a decoded vector element shares with the lane <see cref="VectorLanes"/> writes.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Two spellings of the same four bytes never met. The operand decoder wrote <c>V2.S1</c> - register,
+    /// element width, index - while <c>VectorLanes.Lane</c> writes <c>V2#4</c>, register and the byte the lane
+    /// starts at. A lane written by one and read by the other was a local nothing defined: <b>361 occurrences
+    /// across 141 methods, and a destination in none of them</b>, every one becoming <c>default(float)</c>
+    /// with no marker.
+    /// </para>
+    /// <code>
+    /// fmul v1.2s, v9.2s, v9.2s   // VectorLanes writes V1 and V1#4
+    /// fadd s0, s0, s1            // reads V1        - matches
+    /// mov  s1, v1.s[1]           // named V1.S1     - matched nothing
+    /// </code>
+    /// <para>
+    /// so the lane-one multiply was collected as dead and <c>Vector3.magnitude</c>, which almost everything
+    /// calls, recovered as <c>sqrt(x*x + y*y + default(float))</c>.
+    /// </para>
+    /// <para>
+    /// Naming by where the lane starts is the scheme that composes, being the one fact both readings agree on.
+    /// <c>Lane</c>'s own remark says the cost: the same eight bytes are lane 1 of a pair of doubles and lanes
+    /// 2 and 3 of four floats, so a <c>.D[1]</c> read names only the low half of what it wants - three of
+    /// those in this assembly against seventy-one <c>.S[1]</c>, and the previous spelling matched none of
+    /// either.
+    /// </para>
+    /// <para>
+    /// This could not land on its own. Connecting the lane makes a constant beside it live, and a floating
+    /// point constant reaches recovery as its own bit pattern: <c>Vector3.one * 0.85f</c> came out as
+    /// <c>one.y * 1062836634L</c>, a wrong value where a stand-in had been. The second run of
+    /// <c>FloatLiteralRecovery</c> at the end of <c>ForkPipeline</c> is what answers that, and the two belong
+    /// in one change.
+    /// </para>
+    /// </remarks>
+    private static Register LaneOperand(Arm64Register reg, Arm64VectorElement element)
+    {
+        var bytes = element.Width switch
+        {
+            Arm64VectorElementWidth.B => 1,
+            Arm64VectorElementWidth.H => 2,
+            Arm64VectorElementWidth.S => 4,
+            Arm64VectorElementWidth.D => 8,
+            _ => throw new System.ArgumentOutOfRangeException(nameof(element), $"Unknown vector element width {element.Width}"),
+        };
+
+        var number = reg.ToString().ToUpperInvariant();
+        var offset = element.Index * bytes;
+
+        return new Register(null, offset == 0 ? number : $"{number}#{offset}");
+    }
+
 }

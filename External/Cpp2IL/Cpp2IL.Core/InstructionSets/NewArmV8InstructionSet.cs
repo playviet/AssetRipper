@@ -1254,17 +1254,7 @@ public partial class NewArmV8InstructionSet : Cpp2IlInstructionSet
                 _ => throw new ArgumentOutOfRangeException(nameof(operand), $"Operand must be between 0 and 3, inclusive. Got {operand}")
             };
 
-            var width = vectorElement.Width switch
-            {
-                Arm64VectorElementWidth.B => "B",
-                Arm64VectorElementWidth.H => "H",
-                Arm64VectorElementWidth.S => "S",
-                Arm64VectorElementWidth.D => "D",
-                _ => throw new ArgumentOutOfRangeException(nameof(vectorElement.Width), $"Unknown vector element width {vectorElement.Width}")
-            };
-
-            var name = $"{reg.ToString().ToUpperInvariant()}.{width}{vectorElement.Index}";
-            return new Register(null, name);
+            return LaneOperand(reg, vectorElement);
         }
 
         return $"<UNIMPLEMENTED OPERAND TYPE {kind}>";

@@ -112,7 +112,7 @@ public static class StructInArithmetic
             if (instruction.OpCode is not (OpCode.Add or OpCode.Subtract or OpCode.Multiply or OpCode.Divide or OpCode.Negate)
                 || instruction.Operands.Count < 2
                 || instruction.Operands[0] is not LocalVariable answer
-                || answer.Type is not { } called || !IsAStructOfNumbers(called))
+                || answer.Type is not { } called || !(IsAStructOfNumbers(called) || IsAWidth(called)))
             {
                 continue;
             }
@@ -121,7 +121,18 @@ public static class StructInArithmetic
 
             for (var operand = 1; operand < instruction.Operands.Count; operand++)
             {
-                if (Numeric(instruction.Operands[operand]) is not { } source)
+                //A literal is a number that says its own type. `Numeric` reads one off a local or a field and
+                //has nothing to say about `0.85f`, so a multiply by a constant - which is most of the vector
+                //arithmetic in a game - broke the chain at its second operand and the answer kept the width
+                //it was given.
+                var source = instruction.Operands[operand] switch
+                {
+                    float => method.AppContext.SystemTypes.SystemSingleType,
+                    double => method.AppContext.SystemTypes.SystemDoubleType,
+                    { } other => Numeric(other),
+                };
+
+                if (source is null)
                 {
                     number = null;
                     break;
@@ -158,6 +169,22 @@ public static class StructInArithmetic
 
         return type is { Namespace: nameof(System), Name: "Single" or "Double" } ? type : null;
     }
+
+    /// <summary>
+    /// Whether a name on the answer is a width rather than a type - an integer where floating point arithmetic
+    /// wrote.
+    /// </summary>
+    /// <remarks>
+    /// A lane the vector splitter writes has no declared type of its own, and inference settles it on the
+    /// register's width. `Vector3.one * 0.85f` came out with its middle lane typed `Int64` while both operands
+    /// were `Single`, and everything that asks whether a value is a float then refuses it - the constructor
+    /// that would have assembled the three lanes back into a `Vector3` among them, so the whole assignment was
+    /// commented out. Nothing writes an integer with an `FMUL`; whatever width the register has, the answer is
+    /// the number its operands are. Only where **every** operand is floating point, which `Numeric` above
+    /// already requires - an integer multiply cannot get here.
+    /// </remarks>
+    private static bool IsAWidth(TypeAnalysisContext type)
+        => type is { Namespace: nameof(System), Name: "Int64" or "UInt64" or "Int32" or "UInt32" or "IntPtr" or "UIntPtr" };
 
     /// <summary>Whether one of the values this instruction reads is a plain number.</summary>
     /// <summary>
