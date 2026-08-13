@@ -56,14 +56,8 @@ public static class ParametersOnTheStack
         //`this` occupies the first integer register and the first operand.
         var first = method.IsStatic ? 0 : 1;
 
-        if (operands.Count < first + method.Parameters.Count)
+        if (operands.Count < first + method.Parameters.Count || Placement(method) is not { Count: > 0 } placed)
             return;
-
-        var vectors = 0;
-        var integers = first;
-        var vectorsGone = false;
-        var integersGone = false;
-        long nsaa = 0;
 
         //Every vector register past the first that a float struct occupies is handed over after the
         //parameters, in parameter order. One that goes on the stack occupies none of them, so its share of
@@ -73,14 +67,52 @@ public static class ParametersOnTheStack
 
         for (var i = 0; i < method.Parameters.Count; i++)
         {
-            var type = method.Parameters[i].ParameterType;
-            var (registers, isVector, size, alignment) = Occupies(type);
-
+            var (registers, isVector, _, _) = Occupies(method.Parameters[i].ParameterType);
             var extra = beyond.Count;
 
             if (isVector)
                 for (var more = 1; more < registers; more++)
                     beyond.Add(i);
+
+            if (!placed.TryGetValue(i, out var at))
+                continue;
+
+            operands[first + i] = new StackOffset((int)at);
+
+            for (var more = extra; more < beyond.Count; more++)
+                dropped.Add(more);
+        }
+
+        //From the back, so the earlier indices still say where they said.
+        for (var i = dropped.Count - 1; i >= 0; i--)
+        {
+            var at = first + method.Parameters.Count + dropped[i];
+
+            if (at < operands.Count)
+                operands.RemoveAt(at);
+        }
+    }
+
+    /// <summary>
+    /// Where each parameter that had no register left arrives, by its index in the parameter list.
+    /// </summary>
+    /// <remarks>
+    /// Public because the answer is needed twice: here, to say which slot the parameter itself is, and in
+    /// <see cref="HomogeneousFloatParameters"/>, to say which slots the rest of a float struct's fields are.
+    /// A struct on the stack is one slot per field just as it is one register per field in the run.
+    /// </remarks>
+    public static Dictionary<int, long> Placement(MethodAnalysisContext method)
+    {
+        var placed = new Dictionary<int, long>();
+        var vectors = 0;
+        var integers = method.IsStatic ? 0 : 1;
+        var vectorsGone = false;
+        var integersGone = false;
+        long nsaa = 0;
+
+        for (var i = 0; i < method.Parameters.Count; i++)
+        {
+            var (registers, isVector, size, alignment) = Occupies(method.Parameters[i].ParameterType);
 
             var onTheStack = isVector
                 ? vectorsGone || vectors + registers > Aapcs64.RegistersPerRun
@@ -104,21 +136,11 @@ public static class ParametersOnTheStack
                 integersGone = true;
 
             nsaa = RoundUp(nsaa, System.Math.Max(Granule, alignment));
-            operands[first + i] = new StackOffset((int)nsaa);
+            placed[i] = nsaa;
             nsaa += size;
-
-            for (var more = extra; more < beyond.Count; more++)
-                dropped.Add(more);
         }
 
-        //From the back, so the earlier indices still say where they said.
-        for (var i = dropped.Count - 1; i >= 0; i--)
-        {
-            var at = first + method.Parameters.Count + dropped[i];
-
-            if (at < operands.Count)
-                operands.RemoveAt(at);
-        }
+        return placed;
     }
 
     /// <summary>Which run a parameter is passed in, how much of it it takes, and how much room it needs.</summary>

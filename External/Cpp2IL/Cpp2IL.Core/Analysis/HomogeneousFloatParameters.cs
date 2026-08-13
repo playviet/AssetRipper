@@ -183,8 +183,14 @@ public static class HomogeneousFloatParameters
         var found = new Dictionary<LocalVariable, (FieldAnalysisContext, LocalVariable, int, int)>();
         var vectorCount = 0;
 
-        foreach (var parameter in method.Parameters)
+        //Where a parameter went when the run had nothing left. A struct on the stack is one slot per field
+        //just as it is one register per field in the run, so the same naming applies to it - the only
+        //difference is which locals hold the fields.
+        var placed = ParametersOnTheStack.Placement(method);
+
+        for (var index = 0; index < method.Parameters.Count; index++)
         {
+            var parameter = method.Parameters[index];
             var type = parameter.ParameterType;
 
             if (type.Namespace == nameof(System))
@@ -213,19 +219,29 @@ public static class HomogeneousFloatParameters
             //does not have. Seventeen members overflow and eleven of them scored `full` while doing it, so
             //`full` is expected to fall here: an honest marker for a confident wrong answer is the trade
             //this project takes.
-            if (first + floats > Aapcs64.RegistersPerRun)
+            var onTheStack = placed.TryGetValue(index, out var slot);
+
+            if (!onTheStack && first + floats > Aapcs64.RegistersPerRun)
                 continue;
 
             if (floats < 2 || FloatFields(type) is not { } fields || fields.Count != floats)
                 continue;
 
-            if (LocalForVector(method, first) is not { } held)
+            //The struct itself: the first register of its run, or the first slot it was copied into.
+            if ((onTheStack ? LocalForSlot(method, slot) : LocalForVector(method, first)) is not { } held)
                 continue;
 
             for (var i = 0; i < floats; i++)
             {
-                if (LocalForVector(method, first + i) is { } register)
-                    found[register] = (fields[i], held, i * 4, first + i);
+                //A slot cannot be overwritten by a call the way a vector register can - it is the caller's
+                //memory, not a register the callee shares with everything it calls - so the guard that skips
+                //an overwritten parameter has nothing to say about one, and `int.MaxValue` keeps it quiet.
+                var lane = onTheStack
+                    ? LocalForSlot(method, slot + i * 4)
+                    : LocalForVector(method, first + i);
+
+                if (lane is { } register)
+                    found[register] = (fields[i], held, i * 4, onTheStack ? int.MaxValue : first + i);
             }
         }
 
@@ -259,6 +275,16 @@ public static class HomogeneousFloatParameters
     private static LocalVariable? LocalForVector(MethodAnalysisContext method, int number)
     {
         var register = new Register(null, "V" + number);
+
+        return method.Locals.FirstOrDefault(l => l.Register.Number == register.Number && l.Register.Version == -1);
+    }
+
+    /// <summary>
+    /// The value an incoming stack slot holds on entry, named the way <see cref="StackAnalyzer"/> names one.
+    /// </summary>
+    private static LocalVariable? LocalForSlot(MethodAnalysisContext method, long offset)
+    {
+        var register = new Register(null, offset < 0 ? $"stack_-{-offset:X}" : $"stack_{offset:X}");
 
         return method.Locals.FirstOrDefault(l => l.Register.Number == register.Number && l.Register.Version == -1);
     }
