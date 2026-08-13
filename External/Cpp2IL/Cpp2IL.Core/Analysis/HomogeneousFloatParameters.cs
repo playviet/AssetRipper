@@ -244,8 +244,30 @@ public static class HomogeneousFloatParameters
                 continue;
 
             //The struct itself: the first register of its run, or the first slot it was copied into.
-            if ((onTheStack ? LocalForSlot(method, slot) : LocalForVector(method, first)) is not { } held)
-                continue;
+            var held = onTheStack ? LocalForSlot(method, slot) : LocalForVector(method, first);
+
+            //And where the first register is never read, the first one that is. A local exists for a register
+            //only because something in the body reads it, so a parameter whose leading field the source never
+            //touches has no local for its own first register - `GetAdjustedBorders(Vector4, Rect)` uses only
+            //`adjustedRect.width` and `.height`, so nothing reads v4 or v5 and the parameter was dropped
+            //whole, taking the two lanes that *are* there with it. Standing a later lane in for the struct
+            //costs nothing: it is the same self-reference the first register already is, the fields are read
+            //off it by name, and the generator finds a parameter **by name**, so naming it is what makes the
+            //value an argument rather than an unassigned local.
+            //
+            //Seven sites in the game, most of them silent: `VectorExtensions::AddY` and `Mathr::Max` compile
+            //and score whole while computing with lanes nothing ever wrote.
+            if (held is null)
+            {
+                for (var i = 1; i < floats && held is null; i++)
+                    held = onTheStack ? LocalForSlot(method, slot + i * 4) : LocalForVector(method, first + i);
+
+                if (held is null)
+                    continue;
+
+                held.Name = parameter.ParameterName;
+                held.Type = type;
+            }
 
             for (var i = 0; i < floats; i++)
             {
