@@ -61,6 +61,7 @@ public partial class NewArmV8InstructionSet : Cpp2IlInstructionSet
     {
         // Is this correct (?)
         var operands = GetArgumentOperandsForCall(context);
+        Cpp2IL.Core.Analysis.ParametersOnTheStack.Place(operands, context);
         AddRuntimeMethodOperand(operands, context);
         return operands;
     }

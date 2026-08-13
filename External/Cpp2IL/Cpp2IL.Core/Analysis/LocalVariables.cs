@@ -272,6 +272,9 @@ public static partial class LocalVariables
             changed |= MetadataResolver.TrimResolvedCallArguments(method);
             changed |= MetadataResolver.FoldAddressArithmetic(method);
             changed |= MetadataResolver.ResolveFieldOffsets(method);
+            // Before the resolver: preparing a class answers with the class, so the call is a read of the
+            // runtime generic context and the resolver already knows how to type one of those.
+            changed |= ClassInitAnswersWithTheClass.Run(method);
             changed |= RgctxResolver.Run(method);
             changed |= Il2CppDefaultsTable.Run(method);
             changed |= ClassPointerDereference.Run(method);
