@@ -478,6 +478,12 @@ public static class ForkPipeline
         // the pass above and for the same reason: naming the slot in the argument is what gives it a reader.
         SlotAddressArgument.Run(method);
 
+        // Immediately after the two above, because they are what makes the copies exist: a value spilled to
+        // the frame and read back was a memory operand while the type fixpoint ran, so there was no copy for
+        // it to carry a type across, and the local on the receiving end of the read is still untyped however
+        // well the slot is known.
+        TypeAcrossANamedSlot.Run(method);
+
         LocalVariables.RemoveUnused(method);
 
         // Again, now that a receiver read from a field is the field itself rather than a copy of it: what
