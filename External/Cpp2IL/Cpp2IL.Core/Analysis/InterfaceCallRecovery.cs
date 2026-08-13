@@ -143,7 +143,9 @@ public static class InterfaceCallRecovery
 
                 //The thunk answers through the pointer it was handed and leaves x0 holding nothing, so the
                 //value is where that pointer went - and in a shared body it goes straight back out again.
-                InvokerThunk.FoldAnswerIntoTheReturn(method, instruction, answer);
+                //Where it does not, the body reads the buffer itself, and the call has to answer into it.
+                if (!InvokerThunk.FoldAnswerIntoTheReturn(method, instruction, answer))
+                    InvokerThunk.AnswerIntoTheSlotItNames(method, instruction, answer);
             }
             else
             {

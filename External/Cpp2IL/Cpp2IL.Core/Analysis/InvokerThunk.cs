@@ -131,13 +131,13 @@ public static class InvokerThunk
     /// Here nothing is touched unless the whole shape is present.
     /// </para>
     /// </remarks>
-    public static void FoldAnswerIntoTheReturn(MethodAnalysisContext method, Instruction call, object? answer)
+    public static bool FoldAnswerIntoTheReturn(MethodAnalysisContext method, Instruction call, object? answer)
     {
         if (answer is not LocalVariable buffer || method.AppContext.Binary is not LibCpp2IL.Elf.ElfFile binary)
-            return;
+            return false;
 
         if (method.Locals.FirstOrDefault(l => l.Name == ReturnBuffer) is not { } returned)
-            return;
+            return false;
 
         foreach (var copy in method.ControlFlowGraph!.Instructions)
         {
@@ -156,7 +156,83 @@ public static class InvokerThunk
 
             copy.OpCode = OpCode.Nop;
             copy.Operands = [];
+            return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Sends the answer to the slot the thunk was told to write, where the body reads it back from there.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A thunk returns nothing. It writes through the pointer in X4, so the register the call was lifted with
+    /// holds whatever was in X0 when the thunk returned - which is nothing anyone put there. Where the answer
+    /// buffer is a stack slot the body then reads, saying the call answers into <c>x0</c> leaves those reads
+    /// with no definition at all:
+    /// </para>
+    /// <code>
+    /// JsonUtility.FromJson&lt;WrapperArray&lt;T&gt;&gt;("{ \"array\": " + json + "}");  // answer thrown away
+    /// object obj = default(object);                                          // the slot, undefined
+    /// if (obj != null) { _ = "Unmanaged memory load: [stackaddr_-18+10]"; }   // and its field
+    /// </code>
+    /// <para>
+    /// Naming the slot as the call's destination puts the value where the reads look. The versions have to be
+    /// merged as well: the slot the call was handed and the slot the body reads are two locals wearing the
+    /// same register, because nothing wrote the slot between them for single assignment form to join.
+    /// </para>
+    /// <para>
+    /// The frame and the buffer are reused - <c>IDictionaryExtension::GetKeysByValue</c> writes the same one
+    /// five times - so the rewriting stops at the next thing that puts something in the same slot. Past that
+    /// the slot is a different value, and binding a read there to this call is the wrong-value failure this
+    /// whole pass exists to stop making.
+    /// </para>
+    /// <para>
+    /// Only where <see cref="FoldAnswerIntoTheReturn"/> did not already fold: there the answer goes straight
+    /// out through the method's own return buffer and the slot is not read at all.
+    /// </para>
+    /// </remarks>
+    public static void AnswerIntoTheSlotItNames(MethodAnalysisContext method, Instruction call, object? answer)
+    {
+        if (answer is not LocalVariable buffer || OutParameterWriteback.OffsetOfSlot(buffer.Register.Name) is null)
             return;
+
+        call.Operands[1] = buffer;
+
+        var instructions = method.ControlFlowGraph!.Instructions.ToList();
+        var after = instructions.IndexOf(call);
+
+        if (after < 0)
+            return;
+
+        for (var i = after + 1; i < instructions.Count; i++)
+        {
+            var later = instructions[i];
+
+            if (later.Operands.Count == 0)
+                continue;
+
+            //Something else has been put in the slot, so everything past here is about that value.
+            if (later.IsAssignment && later.Operands[0] is LocalVariable written
+                && written.Register.Name == buffer.Register.Name && !ReferenceEquals(written, buffer))
+            {
+                return;
+            }
+
+            for (var operand = later.OpCode == OpCode.Call ? 2 : 1; operand < later.Operands.Count; operand++)
+            {
+                if (later.Operands[operand] is LocalVariable read
+                    && read.Register.Name == buffer.Register.Name && !ReferenceEquals(read, buffer))
+                {
+                    later.Operands[operand] = buffer;
+                }
+                else if (later.Operands[operand] is MemoryOperand { Base: LocalVariable through } memory
+                    && through.Register.Name == buffer.Register.Name && !ReferenceEquals(through, buffer))
+                {
+                    later.Operands[operand] = new MemoryOperand(buffer, memory.Index, memory.Addend, memory.Scale);
+                }
+            }
         }
     }
 
