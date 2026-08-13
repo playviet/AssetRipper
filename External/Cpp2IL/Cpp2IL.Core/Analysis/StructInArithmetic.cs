@@ -88,13 +88,75 @@ public static class StructInArithmetic
                 changed = true;
 
                 //What an addition of numbers produces is a number, and saying so is what lets the addition
-                //after it be recognised at all.
-                if (instruction.Operands[0] is LocalVariable produced && produced.Type is null)
+                //after it be recognised at all. A destination already *called* a struct is the register's
+                //inherited name rather than the answer's type - see the loop below - and is replaced too.
+                if (instruction.Operands[0] is LocalVariable produced
+                    && (produced.Type is null || IsAStructOfNumbers(produced.Type)))
+                {
                     produced.Type = member.Path[^1].FieldType;
+                }
             }
         }
 
+        //And the same mistake with nothing to rewrite: both operands are already numbers and only the
+        //destination is called a struct. The first register of a homogeneous float struct is named with the
+        //*whole* struct so that a call reading it can be written, and every later instruction writing that
+        //register inherited the name - so `num = position.x * size` came out
+        //`Vector3 v = (Vector3)(position.x * size)`, and the statement went. Nothing writes a struct with an
+        //`Add`; whatever the register is called, the answer is the number its operands are.
+        foreach (var instruction in graph.Instructions)
+        {
+            //Floating point arithmetic only. A **bitwise** operation writing a struct-named register is how a
+            //small struct is *packed* - `num19 | (num18 << 32)` really is a `SubCellRef`, and calling that
+            //answer an `Int64` cost `BoardLogic` a whole body when this was written for every operator.
+            if (instruction.OpCode is not (OpCode.Add or OpCode.Subtract or OpCode.Multiply or OpCode.Divide or OpCode.Negate)
+                || instruction.Operands.Count < 2
+                || instruction.Operands[0] is not LocalVariable answer
+                || answer.Type is not { } called || !IsAStructOfNumbers(called))
+            {
+                continue;
+            }
+
+            TypeAnalysisContext? number = null;
+
+            for (var operand = 1; operand < instruction.Operands.Count; operand++)
+            {
+                if (Numeric(instruction.Operands[operand]) is not { } source)
+                {
+                    number = null;
+                    break;
+                }
+
+                number ??= source;
+            }
+
+            if (number is null)
+                continue;
+
+            answer.Type = number;
+            changed = true;
+        }
+
         return changed;
+    }
+
+    /// <summary>A value type that is not itself a number - which is what a register wrongly keeps.</summary>
+    private static bool IsAStructOfNumbers(TypeAnalysisContext type)
+        => type is { IsValueType: true, IsEnumType: false } && type.Namespace != nameof(System)
+            && type.Fields.Any(f => !f.IsStatic);
+
+    /// <summary>The floating point number an operand is, where it is one.</summary>
+    private static TypeAnalysisContext? Numeric(object operand)
+    {
+        var type = operand switch
+        {
+            LocalVariable local => local.Type,
+            NestedFieldReference nested => nested.Path[^1].FieldType,
+            FieldReference field => field.Field.FieldType,
+            _ => null,
+        };
+
+        return type is { Namespace: nameof(System), Name: "Single" or "Double" } ? type : null;
     }
 
     /// <summary>Whether one of the values this instruction reads is a plain number.</summary>
