@@ -80,7 +80,13 @@ public static class InvokerThunk
         for (var i = 0; i < callee.Parameters.Count; i++)
         {
             if (Reaching(made, call, frame.Base, frame.Offset + i * SlotWidth) is not { } slot)
+            {
+                if (Trace)
+                    System.Console.Error.WriteLine($"INVOKER   no store at {frame.Base.Name}+{frame.Offset + i * SlotWidth} "
+                        + $"for parameter {i} of {callee.Name}");
+
                 return null;
+            }
 
             //A reference travels in the slot; anything else travels as its address, and the value is where
             //that address points. A shared body's own T is always a reference - sharing is what makes it one.
