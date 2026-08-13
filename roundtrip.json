@@ -50,9 +50,9 @@
 2
 ],
 "Assembly-CSharp::Joystick::Start": [
-14,
+15,
 22,
-14
+15
 ],
 "Assembly-CSharp::Joystick::OnPointerDown": [
 5,
@@ -352,7 +352,7 @@
 "Assembly-CSharp::EpicToonFX.ETFXFireProjectile::Update": [
 17,
 26,
-18
+19
 ],
 "Assembly-CSharp::EpicToonFX.ETFXFireProjectile::Shoot": [
 0,
@@ -11155,9 +11155,9 @@
 2
 ],
 "Assembly-CSharp::CF.Cell::PlayDropEffect": [
-6,
+7,
 9,
-6
+7
 ],
 "Assembly-CSharp::CF.Cell::SetDropHighlight": [
 2,
@@ -11230,9 +11230,9 @@
 1
 ],
 "Assembly-CSharp::CF.CellDraggable::UpdateOverlayPosition": [
-8,
+9,
 12,
-8
+9
 ],
 "Assembly-CSharp::CF.CellDraggable::OnPointerUp": [
 1,
@@ -12625,9 +12625,9 @@
 7
 ],
 "Assembly-CSharp::CF.IngameMenu::SetupLayoutForTallPhone": [
-6,
+7,
 13,
-6
+7
 ],
 "Assembly-CSharp::CF.IngameMenu::RebuildTargetHUD": [
 7,
@@ -12715,7 +12715,7 @@
 6
 ],
 "Assembly-CSharp::CF.IngameMenu::CompleteAndRemoveSlot": [
-16,
+14,
 19,
 16
 ],
