@@ -267,6 +267,11 @@ public static class ForkPipeline
         // the resolution that would otherwise make the vtable read look like a field.
         VirtualMethodPointer.Run(method);
 
+        // And the same for a lambda inside a generic type, whose method the compiler cannot name at compile
+        // time and reads out of the runtime generic context. The resolver already works the entry out and
+        // writes it onto the local's *type*; the constructor needs it in the operand.
+        RgctxMethodPointer.Run(method);
+
         DelegateConstruction.Run(method);
 
         // A field whose address the compiler worked out into a register rather than leaving the offset in the
