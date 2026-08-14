@@ -884,6 +884,7 @@ public static partial class IlGenerator
         //The value is on the stack now, and an integer that is not the width of the place it is going to
         //makes the IL unverifiable - see ConvertToWidthOf in the fork.
         ConvertToWidthOf(instructions, operand, expectedType);
+        CountTheBoundaryCrossings(operand, expectedType);
     }
 
     /// <summary>

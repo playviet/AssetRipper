@@ -1532,14 +1532,23 @@ public static partial class IlGenerator
     /// <para>
     /// Only where both sides are a known fixed-width integer. A native integer is deliberately left alone -
     /// it is what an untyped value lowers to, so converting to or from one would be acting on the absence of
-    /// a type rather than on a type. And only a local, because the constants above already choose their own
-    /// width from the same question.
+    /// a type rather than on a type. Constants are left alone too, because the ones above already choose
+    /// their own width from the same question.
+    /// </para>
+    /// <para>
+    /// The source is asked through <see cref="TypeOfOperand"/> rather than being required to be a local.
+    /// A field and an array element state their width in the metadata just as flatly as a local's settled
+    /// type does - <c>Ldfld</c> of an <c>int</c> field leaves an I4 on the stack whatever the place it is
+    /// going to expects - and this is the same standard the narrowing rule below already asks of the
+    /// <em>destination</em>. Restricting it to locals left every field and element load unconverted, which
+    /// is what <b>242</b> of the decompiler's remaining notes are: 172 "Expected I4, but got I8" and 70 the
+    /// other way about.
     /// </para>
     /// </remarks>
     private static void ConvertToWidthOf(CilInstructionCollection instructions, object operand,
         TypeAnalysisContext? expectedType)
     {
-        if (expectedType is null || operand is not LocalVariable { Type: { } declared })
+        if (expectedType is null || TypeOfOperand(operand) is not { } declared)
             return;
 
         var from = StoredAs(declared);
@@ -1561,6 +1570,55 @@ public static partial class IlGenerator
         if (IsThirtyTwoBitInteger(to) && IsSixtyFourBitInteger(from) && !WasInferred(expectedType))
             instructions.Add(CilOpCodes.Conv_I4);
     }
+
+    /// <summary>
+    /// Counts, and does not act on, every value crossing the value/reference boundary at a load.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The largest family in the decompiler's own notes is a value meeting a reference - 443 say
+    /// "Expected O, but got &lt;a number&gt;" and 177 the other way about. The obvious emission is the one
+    /// the language uses, <c>box</c> one way and <c>unbox.any</c> the other, and it is <b>not obviously
+    /// right</b>: il2cpp always boxes through a call, so a site with no boxing call in the binary is one
+    /// where the analysis has mistyped something rather than one where a box was dropped. Boxing a local
+    /// that wears a bare <em>width</em> from a register move - which is most of them - would put a
+    /// pointer inside a boxed <c>long</c>, compile, and score whole.
+    /// </para>
+    /// <para>
+    /// So this only reports, under <c>BOXTRACE=1</c>, and the thing to read out of it is how many sites
+    /// have a source the metadata <em>states</em> (a field, an array element) against how many have a
+    /// local carrying a width. Three attempts at this family have already been spent guessing from the
+    /// analysis side; the counts decide whether there is a safe subset before anything is emitted.
+    /// </para>
+    /// </remarks>
+    private static void CountTheBoundaryCrossings(object operand, TypeAnalysisContext? expectedType)
+    {
+        if (!boxTrace || expectedType is null)
+            return;
+
+        var actual = TypeOfOperand(operand);
+        if (actual is null || LowersToNativeInt(expectedType) || LowersToNativeInt(actual))
+            return;
+
+        if (actual.IsValueType == expectedType.IsValueType)
+            return;
+
+        //Where the source type came from is the whole question, so say it: a field and an element are
+        //stated by the metadata, a local is whatever the fixpoint settled on.
+        var source = operand switch
+        {
+            FieldReference => "field",
+            MemoryOperand => "element",
+            LocalVariable => "local",
+            _ => operand.GetType().Name,
+        };
+
+        var direction = expectedType.IsValueType ? "unbox" : "box";
+        System.Console.Error.WriteLine(
+            $"BOX {direction} {source} {actual.FullName} -> {expectedType.FullName} in {CurrentContext?.DeclaringType?.Name}::{CurrentContext?.Name}");
+    }
+
+    private static readonly bool boxTrace = System.Environment.GetEnvironmentVariable("BOXTRACE") is not null;
 
     private static bool IsSixtyFourBitInteger(TypeAnalysisContext? type) =>
         StoredAs(type)?.Type is Il2CppTypeEnum.IL2CPP_TYPE_I8 or Il2CppTypeEnum.IL2CPP_TYPE_U8;
