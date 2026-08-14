@@ -1548,7 +1548,24 @@ public static partial class IlGenerator
     private static void ConvertToWidthOf(CilInstructionCollection instructions, object operand,
         TypeAnalysisContext? expectedType)
     {
-        if (expectedType is null || TypeOfOperand(operand) is not { } declared)
+        if (expectedType is null)
+            return;
+
+        //A constant chooses its own width where it is emitted, but only the 64-bit cases ask what the place
+        //expects: `int`, `uint`, `short`, `byte`, `bool` and the rest all emit `ldc.i4` whatever they are
+        //going into. A 32-bit constant meeting a 64-bit place is `Expected I8, but got I4`, and it is the
+        //whole of what was left of that note after a field's width was allowed to speak - four of them take
+        //`SegmentRuleEvaluator::Tokenize`'s entire `do` loop with them. Nothing here narrows: the emitter
+        //already did that where the value fits, so this only ever widens, which cannot lose anything.
+        if (EmittedAsThirtyTwoBits(operand, expectedType) is { } thirtyTwo)
+        {
+            if (thirtyTwo && IsSixtyFourBitInteger(expectedType))
+                instructions.Add(operand is uint ? CilOpCodes.Conv_U8 : CilOpCodes.Conv_I8);
+
+            return;
+        }
+
+        if (TypeOfOperand(operand) is not { } declared)
             return;
 
         var from = StoredAs(declared);
@@ -1619,6 +1636,26 @@ public static partial class IlGenerator
     }
 
     private static readonly bool boxTrace = System.Environment.GetEnvironmentVariable("BOXTRACE") is not null;
+
+    /// <summary>
+    /// Whether a constant operand reached the stack as a 32-bit value - <see langword="null"/> if it is not
+    /// an integer constant at all, and so has no width of this kind to answer with.
+    /// </summary>
+    /// <remarks>
+    /// This has to mirror what <c>LoadOperand</c> actually emitted rather than what the value nominally is,
+    /// or the answer is wrong in the one case that already asks the question: a <c>long</c> whose place
+    /// wants 32 bits is emitted as <c>ldc.i4</c>, and calling it 64-bit here would add a narrowing to a
+    /// value that is already narrow. A zero going somewhere a reference belongs became <c>ldnull</c>, which
+    /// is not an integer either - but its place is not a 64-bit integer, so it falls out of the widening
+    /// test on its own.
+    /// </remarks>
+    private static bool? EmittedAsThirtyTwoBits(object operand, TypeAnalysisContext? expectedType) => operand switch
+    {
+        long l => IsThirtyTwoBitInteger(expectedType) && l is >= int.MinValue and <= int.MaxValue,
+        ulong => false,
+        int or uint or short or ushort or byte or sbyte or bool or char => true,
+        _ => null,
+    };
 
     private static bool IsSixtyFourBitInteger(TypeAnalysisContext? type) =>
         StoredAs(type)?.Type is Il2CppTypeEnum.IL2CPP_TYPE_I8 or Il2CppTypeEnum.IL2CPP_TYPE_U8;
