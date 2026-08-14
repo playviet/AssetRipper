@@ -44,6 +44,13 @@ public partial class NewArmV8InstructionSet
 
     private static VectorLanes vectorLanes => threadVectorLanes ??= new VectorLanes();
 
+    /// <summary>The method <see cref="FrameIsStatic"/> last answered about, and what it answered.</summary>
+    [ThreadStatic]
+    private static ulong frameAnsweredFor;
+
+    [ThreadStatic]
+    private static bool frameAnswer;
+
 
     /// <summary>
     /// How far apart the two halves of a load or store pair are.
@@ -727,10 +734,12 @@ public partial class NewArmV8InstructionSet
     private static long Scaled(Arm64Instruction instruction, long offset)
     {
         //Only the scaled immediate form. `ldur`/`stur` carry a byte offset already, an offset held in a
-        //register is not scaled at all, and a pre- or post-indexed one is a byte count too.
+        //register is not scaled at all, and a pre- or post-indexed one is a byte count too - the remark said
+        //so all along but the test named only the pre-indexed half, so `ldr q0, [x8], #0x10` walked sixteen
+        //times as far as it should.
         if (instruction.Mnemonic is not (Arm64Mnemonic.LDR or Arm64Mnemonic.STR)
             || instruction.MemAddendReg != Arm64Register.INVALID
-            || instruction.MemIsPreIndexed
+            || instruction.MemIndexMode is Arm64MemoryIndexMode.PreIndex or Arm64MemoryIndexMode.PostIndex
             || instruction.Op0Reg is not (>= Arm64Register.V0 and <= Arm64Register.V31))
             return offset;
 
@@ -1495,6 +1504,148 @@ public partial class NewArmV8InstructionSet
         instruction.Op0Kind == Arm64OperandKind.Register && instruction.Op0Reg == Arm64Register.X31
         && instruction.Op1Kind == Arm64OperandKind.Register && instruction.Op1Reg == Arm64Register.X31
         && instruction.Op2Kind == Arm64OperandKind.Immediate;
+
+    /// <summary>
+    /// The frame opening or closing: a pre- or post-indexed access through the stack pointer, whose writeback
+    /// moves the frame and so has to become a <see cref="OpCode.ShiftStack"/> like any other move of SP.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <c>stp x29, x30, [sp, #-0x30]!</c> is how most prologues open and <c>ldp x29, x30, [sp], #0x30</c> is
+    /// how they close, and neither emitted a shift. Upstream's writeback branches are all guarded on
+    /// <c>ConvertOperand(...) is MemoryOperand</c>, and an SP base answers a <see cref="StackOffset"/>
+    /// instead - so the branch fell through and the move of the frame was dropped. Every slot named before
+    /// the first real shift is then normalised against a depth of nought, i.e. named as though the frame were
+    /// not yet open.
+    /// </para>
+    /// <para>
+    /// What that costs is not a marker. A method's <b>stacked incoming parameters</b> are named from the true
+    /// entry-relative offset by <see cref="Analysis.ParametersOnTheStack"/>, while the body reads them
+    /// through the frame - so with the frame short by the push amount the two names never meet, and
+    /// <c>HomogeneousFloatParameters.LocalForSlot</c>, which looks the parameter up by that exact name,
+    /// returns nothing and the parameter is dropped. `VectorExtensions::RotatePointAroundPivot(Vector3,
+    /// Vector3, Quaternion q)` reads `q` at <c>[sp+0x20]</c> behind a <c>str d10, [sp, #-0x20]!</c>, so it was
+    /// named <c>stack_20</c> against a parameter called <c>stack_0</c>, and the body recovered as
+    /// <c>(Quaternion)default(object) * ...</c>. Three parameters in Assembly-CSharp are this shape, and every
+    /// method that keeps its stacked parameter opens with <c>sub sp, sp, #N</c> instead.
+    /// </para>
+    /// <para>
+    /// <b>Both directions have to land together.</b> The pop is not merely unmodelled, it is wrong: the
+    /// disassembler reports a post-index writeback in <c>MemOffset</c> and the lifter read it as the access
+    /// offset, so the reload named a slot nothing wrote. Fixing only the push leaves that read at a depth of
+    /// <c>-N</c>, where its raw <c>N</c> normalises to <c>stack_0</c> - which is exactly the first stacked
+    /// parameter, turning inert garbage into a read of a real value.
+    /// </para>
+    /// <para>
+    /// The access itself is at offset nought either way: pre-indexed moves the pointer and then reads at it,
+    /// post-indexed reads at the pointer and then moves it. Only the order of the shift differs, and
+    /// <see cref="Analysis.StackAnalyzer"/> records an instruction's state <i>before</i> applying that
+    /// instruction's own shift, so emitting the shift first is what puts the moves that follow at the new
+    /// depth.
+    /// </para>
+    /// </remarks>
+    /// <summary>
+    /// Whether the method's frame moves only by amounts written into the instructions that move it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <c>mov sp, x29</c> and <c>mov sp, x23</c> - the frame pointer put back, and the stack pointer taken
+    /// from wherever an <c>alloca</c> left it - move SP by an amount no additive analysis can name, and
+    /// neither is modelled. In a method containing one, the depth is already wrong from that instruction on,
+    /// and the slot names either side of it line up only by luck.
+    /// </para>
+    /// <para>
+    /// <b>Measured.</b> Shifting the frame in those methods changes <i>which</i> pairs line up by luck, and at
+    /// 1.1.46 that was a net loss: the four generic extension files gained twenty-two <c>default(...)</c>
+    /// between them, <c>ArrayExtension::ResizeArray</c> turned <c>num4 = length</c> into <c>num4 = 0L</c> and
+    /// three frame-pointer stores became unmanaged-memory markers, against six recovered in
+    /// <c>VectorExtensions</c>, <c>ColorExtension</c> and <c>AssetLoader</c>. So the shift is applied only
+    /// where the frame can actually be followed; the rest waits on SP-from-a-register being modelled, which
+    /// is a dataflow change in <see cref="Analysis.StackAnalyzer"/> rather than a lifting one.
+    /// </para>
+    /// </remarks>
+    private static bool FrameIsStatic(MethodAnalysisContext method)
+    {
+        if (frameAnsweredFor == method.UnderlyingPointer && frameAnsweredFor != 0)
+            return frameAnswer;
+
+        frameAnsweredFor = method.UnderlyingPointer;
+        frameAnswer = true;
+
+        foreach (var instruction in NewArm64Utils.GetArm64MethodBodyAtVirtualAddress(method.AppContext.Binary, method.UnderlyingPointer))
+        {
+            //The stack pointer written from a register that is not itself the stack pointer.
+            if (instruction.Op0Kind == Arm64OperandKind.Register && instruction.Op0Reg == Arm64Register.X31
+                && instruction.Op1Kind == Arm64OperandKind.Register && instruction.Op1Reg != Arm64Register.X31
+                && instruction.Mnemonic is Arm64Mnemonic.ADD or Arm64Mnemonic.SUB or Arm64Mnemonic.MOV or Arm64Mnemonic.ORR)
+            {
+                frameAnswer = false;
+                break;
+            }
+        }
+
+        return frameAnswer;
+    }
+
+    private bool StackFrameWriteback(Arm64Instruction instruction, Action<OpCode, object[]> add)
+    {
+        if (currentMethod is not { } method || !FrameIsStatic(method))
+            return false;
+
+        var pair = instruction.Mnemonic is Arm64Mnemonic.STP or Arm64Mnemonic.LDP;
+
+        if ((pair ? instruction.Op2Kind : instruction.Op1Kind) != Arm64OperandKind.Memory
+            || instruction.MemBase != Arm64Register.X31
+            || instruction.MemAddendReg != Arm64Register.INVALID
+            || instruction.MemIndexMode is not (Arm64MemoryIndexMode.PreIndex or Arm64MemoryIndexMode.PostIndex))
+            return false;
+
+        var isLoad = instruction.Mnemonic is Arm64Mnemonic.LDP or Arm64Mnemonic.LDR or Arm64Mnemonic.LDRB
+            or Arm64Mnemonic.LDRH or Arm64Mnemonic.LDRSB or Arm64Mnemonic.LDRSH or Arm64Mnemonic.LDRSW
+            or Arm64Mnemonic.LDUR or Arm64Mnemonic.LDURB or Arm64Mnemonic.LDURH or Arm64Mnemonic.LDURSW;
+
+        var isStore = instruction.Mnemonic is Arm64Mnemonic.STP or Arm64Mnemonic.STR or Arm64Mnemonic.STRB
+            or Arm64Mnemonic.STRH or Arm64Mnemonic.STUR or Arm64Mnemonic.STURB or Arm64Mnemonic.STURH;
+
+        if (!isLoad && !isStore)
+            return false;
+
+        //Taken raw rather than through `Scaled`, which multiplies a 128-bit access's immediate by sixteen -
+        //`ldr v10, [sp], #0x20` closes RotatePointAroundPivot and was being read as a slot at 0x200.
+        var shift = (int)instruction.MemOffset;
+        var movesFirst = instruction.MemIndexMode == Arm64MemoryIndexMode.PreIndex;
+
+        if (movesFirst)
+            add(OpCode.ShiftStack, [shift]);
+
+        var second = pair ? PairElementSize(instruction.Op0Reg) : 0;
+
+        if (isStore)
+        {
+            add(OpCode.Move, [new StackOffset(0), ConvertStoredValue(instruction, 0)]);
+
+            if (pair)
+                add(OpCode.Move, [new StackOffset(second), ConvertStoredValue(instruction, 1)]);
+        }
+        else
+        {
+            //A register an ADRP put a page address in no longer holds one once it is loaded over.
+            adrpOffsets.Remove(instruction.Op0Reg);
+
+            add(OpCode.Move, [ConvertOperand(instruction, 0), new StackOffset(0)]);
+
+            if (pair)
+            {
+                adrpOffsets.Remove(instruction.Op1Reg);
+                add(OpCode.Move, [ConvertOperand(instruction, 1), new StackOffset(second)]);
+            }
+        }
+
+        if (!movesFirst)
+            add(OpCode.ShiftStack, [shift]);
+
+        return true;
+    }
 
     /// <summary>
     /// The value a store writes. It sits in operand 0, where <see cref="ConvertOperand"/> assumes a

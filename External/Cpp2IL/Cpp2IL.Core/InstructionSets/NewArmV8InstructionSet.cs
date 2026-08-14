@@ -229,6 +229,11 @@ public partial class NewArmV8InstructionSet : Cpp2IlInstructionSet
         if (vectorLanes.TryConvert(context, instruction, (opCode, operands) => Add(address, opCode, operands)))
             return;
 
+        //A push or pop through the stack pointer is the frame opening or closing, and its writeback moves the
+        //frame - see StackFrameWriteback. Ahead of the switch because four mnemonics share the one shape.
+        if (StackFrameWriteback(instruction, (opCode, operands) => Add(address, opCode, operands)))
+            return;
+
         switch (instruction.Mnemonic)
         {
             case Arm64Mnemonic.FMOV when instruction.Op1Kind == Arm64OperandKind.Immediate:
