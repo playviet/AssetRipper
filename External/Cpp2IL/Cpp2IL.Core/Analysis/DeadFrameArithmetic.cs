@@ -151,6 +151,21 @@ public static class DeadFrameArithmetic
                 yield return field.Local;
                 yield break;
 
+            //A struct of floats assembled for a call keeps its parts *inside* itself rather than beside it -
+            //`FloatStructAssembly.Reads` exists to say so - and it lives in this namespace rather than in
+            //ISIL, so the reflection fallback below, which is gated on the operand being an ISIL type, never
+            //reached it. Every part was therefore invisible to this pass: in `new Vector3(x, y, z)` the
+            //second and third components stay alive only because the call names them *again* as trailing
+            //operands, while the first, having no such second mention, was called dead and the arithmetic
+            //that computed it taken away. That is the whole of the lost-first-component family - **122 of
+            //its 124 sites game-wide are argument nought of a vector constructor**, and `SubCellVisual`
+            //assigns `_leftEyeScale * k` and gets `new Vector3(default(float), y, z)`.
+            case FloatStructAssembly assembly:
+                foreach (var part in assembly.Reads())
+                    yield return part;
+
+                yield break;
+
             //Everything else that can hold a value is an operand wrapper and lives beside these; a constant,
             //a type, a method or a block holds nothing this pass cares about.
             default:
