@@ -878,11 +878,19 @@ public partial class NewArmV8InstructionSet
         try
         {
             var read = 0;
+            var carried = false;
             var holding = new HashSet<Arm64Register> { register };
 
             foreach (var instruction in Utils.NewArm64Utils.GetArm64MethodBodyAtVirtualAddress(binary, context.UnderlyingPointer))
             {
-                if (++read > 40)
+                //Forty instructions is enough where the value is read out of the register it arrived in. Once a
+                //copy has carried it into a callee-saved one the body is deliberately keeping it across
+                //something long: `ScriptableObjectConfig<T>::get_E` saves it at instruction 4, runs eleven
+                //`il2cpp_codegen_runtime_class_init` pairs, and reads it at **42** - two past this bound, which
+                //cost the accessor its entire body and 25 unmanaged markers, `GoogleDesignConfigSo<S,T>::get_E`
+                //another 25. The copy is what tells the two apart, so it is what widens the window; `holding`
+                //emptying still ends the scan wherever the value is genuinely gone.
+                if (++read > (carried ? 128 : 40))
                     return false;
 
                 if (instruction.Mnemonic == Arm64Mnemonic.LDR && holding.Contains(instruction.MemBase)
@@ -898,6 +906,7 @@ public partial class NewArmV8InstructionSet
                     && instruction.Op0Reg != Arm64Register.INVALID)
                 {
                     holding.Add(instruction.Op0Reg);
+                    carried = true;
                     continue;
                 }
 
