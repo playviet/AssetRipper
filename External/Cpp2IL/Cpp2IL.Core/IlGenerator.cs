@@ -78,7 +78,7 @@ public static partial class IlGenerator
 
             // Use object if type couldn't be determined
             if (local.Type != null)
-                ilType = local.Type.ToTypeSignature(module);
+                ilType = ContextToTypeSignature.LocalTypeSignature(local.Type, context, module);
             else
                 ilType = module.CorLibTypeFactory.Object;
 

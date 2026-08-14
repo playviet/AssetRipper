@@ -401,6 +401,13 @@ public static class ForkPipeline
         // name. `shape.Name()` becoming a real call is what makes `text._stringLength` a field reference,
         // and by then the chance to call it `Length` had gone: the statement did not compile and was lost.
         InaccessibleFieldRecovery.Run(method);
+
+        // A big struct is answered through the buffer the caller points x8 at, and nothing comes back in x0 -
+        // so the return the lifter built names a register the method never wrote, and the four `RuleValue`
+        // factories all answered `default` beside a buffer they had filled correctly. Last of all, because it
+        // only acts where *nothing* assigns that register and every pass above is one that could still have
+        // made it so; and inside this hook rather than the next, so the local it stops returning is dropped.
+        IndirectReturnBuffer.Run(method);
     }
 
     /// <summary>Runs last of all, on the copies the passes before it leave behind.</summary>

@@ -1321,10 +1321,21 @@ internal static partial class InvalidSourceRepair
 					? System.IO.Path.GetFileName(found.Path)
 					: "?";
 
+				//And the line itself, as a fourth field. The line numbers are the ones this compilation saw,
+				//and the repair renames and comments afterwards, so reading them back off the exported file
+				//shows a different statement - which has already cost one wrong conclusion. Carrying the text
+				//along is the only reading of it that stays true.
+				string said = diagnostic.Location.SourceTree is { } from
+					&& diagnostic.Location.GetLineSpan().StartLinePosition.Line is int at
+					&& at < from.GetText().Lines.Count
+					? from.GetText().Lines[at].ToString().Trim()
+					: "";
+
 				text.Append(diagnostic.Id).Append('\t')
 					.Append(where).Append(':')
 					.Append(diagnostic.Location.GetLineSpan().StartLinePosition.Line + 1).Append('\t')
-					.Append(diagnostic.GetMessage()).Append('\n');
+					.Append(diagnostic.GetMessage()).Append('\t')
+					.Append(said).Append('\n');
 			}
 		}
 

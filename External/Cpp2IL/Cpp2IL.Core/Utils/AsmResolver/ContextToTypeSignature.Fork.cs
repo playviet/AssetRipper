@@ -14,6 +14,30 @@ namespace Cpp2IL.Core.Utils.AsmResolver;
 public static partial class ContextToTypeSignature
 {
     /// <summary>
+    /// The signature to declare a local with, where a copy of <c>this</c> is typed as the generic type
+    /// declaring the method.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A method of a generic type is compiled against the <b>definition</b>, so a local holding a copy of
+    /// <c>this</c> is typed as the definition too - and importing that names an <b>unbound</b> generic:
+    /// <c>&lt;FromNewlineDelimitedJson&gt;d__2&lt;&gt;</c>, which C# allows only inside <c>typeof</c>. The
+    /// declaration does not compile, so it and every statement reading the copy were commented out - four
+    /// statements and the whole loop around them in <c>JsonExtension</c>'s iterator.
+    /// </para>
+    /// <para>
+    /// Instantiating the type over its <b>own</b> parameters is what the type is called inside its own body:
+    /// <c>!0</c> there is the very parameter the method is compiled against, so this is not a guess. It is
+    /// asked only of the method's own declaring type, which is the one place that is certain - a local typed
+    /// as some other open definition would be naming somebody else's parameter.
+    /// </para>
+    /// </remarks>
+    internal static TypeSignature LocalTypeSignature(TypeAnalysisContext type, MethodAnalysisContext method, ModuleDefinition module)
+        => ReferenceEquals(type, method.DeclaringType) && type is not ReferencedTypeAnalysisContext && type.GenericParameters.Count > 0
+            ? type.MakeGenericInstanceType(type.GenericParameters).ToTypeSignature(module)
+            : type.ToTypeSignature(module);
+
+    /// <summary>
     /// What one of il2cpp's shared-generic enum stand-ins is stored as, where the type is one of them.
     /// </summary>
     /// <remarks>

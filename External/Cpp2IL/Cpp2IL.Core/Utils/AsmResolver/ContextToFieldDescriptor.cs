@@ -4,7 +4,7 @@ using Cpp2IL.Core.Model.Contexts;
 
 namespace Cpp2IL.Core.Utils.AsmResolver;
 
-public static class ContextToFieldDescriptor
+public static partial class ContextToFieldDescriptor
 {
     private static FieldDefinition GetFieldDefinition(this FieldAnalysisContext context)
     {
@@ -20,7 +20,7 @@ public static class ContextToFieldDescriptor
     {
         return context is ConcreteGenericFieldAnalysisContext concreteField
             ? concreteField.ToFieldDescriptor(parentModule)
-            : parentModule.DefaultImporter.ImportField(context.GetFieldDefinition());
+            : ImportBoundToItsOwner(context, parentModule);
     }
 
     public static IFieldDescriptor ToFieldDescriptor(this ConcreteGenericFieldAnalysisContext context, ModuleDefinition parentModule)

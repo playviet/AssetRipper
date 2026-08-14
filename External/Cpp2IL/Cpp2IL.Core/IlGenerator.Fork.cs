@@ -1967,6 +1967,13 @@ public static partial class IlGenerator
         if (ReferenceEquals(valueType, returnType))
             return true;
 
+        //A method that answers through the buffer its caller passed holds that buffer as a reference to the
+        //return type - that is what turns the stores into it into fields - and the local emitter writes a
+        //local typed as a managed reference out as the thing it points at, since there is no ldloca in what
+        //this generates. So a `T&` here is already a `T` by the time the return loads it.
+        if (valueType is ByRefTypeAnalysisContext { ElementType: { } pointee } && pointee.FullName == returnType.FullName)
+            return true;
+
         //A reference where a value type is expected is the receiver left in x0 by a body that was not recovered, and
         //one struct where another is expected is whatever else was in the register. Only a number standing in for
         //another number is worth keeping, since the conversion between them is real.
