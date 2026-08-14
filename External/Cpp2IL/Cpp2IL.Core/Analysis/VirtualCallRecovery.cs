@@ -53,10 +53,13 @@ public static class VirtualCallRecovery
 
             //The class comes out of the object's header, which is at offset zero. Anything else is not
             //this shape - an interface call reaches its method through the interface offset table.
-            if (ReadOf(runtimeClass, definitions) is not { Addend: 0, Base: LocalVariable receiver } || receiver.Type is null)
+            if (ReadOf(runtimeClass, definitions) is not { Addend: 0, Base: LocalVariable receiver })
                 continue;
 
-            if (FindSlot(receiver.Type, slot) is not { } callee || callee.IsStatic)
+            if (SlotOwner(receiver, slot, method.AppContext) is not { } owner)
+                continue;
+
+            if (FindSlot(owner, slot) is not { } callee || callee.IsStatic)
                 continue;
 
             //The call was handed every register an argument could have come in, because nothing was known
@@ -102,6 +105,39 @@ public static class VirtualCallRecovery
     /// The method occupying a vtable slot of a type. A slot is filled by whichever type in the hierarchy
     /// last overrode it, so the search starts at the receiver's own type and walks up.
     /// </summary>
+    /// <summary>
+    /// The type whose vtable answers this slot for a given receiver.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Two receivers that carry the answer anyway were being refused. A <b>by-reference</b> one is the value
+    /// it points at - a method called on <c>ref x</c> reaches the same vtable as one called on <c>x</c> - and
+    /// three sites are that shape (<c>InstallReferrerManager::PopulateMeta</c> twice on a <c>JToken&amp;</c>,
+    /// <c>TrackingManager::InjectParamCounts</c> on an <c>Object&amp;</c>).
+    /// </para>
+    /// <para>
+    /// And a receiver with <b>no type at all</b> - read back from a frame slot or an array element - still
+    /// answers the first four slots, because those are <c>System.Object</c>'s and every class in the program
+    /// has them in the same places. <c>+0x168</c> is slot 3, <c>ToString</c>, and five of these sites are it:
+    /// <c>AdjustTracking::GetAndroidId</c>, <c>FacebookTracking::ToFbParams</c>,
+    /// <c>FirebaseTracking::ToParams</c>, <c>Logger::PrintColorMapping</c>.
+    /// </para>
+    /// <para>
+    /// <b>Naming the base declaration is not a guess.</b> The instruction is a <c>callvirt</c> either way, so
+    /// dispatch still finds the override at run time; what is written down is the declaration the call was
+    /// made through, which is what the source said. The alternative is no call at all, and the arguments and
+    /// the result going with it.
+    /// </para>
+    /// </remarks>
+    private static TypeAnalysisContext? SlotOwner(LocalVariable receiver, int slot, ApplicationAnalysisContext application)
+    {
+        if (receiver.Type is ByRefTypeAnalysisContext { ElementType: { } pointedAt })
+            return pointedAt;
+
+        //Above the fallback, so a receiver that knows its own type always answers with it.
+        return receiver.Type ?? (slot < 4 ? application.SystemTypes.SystemObjectType : null);
+    }
+
     private static MethodAnalysisContext? FindSlot(TypeAnalysisContext type, int slot)
     {
         for (var current = type; current is not null; current = BaseOf(current))
