@@ -484,6 +484,16 @@ public static class ForkPipeline
         // well the slot is known.
         TypeAcrossANamedSlot.Run(method);
 
+        // And the runtime context read out of a `MethodInfo` that only became one on the line above. The
+        // resolver ran inside the type fixpoint, where a `methodInfo` spilled to the frame and read back was
+        // a memory operand carrying nothing, so every step of the chain behind it - klass, rgctx_data, the
+        // entry, its fields - stayed untyped for the whole of the method. That is the whole of
+        // `<FromNewlineDelimitedJson>d__2::MoveNext`, whose twelve field accesses are reached that way.
+        // To a fixpoint because each step types the base the next one reads through.
+        for (var again = 0; again < 8 && RgctxResolver.Run(method); again++)
+        {
+        }
+
         // And a base that has only just been given a type still reads its members as distances. The resolver
         // is monotone and only replaces an operand nothing has resolved, so asking it again here costs the
         // sites it already did and answers the ones that had no type when it ran inside the fixpoint.
@@ -652,8 +662,10 @@ public static class ForkPipeline
         ConstantBranchFolding.Run(method);
         UnreachableBlockRemover.Run(method);
 
-        // Before the two below: turning the helper into an addition is what gives the field recovery below
-        // something it can name, and what makes the class read and the step behind it dead.
+        // A field looked up through the runtime's own `FieldInfo` is still that field, and the step from
+        // `klass->fields` says which one. Late, because the class pointer has to be named for the step to
+        // mean anything - and after the folding above, which is what leaves the read and the step as one
+        // addition.
         FieldFromItsRuntimeInfo.Run(method);
 
         // Before the collection below, which is what actually takes the size read, the rounding and the
