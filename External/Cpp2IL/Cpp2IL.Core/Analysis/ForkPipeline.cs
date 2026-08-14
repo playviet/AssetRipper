@@ -26,6 +26,14 @@ public static class ForkPipeline
         // put in the slot beforehand has already been propagated into the read after the call, and the two
         // are the same constant.
         OutParameterWriteback.Run(method);
+
+        // Here because this is the last place the evidence exists: nothing in the caller reads the outgoing
+        // argument area, so the first run of `DeadCodeEliminator` - the next thing to happen after this hook -
+        // removes the stores that put a stacked struct of floats there. A direct call's callee is resolvable
+        // here because the lifter looked it up to lay the operands out in the first place, and substituting
+        // before single assignment form is built is what lets the value be versioned and kept alive like any
+        // other. After the two above, which are about slots this never looks at.
+        StackedFloatArgument.Run(method);
     }
 
     /// <summary>Runs where locals have just been given their types and fields.</summary>
@@ -111,6 +119,13 @@ public static class ForkPipeline
         // type fixpoint at the end of this method, so that a field's type travels through the arithmetic it
         // takes part in.
         HomogeneousFloatParameters.Run(method);
+
+        // And the lanes the pass above will not name, because the only thing that reads them is a call and a
+        // call computes nothing. Here rather than inside it: which registers a call's arguments really occupy
+        // is the callee's signature, not this method's, and the run of eight ends in a different place on
+        // each side. `DrawCross` forwards `spot.z` straight into `Debug.DrawRay` and had nothing but a
+        // `default(object)` to pass.
+        ParameterLaneAtACall.Run(method);
 
         // And directly after it, because it is what names these: the first register of a struct of floats is
         // named as the whole struct while the ones after it are named as the fields they hold, so an addition

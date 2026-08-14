@@ -59,17 +59,7 @@ public static class HomogeneousFloatParameters
 
         var overwrittenBefore = OverwrittenBefore(method.ControlFlowGraph.Blocks);
 
-        //Every register single assignment form gave more than one version.
-        var renamed = new HashSet<int>();
-        var seen = new Dictionary<int, int>();
-
-        foreach (var local in method.Locals)
-        {
-            if (seen.TryGetValue(local.Register.Number, out var version) && version != local.Register.Version)
-                renamed.Add(local.Register.Number);
-            else
-                seen[local.Register.Number] = local.Register.Version;
-        }
+        var renamed = RenamedRegisters(method);
 
         foreach (var block in method.ControlFlowGraph.Blocks)
         {
@@ -137,10 +127,27 @@ public static class HomogeneousFloatParameters
         }
     }
 
+    /// <summary>Every register single assignment form gave more than one version.</summary>
+    internal static HashSet<int> RenamedRegisters(MethodAnalysisContext method)
+    {
+        var renamed = new HashSet<int>();
+        var seen = new Dictionary<int, int>();
+
+        foreach (var local in method.Locals)
+        {
+            if (seen.TryGetValue(local.Register.Number, out var version) && version != local.Register.Version)
+                renamed.Add(local.Register.Number);
+            else
+                seen[local.Register.Number] = local.Register.Version;
+        }
+
+        return renamed;
+    }
+
     /// <summary>
     /// How many vector registers a call fills with its answer, which is one per field of a struct of floats.
     /// </summary>
-    private static int ReturnedInVectorRegisters(Instruction instruction)
+    internal static int ReturnedInVectorRegisters(Instruction instruction)
         => instruction.IsCall && instruction.Operands.Count > 0
             && instruction.Operands[0] is MethodAnalysisContext callee
             && HomogeneousFloatStruct.Count(callee.ReturnType) is { } floats and > 1
@@ -156,7 +163,7 @@ public static class HomogeneousFloatParameters
     /// safe direction. Run to a fixpoint so a call anywhere in a loop covers the whole loop, including the
     /// blocks above it that the back edge reaches.
     /// </remarks>
-    private static Dictionary<Block, int> OverwrittenBefore(List<Block> blocks)
+    internal static Dictionary<Block, int> OverwrittenBefore(List<Block> blocks)
     {
         var within = blocks.ToDictionary(block => block,
             block => block.Instructions.Count == 0 ? 0 : block.Instructions.Max(ReturnedInVectorRegisters));
@@ -192,7 +199,7 @@ public static class HomogeneousFloatParameters
     /// The entry value of each vector register a float struct was passed in, and which field of which
     /// parameter it holds.
     /// </summary>
-    private static Dictionary<LocalVariable,
+    internal static Dictionary<LocalVariable,
         (FieldAnalysisContext Field, LocalVariable Struct, int Offset, int Register)>
         FieldsByRegister(MethodAnalysisContext method)
     {
