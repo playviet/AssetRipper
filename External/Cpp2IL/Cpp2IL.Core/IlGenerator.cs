@@ -449,7 +449,9 @@ public static partial class IlGenerator
                     //verifiable IL and reads back as a pointer to a managed type, which C# does not have.
                     if (targetMethod.DeclaringType is { IsValueType: true } valueType)
                     {
-                        if (!TryLoadFieldAddress(receiver, method, locals, module))
+                        if (!TryLoadFieldAddress(receiver, method, locals, module)
+                            //A parameter has an address of its own - see LoadAddressOfArgument.
+                            && !LoadAddressOfArgument(receiver, valueType.ToTypeSignature(module), method))
                         instructions.Add(CilOpCodes.Ldloca, ReceiverLocal(receiver, valueType.ToTypeSignature(module), method, locals));
                     }
                     else if (receiver != null)
@@ -481,7 +483,9 @@ public static partial class IlGenerator
                     if (parameterType is ByRefTypeAnalysisContext byReference)
                     {
                         if (!TryLoadByRefParameter(argument, method) //This method's own by-ref is the address.
-                            && !TryLoadFieldAddress(argument, method, locals, module))
+                            && !TryLoadFieldAddress(argument, method, locals, module)
+                            //A parameter has an address of its own - see LoadAddressOfArgument.
+                            && !LoadAddressOfArgument(argument, byReference.ElementType.ToTypeSignature(module), method))
                         instructions.Add(CilOpCodes.Ldloca, ScratchLocal(argument, byReference.ElementType.ToTypeSignature(module), method, locals));
                         continue;
                     }

@@ -1751,6 +1751,57 @@ public static partial class IlGenerator
         return true;
     }
 
+    /// <summary>
+    /// The address of a value that already has a place of its own, for a call that needs one.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Calling a method on a value type, or passing one by reference, takes an address, and
+    /// <see cref="ScratchLocal"/> answers with a local it has just minted whenever the operand is not among
+    /// <c>locals</c>. <b>Nothing ever stores the operand into that local</b>, so the callee is handed a place
+    /// holding whatever the type's default is. A <b>parameter</b> is never among <c>locals</c> - it lives in
+    /// <c>method.Parameters</c> - so every call on a value-type parameter went this way:
+    /// </para>
+    /// <code>
+    /// CoinButton::OnCoinChanged     source: coinText.text = coin.ToString();
+    ///   ISIL (already correct):     Call Int32.ToString, v21 @ X0_v2 (String), coin @ X1 (Int32)
+    ///   emitted:                    int num = default(int); textMeshProUGUI.text = num.ToString();
+    /// </code>
+    /// <para>
+    /// <c>ldarga</c> is the address of the argument itself rather than of a copy nothing wrote, which is both
+    /// valid and true. 44 sites across 37 methods, every one of them scoring <c>full</c> while calling a
+    /// method on a default value - the analysis was right the whole time and only the emission was wrong.
+    /// </para>
+    /// <para>
+    /// The type has to match exactly. An address is typed, and handing a <c>T&amp;</c> where a <c>U&amp;</c>
+    /// is expected is unverifiable in a way the value case is not - which is why this answers false rather
+    /// than guessing, leaving the existing scratch local to be minted as before.
+    /// </para>
+    /// </remarks>
+    private static bool LoadAddressOfArgument(object? operand, TypeSignature wanted, MethodDefinition method)
+    {
+        if (operand is not LocalVariable local)
+            return false;
+
+        var instructions = method.CilMethodBody!.Instructions;
+
+        //`this` inside a value type's own method is already a managed pointer to the value. Only there: in a
+        //reference type's method argument nought is the object, not an address.
+        if (local.IsThis && method.DeclaringType is { IsValueType: true } declaring
+            && declaring.ToTypeSignature().FullName == wanted.FullName)
+        {
+            instructions.Add(CilOpCodes.Ldarg_0);
+            return true;
+        }
+
+        if (method.Parameters.FirstOrDefault(p => p.Name == local.Name) is not { } parameter
+            || parameter.ParameterType?.FullName != wanted.FullName)
+            return false;
+
+        instructions.Add(CilOpCodes.Ldarga, parameter);
+        return true;
+    }
+
     /// <summary>The local a value type's method is called on, where that local is a real place on the stack.</summary>
     /// <remarks>
     /// <para>
