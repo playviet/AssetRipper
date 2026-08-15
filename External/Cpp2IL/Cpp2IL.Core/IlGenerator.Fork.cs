@@ -1367,7 +1367,9 @@ public static partial class IlGenerator
     }
 
     private static TypeAnalysisContext? ZeroValueOf(TypeAnalysisContext? expected, object operand)
-        => expected is { IsValueType: true } && !IsNumeric(expected) && !LowersToNativeInt(expected) && IsZeroConstant(operand)
+        => (expected is { IsValueType: true } && !IsNumeric(expected) && !LowersToNativeInt(expected)
+                || expected is GenericParameterTypeAnalysisContext)
+            && IsZeroConstant(operand)
             ? expected
             : null;
 
@@ -1390,7 +1392,13 @@ public static partial class IlGenerator
         //Zero is what a cleared register holds, and in a struct it means an empty one - `(Dictionary<int,
         //object>.Enumerator)0L` is not C#, so the declaration is dropped and every statement using the local
         //goes with it.
-        if (type is { IsValueType: true } && IsZeroConstant(value) && !IsNumeric(type) && !LowersToNativeInt(type))
+        //A type parameter belongs here too, and only here: unconstrained, `T` is neither a reference nor a
+        //value type to the language, so neither a nought nor `null` can be written where one belongs -
+        //`W val4 = (W)0;` and `W val4 = null;` are both refused. `default(T)` is what the cleared register
+        //holds under either instantiation, and `initobj` is how the runtime says it.
+        if ((type is { IsValueType: true } && !IsNumeric(type) && !LowersToNativeInt(type)
+                || type is GenericParameterTypeAnalysisContext)
+            && IsZeroConstant(value))
         {
             var module = method.DeclaringModule!;
             AddDefaultValue(method.CilMethodBody!.Instructions, type, module, module.DefaultImporter!);
@@ -2041,7 +2049,10 @@ public static partial class IlGenerator
                 return;
         }
 
-        if (signature.IsValueType)
+        //`initobj` for a type parameter as well as for a struct: it is the one form that means the same thing
+        //under a reference instantiation and a value one, which is exactly why the language spells
+        //`default(T)` that way and refuses both `null` and `0`.
+        if (signature.IsValueType || signature.ElementType is ElementType.Var or ElementType.MVar)
         {
             var local = new CilLocalVariable(signature);
             instructions.Owner.LocalVariables.Add(local);

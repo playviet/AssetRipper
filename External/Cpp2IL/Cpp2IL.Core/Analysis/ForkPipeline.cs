@@ -652,6 +652,11 @@ public static class ForkPipeline
 
         StandInCopyType.Run(method);
 
+        // And where it declined, the copy itself is what is wrong. A register carrying a `MethodInfo*` on
+        // one edge and an array on the next is two values, not one; `SsaForm` states that rule already but
+        // asks before either end has a type. Directly after the pass above, which has first refusal.
+        StandInEdgeCopy.Run(method);
+
         // And once more on what that just named. A read at 0x18 of an array is its length and a read at
         // 0x20 plus a scaled index is an element, and both are decided from the type the base carries - so a
         // base that only became an array on the line above was refused when the pass ran the first time.

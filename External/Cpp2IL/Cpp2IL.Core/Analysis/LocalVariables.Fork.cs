@@ -121,8 +121,105 @@ public static partial class LocalVariables
             return true;
         }
 
+        //The same argument for a reference, which is the case the remark above says was never the problem.
+        //A call whose address was not yet resolved leaves its answer typed by the width of the register it
+        //came back in, and `MetadataResolver` names the callee afterwards - so by the time the fixpoint runs
+        //again the signature is there and the width has nothing to recommend it. `EqualityComparer<W>.Default`
+        //read out of static storage came out `long num10`, and every later use of it was then a cast between
+        //unrelated types that could not be written down.
+        //Unlike a small struct arriving where an integer was expected, a reference is pointer-sized: nothing
+        //about how the value travels changes, only what may be read off it.
+        //`System.Int32` is deliberately not admitted here, though a reference is eight bytes and cannot be in
+        //a `w` register. Tried at 1.3.21 and reverted: `AdMobAds::OnAdLoaded` turned
+        //`if ((array2.Length & 0xFFFFFFFCL) != 0)` into a test on a `default(bool)` that can never be taken,
+        //because the four-byte name was right and it was the reference that was wrong. A four byte width is a
+        //statement about a number; only the eight byte ones are a guess about a register.
+        if (IsOnlyAWidth(value.Type) && IsANamedReference(produced))
+        {
+            value.Type = produced;
+            return true;
+        }
+
+        //And the same argument between two instantiations of one generic. A shared body names its arguments
+        //by stand-ins - `object` for every reference - so a call resolved by address answers with
+        //`TaskAwaiter<object>` where the state machine's own field says `TaskAwaiter<T>`, and the copy between
+        //the two is a cast the language will not write. The side that names its arguments is the better
+        //answer, and this only ever moves a stand-in towards a name, never the other way.
+        if (value.Type is GenericInstanceTypeAnalysisContext held
+            && produced is GenericInstanceTypeAnalysisContext given
+            && held.GenericType.FullName == given.GenericType.FullName
+            && NamesWhereTheOtherStandsIn(held, given))
+        {
+            value.Type = produced;
+            return true;
+        }
+
         return false;
     }
+
+    /// <summary>
+    /// Whether <paramref name="given"/> is the same instantiation as <paramref name="held"/> with a real type
+    /// argument in at least one place <paramref name="held"/> only has a stand-in, and nothing else differs.
+    /// </summary>
+    /// <remarks>
+    /// Asked of the arguments themselves and no deeper. Recursing into *their* arguments - so that
+    /// `List&lt;KeyValuePair&lt;object, object&gt;&gt;` is read as the shared form of
+    /// `List&lt;KeyValuePair&lt;string, Dictionary&lt;string, object&gt;&gt;&gt;` - was built at 1.3.22 and
+    /// measured byte-identical over all 533 files. Nothing in this game reaches a nested instantiation by a
+    /// route this pass sees.
+    /// </remarks>
+    private static bool NamesWhereTheOtherStandsIn(GenericInstanceTypeAnalysisContext held,
+        GenericInstanceTypeAnalysisContext given)
+    {
+        if (held.GenericArguments.Count != given.GenericArguments.Count)
+            return false;
+
+        var sharper = false;
+
+        for (var i = 0; i < held.GenericArguments.Count; i++)
+        {
+            var mine = held.GenericArguments[i];
+            var theirs = given.GenericArguments[i];
+
+            if (mine.FullName == theirs.FullName)
+                continue;
+
+            //Every difference has to be this one thing, or the two are simply different types.
+            if (!IsASharedStandIn(mine) || IsASharedStandIn(theirs))
+                return false;
+
+            sharper = true;
+        }
+
+        return sharper;
+    }
+
+    /// <summary>
+    /// Whether a type argument is one of the placeholders a shared generic body records its arguments as -
+    /// <c>object</c> for every reference, and an <c>*Enum</c> for every enum of that width.
+    /// </summary>
+    private static bool IsASharedStandIn(TypeAnalysisContext argument)
+        => argument.FullName is "System.Object" or "System.SByteEnum" or "System.ByteEnum"
+            or "System.Int16Enum" or "System.UInt16Enum" or "System.Int32Enum" or "System.UInt32Enum"
+            or "System.Int64Enum" or "System.UInt64Enum";
+
+    /// <summary>
+    /// Whether a type is a reference the program itself names, and so says more than a register width does.
+    /// </summary>
+    /// <remarks>
+    /// <c>System.Object</c> is excluded because it is what a signature says when it has nothing to say -
+    /// see the note on <c>SetTypeFromParameter</c>, where letting it overrule a width oscillated. A generic
+    /// parameter is excluded because a shared body's <c>T</c> is a stand-in rather than a type; pointers and
+    /// byrefs because those really are integers; and the runtime's own structures because managed code never
+    /// holds one.
+    /// </remarks>
+    private static bool IsANamedReference(TypeAnalysisContext produced)
+        => !produced.IsValueType
+            && produced.FullName is not "System.Object"
+            && produced is not GenericParameterTypeAnalysisContext
+                and not PointerTypeAnalysisContext
+                and not ByRefTypeAnalysisContext
+            && !IsRuntimeStandIn(produced);
 
     /// <summary>
     /// Whether a type is no more than the width of the register a value was loaded into.

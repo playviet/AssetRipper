@@ -482,12 +482,16 @@ public static partial class LocalVariables
 
         // Move local, field: a field load types its result with the field's type. This is the edge
         // that lets the loaded value go on to be the base of a further field access.
+        // A field is a declaration as much as a return type is, so it also overrules a bare width - see
+        // SharpenFromReturn in the fork.
         if (destination is LocalVariable loadDest && source is FieldReference loadField)
-            return SetTypeIfUnknown(loadDest, loadField.Field.FieldType);
+            return SetTypeIfUnknown(loadDest, loadField.Field.FieldType)
+                | SharpenFromReturn(loadDest, loadField.Field.FieldType);
 
         // Move field, local: a field store types the stored value with the field's type.
         if (destination is FieldReference storeField && source is LocalVariable storeSource)
-            return SetTypeIfUnknown(storeSource, storeField.Field.FieldType);
+            return SetTypeIfUnknown(storeSource, storeField.Field.FieldType)
+                | SharpenFromReturn(storeSource, storeField.Field.FieldType);
 
         return false;
     }
