@@ -174,4 +174,30 @@ Three changes in `ArrayElementAddress`, all one idea:
 Two reads that returned a literal nought now return the value, and the one that was reading element `i*12`
 of a three-element array now reads element `i`. Five ILSpy notes went with them.
 
+## 1.8.6 — export 496 — rest the address on the local that already holds the read — **KEPT**
+
+The other half of `FieldAddressBase`. Copy propagation puts an array element straight into an addition —
+`Add v482, [words + 0x20 + i*8], 16` — and both field passes want a local of a known type on the left, so
+the chain is refused and the address is written out as `words[i] + 16L`. The compiler has invariably put the
+element in a register of its own first (it is about to call methods on it), so `RestOnAHolder` points the
+addition at that local. **Nothing is hoisted**: where no local already holds the read, the addition is left
+alone.
+
+| | 495 | 496 |
+|---|---|---|
+| `compare2` full / partial / commented / unmanaged | 2561 / 148 / 465 / 383 | **2562** / **147** / **458** / **369** |
+| `allscore` ALL full / partial | 2121 / 112 | **2122** / **111** |
+| `roundtrip` facts | 11190 | **11191** |
+| `notecensus` losing | 72 | **71** |
+| **UNKNOWN slice** | 27 methods / 263 | **25 / 252** |
+| `livecount` | | **+9 live, +3 branches** |
+| cfscore, decisions, genfail, floatbits | | level |
+
+`PrepareTextForBubble` is **out of the slice entirely** — `words[i] + 16L` became `text2.Length`, which is
+what `_stringLength` is named through. The four files that read −1 to −3 live all lost the same two lines,
+`_ = 0;` and `_ = "Unmanaged memory load: [Il2CppClass<T>+FC]"`, which is the class's own size finally
+resolving: noise leaving, in every case.
+
+**My sixteen are now twelve, and 128 commented statements are 94.**
+
 
