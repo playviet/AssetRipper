@@ -310,3 +310,90 @@ Bodies that changed from doing the wrong thing to doing the right one, none of w
 scorer could see: `ArrayExtension::ResizeArray` (copied nothing → `array[i] = input[i]`),
 `IListExtension::Shuffle` (the whole swap), `IDictionaryExtension::TryGetKeyByValue` and `GetKeysByValue`
 (compared a zeroed `KeyValuePair` → compare the real one).
+
+### The execution oracle, run at 1.9.4 (export `ec525`, 2000 iterations)
+
+```
+79 methods run, 51 behave the same, 28 do not
+rated `full` 65 · of those right 46 · whole and WRONG 19 · partial+right 5 · partial+WRONG 9
+```
+
+**Byte-identical to `corpus/BASELINE.md`** (taken at `9fa38918d` / 1.6.1). So the four rounds are
+oracle-neutral: nothing that was right became wrong. It is also the honest limit of that instrument here —
+the corpus has no shared-generic body that reaches a `T` through an invoker thunk's answer buffer, so the
+oracle cannot see this family at all, and the per-body diffs above are the only evidence there is.
+
+`corpus/corpus.apk` is `.gitignore`d, so it is not in a fresh worktree; copy it from the main tree before
+running `oracle.sh`, and pass `REPO=<worktree> RIPRUN=$SP/riprun/bin/Release/net10.0/riprun.dll`.
+
+---
+
+## Round 5 — 1.9.5, export 526 — a call nothing has named reads nothing
+
+`COPYFOLD_TRACE=1` over the three members that never moved says they share one refusal:
+
+```
+COPYFOLD refused IEnumerableExtension::TakeLast  read again by -1 Move v170 @ X4_v13, v58 @ X23_v1  | 266 get_Current
+COPYFOLD refused ArrayExtension::AddRange        read by 540 Call 1E7BB80, …, v125 @ X4_v8, …       | 260 get_Current
+COPYFOLD refused IEnumerableExtension::PickRandom read by 525 Call 1E7BB80, …, v139 @ X4_v8, …      | 271 get_Current
+```
+
+The thunk leaves the answer buffer in X4; several blocks later — in the tail-call block after a `throw` —
+an **unresolved** call at `1E7BB80` is handed the whole speculative argument run, X4 among it, and `Dead`
+counts that as a reader. A call nothing has named produces no statement at all (`Method not found
+@1E7BB80`), so no value can be said to reach it. One clause in `Dead`, gated on
+`KeyFunctionArguments.Reads` being null so that `memcpy` — whose arity is known and whose operands really
+are read — is untouched.
+
+**REVERTED — inert.** Export 526 is byte-identical to 524 on every marker and every scorer
+(full 3253, partial 150, dead 108, commented 479, unmanaged 382, notfound 39, 0 generation failures).
+
+The clause is *correct* and *insufficient*, which the trace says exactly: the refusal moves rather than
+going away.
+
+| member | refused by, before | refused by, after |
+|---|---|---|
+| `AddRange` | `Call 1E7BB80` (unnamed) | `Call 4AFBAA0` |
+| `TakeLast` | `Move v170 @ X4_v13, v58` | `Move v252 @ X4_v7, v58` |
+| `PickRandom` | `Call 1E7BB80` | `Call 4AFBAA0` |
+
+`4AFBAA0` is an adjacent PLT entry that `ImportedFunctionAt` **does** name, so
+`KeyFunctionArguments.Reads` returns an arity for it and the new clause correctly declines to dismiss it —
+but its operands are `v196 @ X0, v139 @ X1 (Int32), v145 @ X2 (IEnumerable<T>)`, which are this method's
+own arguments forwarded, not a copy's three. So either the PLT entry is mis-named or the tail call is being
+read as an import; **that is the next thing to find out**, and it blocks all three members at once.
+
+`PickRandom` additionally has a genuine second reader — the source is `T chosen = default; … chosen = item;`
+and the buffer really is copied into two places, which the guard is right to refuse.
+
+Reverted per `RECOVERY.md` ("revert what is inert"); the tree is left exactly reproducing export 524, and
+the diagnosis above is the deliverable of the round.
+
+---
+
+## Round 6 — 1.9.6, export 527 — the same rule where it actually applies
+
+Round 5 put the clause in `Dead`, and the trace said `read by …` rather than `read again by …`, which is the
+**main loop's** refusal, not `Dead`'s. The main loop already had a clause for an unnamed call and it
+insisted the leftover operand be *the very same local* as the buffer; a copy into another version of the
+same register fails that. Widened: where the callee is a bare address nothing has named, **no** operand
+counts, and the clause added to `Dead` as well.
+
+`4AFBAA0` is `__cxa_begin_catch@plt` (objdump), so these registers are live only in blocks reached after a
+throw — pure register-allocation residue.
+
+**REVERTED — inert again.** Export 527 is byte-identical to 524 on every marker and scorer.
+
+What it bought is the last of the diagnosis, and it is the reason to stop here rather than widen once more:
+each widening only uncovers the next blocker, and the three are now **genuinely different**.
+
+| member | refused by, at 1.9.6 | is it a real reader? |
+|---|---|---|
+| `PickRandom` | `392 Call 4AFBB20` — a real `memcpy` of the buffer | **yes.** The source is `T chosen = default; … chosen = item;` — the buffer really is copied to two places, and the guard is right |
+| `AddRange` | `385 IndirectCall v470 @ X8_v44, …` | no, but an `IndirectCall`'s callee operand is not a `ulong`, so "nothing has named it" cannot be stated the same way |
+| `TakeLast` | `Move v252 @ X4_v7, v58` → `Dead` still false | unresolved; the chain out of X4 is long and reaches something neither a copy nor an unnamed call |
+
+So the remaining three need the guard **relaxed in kind**, not widened in coverage: "nothing but the one
+copy may read the buffer" is too strong when the buffer register stays live into exception blocks and when
+the value is legitimately copied twice. That is a design change, not a condition, and it should be measured
+on its own.
