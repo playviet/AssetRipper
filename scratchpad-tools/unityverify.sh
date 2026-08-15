@@ -29,10 +29,13 @@ PACKAGES=${ASSETRIPPER_PACKAGE_ASSEMBLIES:-/Users/playviet/Documents/_BZ/game-hu
 # which 36 of the gate's errors were the `using` line of.
 CACHE=${ASSETRIPPER_PACKAGE_CACHE:-/Users/playviet/Documents/_BZ/game-hub/Library/PackageCache}
 BACKUP=${ASSETRIPPER_BUILD_MANAGED:-/Users/playviet/Documents/_BZ/game-hub/Library/Bee/Android/Prj/IL2CPP/Il2CppBackup/Managed}
-# KNOWN FLOOR: 16 errors that are the harness, not the export - 12 CS7069 and 4 CS0117 in
-# `SaveIO`, `SaveBaseSingleton`, `BaseTrackingSaveData` and `SlicedFilledImage`, all naming
-# `ReadOnlySequence<>`, `IBufferWriter<>` or `Unsafe.AsPointer`. Unity's mscorlib declares those and
-# netstandard2.1's does not. Compiling with `NoStdLib` against Unity's own base library was tried
+# KNOWN FLOOR: 12 errors that are the harness, not the export - 12 CS7069 in `SaveIO` and
+# `SaveBaseSingleton`, naming `ReadOnlySequence<>`, `IBufferWriter<>`, `ReadOnlySpan<>` and
+# `ReadOnlyMemory<>`. Unity's mscorlib declares those and netstandard2.1's does not.
+# The floor was 16 until 1.1.52: the other 4 were CS0117 `Unsafe.AsPointer` in
+# `BaseTrackingSaveData` and `SlicedFilledImage`, and those two files no longer name it at all.
+# (Two commented-out `AsPointer` statements survive in `Logger` and `IDictionaryExtension`; a
+# comment costs no error, so if either ever compiles again the floor goes back up.) Compiling with `NoStdLib` against Unity's own base library was tried
 # both ways round - the Android build's unstripped set and the editor's own - and gives 8710 and
 # 8830 `CS0012` instead, because the engine assemblies beside them are then the wrong pair.
 # So the gate passes at **16 or fewer**, and anything above that is the export's.
@@ -68,6 +71,11 @@ for dll in "$CACHE"/com.unity.nuget.newtonsoft-json*/Runtime/Newtonsoft.Json.dll
 # and the two base-library assemblies netstandard2.1 does not carry but the game's build did.
 for dll in "$BACKUP"/System.Runtime.CompilerServices.Unsafe.dll(N) "$BACKUP"/System.Memory.dll(N) \
            "$BACKUP"/System.Buffers.dll(N); do add $dll; done
+# Referencing Unity's own `mscorlib.dll` beside netstandard was TRIED and measured 12 -> 12: the
+# reference is added (285 -> 286 assemblies) and the four CS7069 stand. The backup mscorlib is not
+# the problem - it does carry `ReadOnlySpan` - so the facade wins the identity and ours is ignored.
+# Closing this floor needs the base library replaced rather than supplemented, and `NoStdLib` was
+# already tried both ways round for 8710 and 8830 CS0012. Left alone deliberately.
 for dll in "$UNITY/UnityEngine"/*.dll(N);          do case ${dll:t:r} in Unity.Cecil*) continue;; esac; add $dll; done
 
 {
