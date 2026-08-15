@@ -35,3 +35,30 @@ IntersectLineSegments2D 15, SpawnParticleEffect 10, ResolveImpressionCount 9, Ge
 IsRaycastLocationValid 6, Awake 6, DrawFeatherBorder 5, EncodeAllInfoIntoVertices 4, GameId 3, Update 3,
 ParseFormattedDateString 2, ActiveHash 2, EncodeFloats_0_1_16_16 0. **128 commented.**
 
+## 1.8.1 — export 491 — a float constant left typed as an integer — **KEPT**
+
+`Analysis/FloatConstantInAnInteger.cs` (new), one line among the seeds in `LocalVariables.cs`, and the wrong
+remark in `FloatBitsInAnInteger.cs` corrected. The handed-over diagnosis was right and the machinery to act on
+it already existed one step away: the evidence is **where the value lands**, so the seed rewrites the constant
+and the existing `SharpenAVectorRegister` corrects every type downstream of it for nothing.
+
+| | 490 | 491 |
+|---|---|---|
+| `floatbits` | 2 distinct, **3 sites** | **0** |
+| `compare2` full / partial / commented | 2558 / 151 / 494 | **2560** / **149** / **489** |
+| `allscore` ALL full | 2119 | **2120** |
+| `roundtrip` facts / whole | 11186 / 1043 | **11188** / 1043 |
+| `notecensus` noted / losing | 299 / 75 | **293** / **73** |
+| **UNKNOWN slice** | 29 methods, 286 commented | **27 / 282** |
+| cfscore, decisions, genfail | 609/6, 1326/1382, 0 | level |
+
+`EncodeFloats_0_1_16_16` now reads exactly as it was written — `float num = 65535f;` and float arithmetic
+throughout — where it had been `long num = 1199570688L` and two integer divisions. Two methods left the
+Unknown slice outright (`EncodeFloats`, `ETFXFireProjectile::Update`) and `EncodeAllInfoIntoVertices` went
+4 → 3. **My 16 are now 14, and 128 commented statements are 125.**
+
+The brief predicted no scorer would move. Four did, slightly, because the correct types unblocked two more
+bodies — but the number that decides the round is `floatbits` going to zero and the body reading as its
+source, and it would have been kept on those alone.
+
+

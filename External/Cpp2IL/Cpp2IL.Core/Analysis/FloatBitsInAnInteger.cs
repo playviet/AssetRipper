@@ -32,8 +32,16 @@ namespace Cpp2IL.Core.Analysis;
 /// </para>
 /// <para>
 /// Only the direction that crosses <em>into</em> an integer register. The other way round -
-/// <c>FMOV Sd, Wn</c> - is how a float literal is materialised, 185 sites against these twelve, and it is
-/// already handled by the literal recovery.
+/// <c>FMOV Sd, Wn</c> - is how a float literal is materialised, 185 sites against these twelve.
+/// </para>
+/// <para>
+/// That sentence used to end "and it is already handled by the literal recovery", <b>which was wrong</b>.
+/// The literal recovery reinterprets a constant that is an operand of the expression; a constant that is
+/// one <c>FMOV</c> away, in a general register, is not one, and it stayed an integer -
+/// <c>ProceduralImage::EncodeFloats_0_1_16_16</c> divided a float by <c>1199570688L</c> and returned the
+/// sum of two longs from a <c>float</c> method. That direction is <see cref="FloatConstantInAnInteger"/>,
+/// and it is a literal rather than a call: this class writes the operation the program performs, that one
+/// writes the number the source said.
 /// </para>
 /// </remarks>
 public static class FloatBitsInAnInteger

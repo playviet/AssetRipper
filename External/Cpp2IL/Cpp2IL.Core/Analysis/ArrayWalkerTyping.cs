@@ -61,6 +61,15 @@ public static class ArrayWalkerTyping
         var header = method.AppContext.Binary.is32Bit ? 0x10 : 0x20;
         var walking = Chains(method, graph, header);
 
+        //Every addition this could have started or continued a walk from, for one named method. A walk that
+        //never starts is invisible from the export - the pointer arithmetic simply stays - and the two halves
+        //of the question, whether the array is typed yet and whether the addend is one this recognises, are
+        //not answerable from the finished ISIL either, because the pass ran long before it.
+        if (System.Environment.GetEnvironmentVariable("WALK_TRACE") is { } wanted && method.Name.Contains(wanted))
+            foreach (var instruction in graph.Instructions)
+                if (instruction.OpCode == OpCode.Add && instruction.Operands is [LocalVariable made, ..])
+                    System.Console.WriteLine($"WALK {(walking?.ContainsKey(made) == true ? "yes" : "no ")} {instruction}");
+
         if (walking is null)
             return;
 
