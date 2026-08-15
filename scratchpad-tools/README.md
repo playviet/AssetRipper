@@ -27,13 +27,32 @@ scores differently looks exactly like a code regression.
 | `roundtrip.py` | what the binary says the method does, no source needed |
 | `autodiff.py` | the ground-truth corpus, run without being told what to test |
 | `owedcensus*.py` | why each owed body is owed, and the shape of its first commented statement |
-| `notecensus.py` | the ILSpy `Expected X, but got Y` notes as a scorer: how well they predict a lost statement, by shape |
 | `unityverify.sh` | the gate: compile the exported project against the engine the editor has |
+| `seam.py` | every member cut into generic-method / generic-type / plain, with `--list=`, `--files`, `--markers` |
+| `livecount.py` | live statements and branches, one export or two - the only check on "commented fell while code was deleted" |
+
+## Working from a git worktree
+
+Two agents in one tree clobber each other's `LocalPackages` and `riprun` (`il2cpp-measuring-while-another-agent-builds`).
+These are the loop again, SP-relative and pointed at the worktree the scratchpad sits in, so nothing here
+touches the main tree:
+
+| | what it is |
+|---|---|
+| `bumpz.sh` | `bump.sh` for a worktree: `AR=${SP:h}`, no deleting of anyone else's package, and it **fails** unless `riprun.deps.json` names the version just built |
+| `roundz.sh` | `roundz.sh <old> <new> <n>` - bump and export into `..._<n>` |
+| `score.sh` | `score.sh <n>` - every scorer on export `<n>`, in one go |
+| `pb.sh` | rebuild `probe2` alone against the live Cpp2IL source, no version bump - seconds, and enough to read the ISIL a change produces |
+| `p2` | `probe2` against `scratchpad/bin/libil2cpp.so`, unzipped once out of the APK |
+| `dis.sh` | `dis.sh <hexaddr>` - objdump at an address. `4AFBB20` is `memcpy@plt` |
+| `seamtrace.sh` | `COPYFOLD_TRACE` over the seven types the generic seam lives in |
+
+Set the scratchpad up with `cp scratchpad-tools/* $SP/` and then repoint `riprun/riprun.csproj`,
+`probe2/probe.csproj` and both `nuget.config`s at the worktree - **absolute** paths, or NuGet resolves
+`LocalPackages` against the process's own directory and measures the other agent's build.
 
 `tools/` holds the ones the repository itself depends on (`inventory.py` and its `csharp.py`/`markers.py`),
-which are not duplicated here. **Run `inventory.py` from `tools/`, never from a copy.** It reads
-`bare-returns.tsv` from beside itself, and a copy without it silently counts the 17 one-RET bodies as owed -
-137 becomes 154, which has already been misread once as a lost better version of the tool.
+which are not duplicated here.
 
 ## The roundtrip dump
 
@@ -73,7 +92,3 @@ python3 autodiff.py <corpus>/Assets/.../Corpus.cs <export>/ExportedProject/.../C
 Until then the loop has four scorers, not five, and **nothing can tell a method that is right from one that
 only looks right**. Where a change is inert on the four, the check used instead has been diffing the exported
 C# of the affected bodies by hand - which works, and does not scale.
-
-`inventory.py` is NOT here. It lives in `tools/` and reads `bare-returns.tsv` from beside itself;
-a copy run from anywhere else loses the 17 one-RET bodies and reports the queue 17 too high. It now
-exits loudly instead, but the fix is to run `tools/inventory.py` in place.
