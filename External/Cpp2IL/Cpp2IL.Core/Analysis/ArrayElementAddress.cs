@@ -384,7 +384,11 @@ public static class ArrayElementAddress
     }
 
     /// <summary>A subscript and the width it was scaled by, out of the shift or the multiply that scaled it.</summary>
-    private static (object Index, int Width)? Scaled(object operand, Dictionary<LocalVariable, Instruction> definitions,
+    /// <remarks>
+    /// Internal because <see cref="ArrayWalkerTyping"/> asks the same question of the same shape - a walk can
+    /// be started at a variable element as well as at a constant one - and the rule is worth stating once.
+    /// </remarks>
+    internal static (object Index, int Width)? Scaled(object operand, Dictionary<LocalVariable, Instruction> definitions,
         int elementWidth)
     {
         if (operand is not LocalVariable offset)

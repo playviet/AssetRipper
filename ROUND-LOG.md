@@ -61,4 +61,33 @@ The brief predicted no scorer would move. Four did, slightly, because the correc
 bodies — but the number that decides the round is `floatbits` going to zero and the body reading as its
 source, and it would have been kept on those alone.
 
+## 1.8.2 — export 492 — a walk can start at a variable element — **KEPT**
+
+`StringExtension::PrepareTextForBubble`, the worst of my sixteen at 26 commented. The root is one addition
+`ArrayWalkerTyping` did not recognise. The compiler works the first element's address out once —
+`array + 0x20` — and then, for a loop that starts part-way along, adds the scaled outer index to it and steps
+*that* round the inner loop. `Chains` accepted a walk continued by a **constant** step only, so the walk was
+registered for the header addition alone, nothing was ever read through it, and every read came out as
+`text2 = (string)(((int*)num6))[0]`.
+
+`ArrayWalkerTyping.Chains`/`Count` now also continue a walk through an addition of a **scaled subscript**,
+asked through `ArrayElementAddress.Scaled` (made `internal`) so the two passes cannot drift about what
+counts as a subscript. The walk's own counter then does the rest: seeded 0, plus the outer index at the
+start, plus one per step, mirroring the pointer's dataflow.
+
+| | 491 | 492 |
+|---|---|---|
+| `compare2` commented | 489 | **470** |
+| `livecount` live / branches | — | **+26 / +5**, and only in `StringExtension.cs` |
+| `PrepareTextForBubble` commented | 26 | **7** |
+| **UNKNOWN slice** commented | 282 | **263** |
+| everything else | | level: cfscore 609/6, compare2 full 2560 partial 149 dead 106, allscore 2120, decisions 1326/1382, roundtrip 11188/1043, notes 293/73, genfail 0 |
+
+`commented` falling 19 while `full` sits still is the shape a wrong retype also has, so `livecount` was the
+check that decided it: live statements **up** 26 and branches up 5, in exactly the one file, and no other
+file in the game moved by a line. Reading the body confirms it: `text2 = array[num6]` with `num6` seeded
+from the outer index and stepped by one, which is the `for (int j = i; ...)` the source had. A `WALK_TRACE`
+was added beside the existing `CHAIN_TRACE` — a walk that never starts is invisible from the export, since
+the pointer arithmetic simply stays.
+
 

@@ -59,7 +59,8 @@ public static class ArrayWalkerTyping
             return;
 
         var header = method.AppContext.Binary.is32Bit ? 0x10 : 0x20;
-        var walking = Chains(method, graph, header);
+        var definitions = Definitions(graph);
+        var walking = Chains(method, graph, header, definitions);
 
         //Every addition this could have started or continued a walk from, for one named method. A walk that
         //never starts is invisible from the export - the pointer arithmetic simply stays - and the two halves
@@ -73,7 +74,7 @@ public static class ArrayWalkerTyping
         if (walking is null)
             return;
 
-        Count(graph, walking, header);
+        Count(graph, walking, header, definitions);
 
         foreach (var block in graph.Blocks)
         {
@@ -188,7 +189,8 @@ public static class ArrayWalkerTyping
     }
 
     /// <summary>Every pointer that is walking an array, and the walk it belongs to.</summary>
-    private static Dictionary<LocalVariable, Walk>? Chains(MethodAnalysisContext method, Graphs.ISILControlFlowGraph graph, int header)
+    private static Dictionary<LocalVariable, Walk>? Chains(MethodAnalysisContext method, Graphs.ISILControlFlowGraph graph,
+        int header, Dictionary<LocalVariable, Instruction> definitions)
     {
         Dictionary<LocalVariable, Walk>? walking = null;
 
@@ -222,6 +224,19 @@ public static class ArrayWalkerTyping
                          && walking is not null && walking.TryGetValue(stepped, out var stillWalking))
                 {
                     (array, element, width, start) = (stillWalking.Array, stillWalking.Element, stillWalking.Width, stillWalking.Start);
+                }
+                //Or indexed rather than stepped, which is how a walk that begins part-way along starts. The
+                //compiler works out the first element's address once - `array + 0x20`, then `+ (i << 3)` - and
+                //steps *that* round the inner loop, so the walk's own start is a variable element and there is
+                //no constant addend to recognise it by. `StringExtension::PrepareTextForBubble` opens its
+                //inner loop at `array[i]` exactly so, and without this the walk is registered for the header
+                //addition alone, nothing is ever read through it, and twenty-six statements are commented out.
+                else if (instruction.OpCode == OpCode.Add && instruction.Operands.Count == 3
+                         && instruction.Operands[1] is LocalVariable indexed
+                         && walking is not null && walking.TryGetValue(indexed, out var alongside)
+                         && Subscript(instruction.Operands[2], definitions, alongside.Width) is not null)
+                {
+                    (array, element, width, start) = (alongside.Array, alongside.Element, alongside.Width, alongside.Start);
                 }
                 //Or the start of one: an array plus the header is the first element, and the header plus a
                 //whole number of elements is that element - clang starts a walk part-way in whenever the
@@ -261,7 +276,8 @@ public static class ArrayWalkerTyping
     /// <summary>
     /// Puts a subscript beside the pointer: nought where the walk starts, and one more wherever it steps.
     /// </summary>
-    private static void Count(Graphs.ISILControlFlowGraph graph, Dictionary<LocalVariable, Walk> walking, int header)
+    private static void Count(Graphs.ISILControlFlowGraph graph, Dictionary<LocalVariable, Walk> walking, int header,
+        Dictionary<LocalVariable, Instruction> definitions)
     {
         foreach (var block in graph.Blocks)
         {
@@ -282,7 +298,20 @@ public static class ArrayWalkerTyping
                     continue;
                 }
 
-                if (instruction.OpCode != OpCode.Add || instruction.Operands.Count != 3 || Amount(instruction.Operands[2]) is not { } by)
+                if (instruction.OpCode != OpCode.Add || instruction.Operands.Count != 3)
+                    continue;
+
+                //Indexed rather than stepped: the walk starts that many elements further along than the one it
+                //was worked out from, and the index is what the shift or the multiply scaled.
+                if (instruction.Operands[1] is LocalVariable from2 && walking.TryGetValue(from2, out var start2)
+                    && Subscript(instruction.Operands[2], definitions, start2.Width) is { } along)
+                {
+                    block.Instructions.Insert(i + 1, new Instruction(instruction.Index, OpCode.Add, walk.Subscript, start2.Subscript, along));
+                    i++;
+                    continue;
+                }
+
+                if (Amount(instruction.Operands[2]) is not { } by)
                     continue;
 
                 //A step is however many elements the distance covers - usually one, but a loop unrolled by the
@@ -375,6 +404,34 @@ public static class ArrayWalkerTyping
 
         return null;
     }
+
+    /// <summary>Where each local is written, which in single assignment form is one place each.</summary>
+    private static Dictionary<LocalVariable, Instruction> Definitions(Graphs.ISILControlFlowGraph graph)
+    {
+        var definitions = new Dictionary<LocalVariable, Instruction>();
+
+        foreach (var instruction in graph.Instructions)
+            if (instruction.Operands.Count > 0 && instruction.Operands[0] is LocalVariable written)
+                definitions.TryAdd(written, instruction);
+
+        return definitions;
+    }
+
+    /// <summary>
+    /// The subscript a byte offset added onto a walker stands for, where it is exactly one element's width
+    /// times something.
+    /// </summary>
+    /// <remarks>
+    /// The same question <see cref="ArrayElementAddress"/> asks of the same shape, and asked through the same
+    /// code so the two cannot drift: a shift by the element's width in places, or a multiply by it, is a
+    /// subscript, and at a width of one there is nothing to scale so the offset is the subscript itself.
+    /// A distance that is <b>not</b> the element's own width is a walk over something else that was reached
+    /// from this array, and refusing it is what keeps a <c>Vector3[]</c> stepped by eight out.
+    /// </remarks>
+    private static object? Subscript(object operand, Dictionary<LocalVariable, Instruction> definitions, int width)
+        => width > 0 && ArrayElementAddress.Scaled(operand, definitions, width) is { } scaled && scaled.Width == width
+            ? scaled.Index
+            : null;
 
     private static long? Amount(object operand) => operand switch
     {
