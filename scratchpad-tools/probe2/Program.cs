@@ -49,6 +49,64 @@ if (Environment.GetEnvironmentVariable("PROBE_NO_OVERRIDE_NAMES") != "1")
 				FixOverrideName(m);
 }
 
+if (args[3] == "sharedbody")
+{
+	// A generic method DEFINITION whose registered code pointer is also one of its own instantiations'
+	// pointers has no body of its own - il2cpp shares nothing for ordinary value types, so what is
+	// registered against the definition is one specialisation's code.
+	var byBase = new Dictionary<MethodAnalysisContext, List<ConcreteGenericMethodAnalysisContext>>();
+
+	foreach (ConcreteGenericMethodAnalysisContext concrete in app.ConcreteGenericMethodsByRef.Values)
+	{
+		if (!byBase.TryGetValue(concrete.BaseMethodContext, out var list))
+			byBase[concrete.BaseMethodContext] = list = new();
+		list.Add(concrete);
+	}
+
+	int defs = 0, shared = 0, borrowed = 0;
+
+	foreach (TypeAnalysisContext type in app.AllTypes)
+	foreach (MethodAnalysisContext m in type.Methods)
+	{
+		if (m is ConcreteGenericMethodAnalysisContext || m.GenericParameters.Count == 0 || m.UnderlyingPointer == 0)
+			continue;
+
+		defs++;
+		byBase.TryGetValue(m, out var instantiations);
+		var match = instantiations?.FirstOrDefault(c => c.UnderlyingPointer == m.UnderlyingPointer);
+
+		if (match == null)
+		{
+			shared++;
+			continue;
+		}
+
+		// A stand-in argument means the body really is the shared one and the definition may be written
+		// generically. A CONCRETE argument means il2cpp compiled no shared body at all - what is registered
+		// against the definition is that specialisation's code.
+		bool StandIn(TypeAnalysisContext g) => g.FullName is "System.Object"
+			or "Unity.IL2CPP.Metadata.__Il2CppFullySharedGenericType"
+			or "System.Int32Enum" or "System.Int16Enum" or "System.SByteEnum"
+			or "System.UInt32Enum" or "System.UInt16Enum" or "System.ByteEnum" or "System.Int64Enum" or "System.UInt64Enum";
+
+		if (match.MethodGenericParameters.Count > 0 && match.MethodGenericParameters.All(StandIn))
+		{
+			shared++;
+			continue;
+		}
+
+		borrowed++;
+		string args2 = string.Join(", ", match.MethodGenericParameters.Select(g => g.FullName));
+		bool ours = type.DeclaringAssembly?.Name == "Assembly-CSharp";
+		Console.WriteLine($"{(ours ? "OURS     " : "elsewhere")} {type.FullName}::{m.Name} @ {m.UnderlyingPointer:X}  is <{args2}>  of {instantiations!.Count}");
+	}
+
+	Console.WriteLine($"\ngeneric method definitions with a body        : {defs}");
+	Console.WriteLine($"  a genuine SHARED body (stand-in arguments)  : {shared}");
+	Console.WriteLine($"  a SPECIALISATION's body under an open name  : {borrowed}");
+	return;
+}
+
 if (args[3] == "getters")
 {
 	foreach (TypeAnalysisContext type in app.AllTypes)
