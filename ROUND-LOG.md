@@ -670,6 +670,7 @@ edge-copy construction, and nothing is in `VectorExtensions.cs`.
 | 10 | `Analysis/InvokerThunk.cs` | `Dead` — one `COPYFOLD_TRACE` line only | diagnostic |
 | 11 | `Analysis/InvokerThunk.cs` | new `ArgumentRegisterBookkeeping`, `IsAnArgumentRegister`, `IsTheFrame`; `AnswerIntoTheCopyItFeeds`; `Erase` | **kept** |
 | 12 | `Analysis/SharingMeansAReference.cs` | `Run` (comparison fold + `fromTheTest`), new `IsFromTheTest`, `Compare` | **kept** |
+| 13 | new `Analysis/NoSharedBodyExists.cs`; `Analysis/ForkPipeline.cs` (one line) | `Run`, `Build`, `IsAStandIn` | reverted |
 
 ---
 
@@ -942,3 +943,121 @@ it. What is now true and was not before:
 > dereference is the only definition left.
 
 Both halves are probe-verified; neither is a guess.
+
+---
+
+## Round 13 — 1.9.13, export 538 — declining a specialisation's body. **REVERTED, and the number says why**
+
+**File and functions**: new `Analysis/NoSharedBodyExists.cs` (`Run`, `Build`, `IsAStandIn`) and one line at
+the end of `ForkPipeline.AfterUnusedLocalsAreDropped`. Both removed.
+
+### The detector is exact, and it is worth more than the round
+
+Added `probe2 sharedbody` (backed up to `scratchpad-tools/probe2/`). A generic definition's code pointer
+**always** coincides with one of its instantiations' — all 1604 in this build do — so sharing a pointer is
+not the signal. **Which instantiation it is, is:**
+
+| matching instantiation's method type arguments | meaning |
+|---|---|
+| all stand-ins (`System.Object`, an `*Enum` width, any `__Il2CppFullyShared*`) | a genuine shared body |
+| **any concrete type** | no shared body exists; this is that specialisation's code |
+
+**883 of 1604 genuinely shared, 721 not.** In `Assembly-CSharp` the family is exactly three, one of them
+substituted source:
+
+```
+SoftMasking.SoftMask::Set                                   <System.Boolean>   (substituted)
+CFramework.BaseTrackingSaveData`1::Set                      <System.Boolean>
+CFramework.SlicedFilledImage+SetPropertyUtility::SetStruct  <System.Boolean>
+```
+
+`EnumHelper::ConvertToDictionaryKeyInt` and its two siblings look like the family and are **not** — their
+argument is `__Il2CppFullySharedGenericStructType`, a stand-in. Missing that fires the detector on three
+correct bodies.
+
+### The decline was built, measured, and is wrong
+
+| | 536 | 538 |
+|---|---|---|
+| compare2 **full** | 3248 | **3249** |
+| partial · dead | 155 · 108 | **153 · 109** |
+| commented | 491 | 485 |
+| generation failures | 0 | 0 |
+
+**`full` went UP, and that is the falsifier.** I predicted — and was told to expect — it going down. An
+emptied body carries no marker, so it scores as a whole one:
+
+```csharp
+public static bool SetStruct<T>(ref T currentValue, T newValue) where T : struct { return false; }
+protected void Set<TVal>(ref TVal field, TVal value, string name = null) { }
+```
+
+That is not more honest than the `bool` body. It is **a different lie with no marker at all**, and it reads
+as an improvement on every instrument. The state it replaced at least carried five commented statements
+saying something had been lost. Exactly `il2cpp-a-thrown-body-scores-as-a-whole-one`, arrived at from a new
+direction.
+
+An analysis warning is not a substitute either: `IlGenerator` renders one as a live
+`Console.WriteLine("Warning: …")`, a statement the program never had.
+
+**What a correct decline needs, and why I did not land it**: a marker family that does not exist — a string
+the generator emits and `tools/markers.py` counts (`declined`, `'No shared body:'`). That spans Cpp2IL *and
+a scorer*, and changing a scorer moves every baseline. Landing it unmeasured in the hour before a merge
+would make the combined measurement uninterpretable. **Specified below instead.**
+
+---
+
+# Closing — branch `worktree-agent-ac016851c9627dd5a`, final position 1.9.12 / export 536
+
+## What landed (7 kept rounds)
+
+| | change | worth |
+|---|---|---|
+| 1 | `ClearingASizedByT` — the array header hoisted out of the loop, plus the destination store | `ResizeArray` copies the right element instead of nothing |
+| 2–3 | `InvokerThunk.AnswerIntoTheCopyItFeeds` (salvaged from the killed agent, measured for the first time) + the `X29` clause in `Erase` | `foreach` stopped comparing a zeroed `KeyValuePair`; notfound −8 |
+| 4 | `ClearingASizedByT` — a buffer already typed `T` is the value | `IListExtension::Shuffle` partial → **full**, and correct |
+| 7–8 | new `VirtualMethodInfoSlot` + one line in `LocalVariables` | `EqualityComparer<W>::Equals` named; indirect −1 |
+| 11 | `InvokerThunk` — `ArgumentRegisterBookkeeping`, the read-through-the-buffer fold, `IsTheFrame` | `W value2 = current.Value;` live in both `IDictionaryExtension` members |
+| 12 | `SharingMeansAReference` — a settled test decides its comparison, and marks it | 8 impossible branches and 17 machinery statements gone |
+
+## What was reverted, and why (6)
+
+| | why |
+|---|---|
+| 5, 6 | widening "who counts as a reader" by **instruction kind** — inert twice by export, once more in probe. The refusal moves to the next reader and never unlocks a body |
+| 9 | retyping the `Equals` arguments — **only relocated the cast** into the declaration; live −6, no marker moved |
+| 10 | re-testing the same widening after round 8 changed the situation — right to re-test, still inert; kept only the `dead-stops` trace that made round 11 possible |
+| 13 | declining a specialisation's body — **`full` went up**; an emptied body is a lie with no marker |
+
+## Specified and unbuilt, for the next session
+
+1. **The edge copy on a removed edge** (routed to the other agent). The only thing between both
+   `IDictionaryExtension` members and a live `equalityComparer.Equals(value2, value)` is
+   `-1 Move v659 @ X9_v23 (W), v76 @ X28_v1 (W)` on an edge `UnreachableBlockRemover` has already taken away.
+   The asymmetry to chase: `MetadataInitGuardRemover` drops the matching phi operand when it drops an edge;
+   `UnreachableBlockRemover` does not.
+2. **A `declined` marker family**, then the decline. `probe2 sharedbody` already names the 721 bodies and the
+   3 in `Assembly-CSharp`. Land the scorer change first and measure it alone.
+3. **The `value` parameter spilled into a `T`-sized buffer** — the second `Equals` operand, once (1) lands.
+4. `TakeLast` / `PickRandom` / `AddRange` — `PickRandom`'s buffer is genuinely copied twice and the guard is
+   right to refuse it; the other two are gated on (1).
+
+## Final numbers — **all-bodies denominator (3511 classified bodies)**, export 536
+
+| | master `dad92ee7e` (471) | **this branch (536)** |
+|---|---|---|
+| compare2 full / partial / dead | 3247 / 160 / 108 | **3248 / 155 / 108** |
+| decompiled-only full | 2553 of 2815 (90.7%) | **2554 of 2815 (90.7%)** |
+| commented | 508 | **491** |
+| unmanaged | 403 | **391** |
+| notfound · indirect | — | 39 · 20 |
+| cfscore full · clean files | 609 | **609 · 91 of 96** |
+| decisions | 1326/1382 | **1326/1382** |
+| roundtrip whole / facts | 1043 | **1043 / 11191** |
+| **oracle** run/same · full+right · full+WRONG | 79/54 · 49 · 16 | **79/54 · 49 · 16** |
+| generation failures | — | **0** |
+| seam `genMethod` full / partial | 42 / 24 (36.4%) | **43 / 23 (34.8%)** |
+
+Every correctness measure level; the movement is in the markers and in four bodies that went from doing the
+wrong thing to doing the right one — `ResizeArray`, `Shuffle`, `TryGetKeyByValue`, `GetKeysByValue` — none of
+which any compilability scorer can see.
