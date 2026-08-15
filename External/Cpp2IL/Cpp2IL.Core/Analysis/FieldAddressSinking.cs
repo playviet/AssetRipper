@@ -3,6 +3,7 @@ using System.Linq;
 using Cpp2IL.Core.Graphs;
 using Cpp2IL.Core.ISIL;
 using Cpp2IL.Core.Model.Contexts;
+using LibCpp2IL.BinaryStructures;
 
 namespace Cpp2IL.Core.Analysis;
 
@@ -42,7 +43,7 @@ public static class FieldAddressSinking
             return false;
 
         var header = method.AppContext.Binary.is32Bit ? 8 : 0x10;
-        var addresses = new Dictionary<LocalVariable, (Instruction Addition, FieldAnalysisContext Field, LocalVariable Owner, int Offset)>();
+        var addresses = new Dictionary<LocalVariable, (Instruction Addition, FieldAnalysisContext Field, LocalVariable Owner, int Offset, FieldAnalysisContext? Outer, int OuterOffset)>();
 
         foreach (var instruction in graph.Instructions)
         {
@@ -60,7 +61,7 @@ public static class FieldAddressSinking
 
                 if (FieldAt(owns, moved, header) is { } alongside)
                 {
-                    addresses[derived] = (instruction, alongside, already.Owner, (int)moved);
+                    addresses[derived] = (instruction, alongside, already.Owner, (int)moved, null, 0);
                     continue;
                 }
             }
@@ -76,7 +77,18 @@ public static class FieldAddressSinking
             var offset = System.Convert.ToInt64(instruction.Operands[2]);
 
             if (FieldAt(owner, offset, header) is { } field)
-                addresses[made] = (instruction, field, held, (int)offset);
+            {
+                addresses[made] = (instruction, field, held, (int)offset, null, 0);
+                continue;
+            }
+
+            //And a distance that lands on a **member of** a struct field. The refusal above is about reading
+            //a struct's address at nought, which takes only its front - but a member that is itself a
+            //primitive has no rest to lose, so the read is exact. `FPSCounter` holds three `Color`s at 56, 72
+            //and 88 and reads one a component at a time (`this + 56`, `+ 60`, `+ 64`, `+ 68`); only 56 was
+            //even a field, and one unnameable producer makes the whole chain refuse, so all four were lost.
+            if (WithinAField(owner, offset, header) is var (outer, inner) && outer is not null && inner is not null)
+                addresses[made] = (instruction, inner, held, (int)(offset - outer.Offset), outer, (int)outer.Offset);
         }
 
         if (addresses.Count == 0)
@@ -106,6 +118,27 @@ public static class FieldAddressSinking
             foreach (var carried in chain.Members)
                 if (addresses.TryGetValue(carried, out var address))
                 {
+                    //A member of a struct field is two steps, because a field reference names one field: the
+                    //struct into a local of its own, then the member out of that. `InaccessibleFieldRecovery`
+                    //keeps a chain the same way, and its `STEP` register is one `IlGenerator` already accepts
+                    //as a receiver - and one `DeadCopyCycles` will not collect, which matters because the step
+                    //is written and read exactly once.
+                    if (address.Outer is { } outer)
+                    {
+                        var step = new LocalVariable($"step{method.Locals.Count}",
+                            new Register(null, InaccessibleFieldRecovery.ChainStep), outer.FieldType);
+                        method.Locals.Add(step);
+
+                        if (graph.Blocks.FirstOrDefault(b => b.Instructions.Contains(address.Addition)) is { } owning)
+                            owning.Instructions.Insert(owning.Instructions.IndexOf(address.Addition),
+                                new Instruction(address.Addition.Index, OpCode.Move, step,
+                                    new FieldReference(outer, address.Owner, address.OuterOffset)));
+
+                        address.Addition.OpCode = OpCode.Move;
+                        address.Addition.Operands = [carried, new FieldReference(address.Field, step, address.Offset)];
+                        continue;
+                    }
+
                     address.Addition.OpCode = OpCode.Move;
                     address.Addition.Operands = [carried, new FieldReference(address.Field, address.Owner, address.Offset)];
                 }
@@ -134,11 +167,60 @@ public static class FieldAddressSinking
     }
 
     /// <summary>
+    /// The struct field that <b>contains</b> that distance, and the member of it lying exactly there.
+    /// </summary>
+    /// <remarks>
+    /// The refusal in <see cref="FieldAt"/> is about a struct's own address: reading it at nought takes only
+    /// the front. That does not apply to a member which is itself a <b>primitive</b> - a `float` has no rest
+    /// to lose, so the read at nought is exactly it. Anything else is refused, including a nested struct,
+    /// because then the same objection returns one level down.
+    /// </remarks>
+    private static (FieldAnalysisContext? Outer, FieldAnalysisContext? Inner) WithinAField(
+        TypeAnalysisContext owner, long offset, int header)
+    {
+        FieldAnalysisContext? outer = null;
+
+        foreach (var candidate in owner.Fields)
+        {
+            if (candidate.IsStatic || candidate.Offset > offset)
+                continue;
+
+            if (candidate.FieldType is not { IsValueType: true } held || held.IsEnumType
+                || !held.Fields.Any(f => !f.IsStatic))
+                continue;
+
+            if (outer is null || candidate.Offset > outer.Offset)
+                outer = candidate;
+        }
+
+        if (outer is null)
+            return (null, null);
+
+        var inside = offset - outer.Offset;
+
+        //A struct records its members from its own start, but a boxed one carries the header, and which the
+        //metadata used is not worth guessing: ask for both and take the one that lands exactly.
+        var member = outer.FieldType.Fields.FirstOrDefault(f => !f.IsStatic && f.Offset == inside && IsWholeAtNought(f))
+                     ?? outer.FieldType.Fields.FirstOrDefault(f => !f.IsStatic && f.Offset == inside + header && IsWholeAtNought(f));
+
+        return member is null ? (null, null) : (outer, member);
+    }
+
+    /// <summary>Whether reading this field's address at nought yields the whole of it.</summary>
+    private static bool IsWholeAtNought(FieldAnalysisContext field) => field.FieldType.Type
+        is Il2CppTypeEnum.IL2CPP_TYPE_R4 or Il2CppTypeEnum.IL2CPP_TYPE_R8
+        or Il2CppTypeEnum.IL2CPP_TYPE_I1 or Il2CppTypeEnum.IL2CPP_TYPE_U1
+        or Il2CppTypeEnum.IL2CPP_TYPE_I2 or Il2CppTypeEnum.IL2CPP_TYPE_U2
+        or Il2CppTypeEnum.IL2CPP_TYPE_I4 or Il2CppTypeEnum.IL2CPP_TYPE_U4
+        or Il2CppTypeEnum.IL2CPP_TYPE_I8 or Il2CppTypeEnum.IL2CPP_TYPE_U8
+        or Il2CppTypeEnum.IL2CPP_TYPE_BOOLEAN or Il2CppTypeEnum.IL2CPP_TYPE_CHAR;
+
+    /// <summary>
     /// Everything the address flows into, where every step is a copy and every end is a read at nought.
     /// </summary>
     private static (HashSet<LocalVariable> Members, List<(Instruction At, int Operand, LocalVariable Behind)> Reads)? Chain(
         ISILControlFlowGraph graph, LocalVariable start,
-        Dictionary<LocalVariable, (Instruction Addition, FieldAnalysisContext Field, LocalVariable Owner, int Offset)> addresses)
+        Dictionary<LocalVariable, (Instruction Addition, FieldAnalysisContext Field, LocalVariable Owner, int Offset, FieldAnalysisContext? Outer, int OuterOffset)> addresses)
     {
         var members = new HashSet<LocalVariable> { start };
         var reads = new List<(Instruction, int, LocalVariable)>();
