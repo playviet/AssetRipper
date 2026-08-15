@@ -110,4 +110,34 @@ into a place that is then read through would be a hard-coded address, which mana
 
 `GameId` now reads as its source and carries no note at all.
 
+## 1.8.4 — export 494 — nothing dereferences a number — **KEPT, on the diff rather than on a number**
+
+`ParticleEffectsLibrary::Awake` lost a write outright: `Add v85 (System.Int32), this, 32` and then a store
+at `[v85 + 8]`, which is `this.CurrentParticleEffectNum = 1`, came out as
+`Console.WriteLine("Unmanaged memory store: …")`. `MetadataResolver.FoldAddressArithmetic` refused it
+because it folds only through a base with **no type at all**, and this one had been given a width.
+
+A local that is the base of a memory operand holds an address, whatever the analysis called it, and
+`System.Int32` is the plainest case of the width getting there first — a thirty-two bit value cannot be an
+address on this architecture. `IsAnAddress` now admits any primitive integer as well as null, and nothing
+else, so a base the analysis genuinely named is still left to the field passes.
+
+| | 493 | 494 |
+|---|---|---|
+| `compare2` unmanaged | 389 | **388** |
+| everything else | | **identical**: full 2561, partial 148, commented 467, allscore 2121, decisions 1326, roundtrip 11190/1044, notes 292/72, cfscore 609/6, genfail 0 |
+| `livecount` | | −2 live, one file |
+
+**One site in the whole game**, and `livecount` reads −2 — so this was kept on the diff, which is three
+lines of noise becoming two lines of code:
+
+```
+- _ = 1L;  Console.WriteLine("Unmanaged memory store: [v85 @ X20_v5 (System.Int32)+8]");
++ CurrentParticleEffectNum = 1;
+```
+
+A store that never happened is the class of defect the compilability scorers cannot see at all
+(`il2cpp-the-store-that-never-happened`), and nothing regressed anywhere, so a fall in `live` that is
+entirely noise leaving is not a reason to revert.
+
 

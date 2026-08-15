@@ -502,7 +502,8 @@ public static partial class MetadataResolver
         {
             for (var i = 0; i < instruction.Operands.Count; i++)
             {
-                if (instruction.Operands[i] is not MemoryOperand { Index: null, Scale: 0, Base: LocalVariable { Type: null } } memory)
+                if (instruction.Operands[i] is not MemoryOperand { Index: null, Scale: 0, Base: LocalVariable @base } memory
+                    || !IsAnAddress(@base.Type))
                     continue;
 
                 if (TryFold(memory, definitions) is not { } folded)
@@ -516,6 +517,33 @@ public static partial class MetadataResolver
         return changed;
     }
 
+    /// <summary>
+    /// Whether a value the method reads <em>through</em> may be an address worked out a step at a time.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Untyped is the usual case and was for a long time the only one accepted. But <b>nothing dereferences a
+    /// number</b>: a local that is the base of a memory operand holds an address, whatever the analysis called
+    /// it, and a primitive there is a width that got in first - the mistake
+    /// <c>il2cpp-a-width-is-not-a-type</c> records four times over. <c>System.Int32</c> is the plainest of
+    /// them, since a thirty-two bit value cannot be an address on this architecture at all.
+    /// </para>
+    /// <para>
+    /// <c>ParticleEffectsLibrary::Awake</c> is the shape: <c>Add v85 (System.Int32), this, 32</c> and then a
+    /// store at <c>[v85 + 8]</c>, which is <c>this.CurrentParticleEffectIndex = 1</c>. Refusing the fold on
+    /// the width left the store as a poke at unmanaged memory and the read beside it as
+    /// <c>num2.ToString()</c> on a number nothing had computed.
+    /// </para>
+    /// <para>
+    /// Only the primitives, so a base the analysis genuinely named - a reference, a struct, an array - is
+    /// still left alone: there the addition really is a member of that thing and belongs to the field passes.
+    /// </para>
+    /// </remarks>
+    private static bool IsAnAddress(TypeAnalysisContext? type) => type is null || type.FullName is
+        "System.SByte" or "System.Byte" or "System.Int16" or "System.UInt16" or "System.Int32"
+        or "System.UInt32" or "System.Int64" or "System.UInt64" or "System.IntPtr" or "System.UIntPtr"
+        or "System.Char" or "System.Boolean";
+
     // Walks back through however many address computations were chained, and only rewrites once it has
     // reached a base that is not one of them. Stopping at the depth bound instead would rewrite to a base
     // that is still foldable, and the fixpoint this sits in would then never settle.
@@ -528,7 +556,7 @@ public static partial class MetadataResolver
 
         for (var depth = 0; depth <= maxDepth; depth++)
         {
-            if (current.Base is not LocalVariable local || local.Type != null || !definitions.TryGetValue(local, out var definition))
+            if (current.Base is not LocalVariable local || !IsAnAddress(local.Type) || !definitions.TryGetValue(local, out var definition))
                 return folded ? current : null;
 
             if (definition.OpCode is not (OpCode.Add or OpCode.Subtract) || definition.Operands.Count < 3)
