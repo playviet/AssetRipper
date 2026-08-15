@@ -440,3 +440,48 @@ Ranked next steps:
 * `il2cpp-the-header-was-hoisted-out-of-the-loop` — round 1, and the recorded negative it corrects
 * `il2cpp-the-copy-out-of-the-thunks-buffer` — rounds 2–4, the `X29` condition, and rounds 5–6 as
   documented negatives
+
+---
+
+## RE-BASELINED onto master `dad92ee7e` — 1.9.7, export 528
+
+The HFA struct-return work landed on master after this worktree branched, so everything above is measured
+against a tree that no longer exists. Merged `dad92ee7e` (three conflicts, **all of them version numbers**;
+no source conflict at all) and re-measured. The two bodies of work do not overlap textually — HFA touched
+`ForkPipeline` (+7), `LocalVariables.Fork` (+7) and a new `VectorReturnAssembly.cs`; none of the six files
+this branch changed — and they do not overlap semantically either: `VectorReturnAssembly` runs at
+`ForkPipeline:43`, before SSA, and names its buffer `RETVAL`, while `InvokerThunk`/`ClearingASizedByT` run at
+424/714 and use `returnBuffer`. A method returning an HFA is never a shared `T` return.
+
+**Provenance checked**: `assets: assetripper.cpp2il.core/1.9.7`, `deps: …/1.9.7`, `probe2 1.9.7: same build
+as riprun`. All seven earlier rounds check out the same way in their logs, so no number in this file is of
+another agent's build. `bumpz.sh` now asserts the **assets file** as well as `deps.json`, and fails if more
+than one `Cpp2IL.Core` version is restored — backed up to `scratchpad-tools/`.
+
+| | 471 = master `dad92ee7e` alone | **528 = master + this branch** |
+|---|---|---|
+| compare2 **full** | 3247 | **3248** |
+| decompiled-only full | 2553 of 2815 (90.7%) | **2554 of 2815 (90.7%)** |
+| **commented** | 508 | **493** |
+| **unmanaged** | 403 | **396** |
+| notfound | — | 39 |
+| cfscore full | 609 | **609** |
+| decisions | 1326/1382 | **1326/1382** |
+| roundtrip whole | 1043 | **1043** (facts 11190) |
+| **oracle**: run / same · full+right · full+WRONG | 79 / 54 · 49 · 16 | **79 / 54 · 49 · 16** |
+| generation failures | — | **0** |
+| seam `genMethod` full / partial | 42 / 24 (36.4%) | **43 / 23 (34.8%)** |
+
+So the four kept rounds are worth, **on the new base**, exactly what they were worth on the old one:
+**full +1, commented −15, unmanaged −7**, every correctness scorer level, and the seam's partial rate
+36.4% → 34.8%. The oracle is identical to master's — the +3 (`51 → 54 same`, whole-and-wrong `19 → 16`) is
+entirely HFA's, and this branch neither adds to it nor takes any of it away.
+
+**`compare2 full` 3252 → 3247 across the HFA landing is a win, not damage**, and none of it is mine: 64
+methods stopped silently returning `default(T)` and five bodies moved `full → partial` because they now
+admit they are incomplete rather than lying. The correction is recorded here so the next reader of this log
+does not diff 3248 against my old 3253 and conclude the opposite.
+
+One thing to note for whoever merges: `cfscore` "files with nothing left" is **91 of 96** on the new base,
+where this branch measured 92 on the old one. That single file is HFA's, not this branch's — `cfscore full`
+is 609 either way.
