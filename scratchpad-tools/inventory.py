@@ -15,6 +15,7 @@ import collections, os, pickle, re, sys
 SP = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, SP)
 from csharp import members, without_attributes
+from allscore import parameter_types
 from markers import classify, has_body, statements
 
 GAMEHUB = '/Users/playviet/Documents/_BZ/game-hub/Assets'
@@ -115,15 +116,22 @@ def main():
                     if kind == 'full':
                         whole += 1
                         continue
-                    want = arity(t)
+                    want, wanttypes = arity(t), parameter_types(t)
                     best = None
                     for o in originals.get(member, []):
                         if not has_body(o):
                             continue
-                        if arity(o) == want or best is None:
-                            if arity(o) == want:
+                        if arity(o) == want:
+                            #Two overloads of one arity both matched the FIRST original, so a body
+                            #could be judged against the wrong one and owe the wrong number of
+                            #statements - which is what orders this queue. The parameter types
+                            #separate them exactly (see `allscore.parameter_types`); arity still
+                            #decides, and the types only choose among what arity already accepted.
+                            if best is None or parameter_types(o) == wanttypes:
                                 best = o
+                            if parameter_types(o) == wanttypes:
                                 break
+                        elif best is None:
                             best = o
                     if best is None:
                         notmine += 1
