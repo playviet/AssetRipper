@@ -405,4 +405,39 @@ leftovers were sized this way and are worth writing down rather than building:
   zero is zero on that edge** — conditional constant propagation, which belongs in `SsaForm` and is a bigger
   change than the two statements justify.
 
+## 1.8.10 — export 500 — a register the branch tested nought IS nought on that edge — **KEPT**
+
+**Files changed: `Analysis/ZeroOnATestedEdge.cs` (new) and one line in `Analysis/LocalVariables.cs`'s seed
+list.** Nothing in `SsaForm`.
+
+`s?.GetHashCode() ?? 0` compiles to a `CBZ` around the call and a join that reads the answer register. On the
+taken edge `X0` holds the null pointer, which the compiler is reusing as the integer nought — the same word,
+and it knows it. The phi therefore merges a **reference** with the call's `Int32`, takes the reference's type,
+`SsaForm.CannotBeTheSameValue` refuses the copy from the call as a register being reused, and the subtraction
+is left reading the string.
+
+**The operand, not the copy — and the first build got that wrong.** Rewriting the copy `SsaForm.Remove`
+writes was built first and measured *worse than useless*: by then the phi is already typed from the
+reference, so the other edge's copy is still refused and the join keeps only the nought — `ActiveHash` came
+out adding zero every time round the loop. Rewriting the **phi's operand**, as a seed before the typing
+fixpoint, means the phi takes its type from the edge that has one and both copies survive.
+
+| | 499 | 500 |
+|---|---|---|
+| `compare2` full / partial | 2559 / 150 | **2560** / **149** |
+| commented / unmanaged | 426 / 348 | **421** / **345** |
+| `allscore` ALL full / partial | 2119 / 114 | **2120** / **113** |
+| `notecensus` methods / losing | 288 / 73 | **287** / **72** |
+| decisions · roundtrip · cfscore · genfail | | level |
+| `livecount` | | **+33 live, 0 branches** |
+
+`ActiveHash` is now the source exactly — `int num3 = 0; if (text != null) num3 = text.GetHashCode();` — with
+no marker and no note.
+
+**The site census said one site and the rule moved seven files**: BoardLogic +13, AdsManager +10,
+UserSegmentationManager +4, JsonExtension +3, FirebaseTracking +2, IDictionaryExtension +2. That is the point
+about a general SSA fact: it unblocks bodies no census could attribute to it. The one file that reads
+*shorter*, `BoardController` at −1, is an improvement too — two `Unmanaged memory load` markers became
+`CellData[] intermediateBoard = mergeResult3.intermediateBoard;`, four noise lines for three real ones.
+
 

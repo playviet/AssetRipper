@@ -226,6 +226,7 @@ public static partial class LocalVariables
         SeedArrayElements(method);
         SeedBitwiseOperands(method);
         FloatConstantInAnInteger.Seed(method);
+        ZeroOnATestedEdge.Seed(method);
         ArrayWalkerTyping.Run(method);
         SeedNewobjResults(method);
         SeedMethodInfoTypes(method);
