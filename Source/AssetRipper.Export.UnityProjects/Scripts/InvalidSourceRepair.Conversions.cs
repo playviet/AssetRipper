@@ -93,4 +93,81 @@ internal static partial class InvalidSourceRepair
 
 		return $"{assignment.Left} = ({target.ToDisplayString()})({assignment.Right})";
 	}
+
+	/// <summary>
+	/// A field of a struct that a property returns, assigned through the property.
+	/// </summary>
+	/// <remarks>
+	/// <c>reusablePointerData.position.x = x5;</c> - and C# says <c>CS1612</c>, cannot modify the return value of
+	/// <c>position</c> because it is not a variable. A property getter hands back a COPY of the struct, so the
+	/// assignment would be writing into a temporary that is then discarded, and the language refuses rather than
+	/// let it look like it worked.
+	/// <para>
+	/// Native code has no such distinction - il2cpp inlined the getter and wrote straight into the storage - so the
+	/// statement is exactly right about what happened and only wrong about how C# spells it. The spelling is the
+	/// read-modify-write the original source must itself have had: take the copy, set the field, put it back.
+	/// </para>
+	/// <para>
+	/// Narrow on purpose. The property needs a setter, or there is nothing to put the copy back through; and the
+	/// receiver is written out twice, so it is only admissible where re-evaluating it cannot do anything - a local,
+	/// a parameter, a field, or a chain of those. A property or a call in that position could have side effects,
+	/// and running it twice would be a worse answer than the marker.
+	/// </para>
+	/// </remarks>
+	private static string? RewriteStructPropertyMember(SyntaxNode node, SemanticModel model)
+	{
+		if (node is not ExpressionStatementSyntax
+			{
+				Expression: AssignmentExpressionSyntax
+				{
+					RawKind: (int)SyntaxKind.SimpleAssignmentExpression,
+					Left: MemberAccessExpressionSyntax { Expression: MemberAccessExpressionSyntax through } left,
+				} assignment,
+			})
+		{
+			return null;
+		}
+
+		if (model.GetSymbolInfo(through).Symbol is not IPropertySymbol { Type.IsValueType: true } property
+			|| property.SetMethod is null
+			|| property.IsReadOnly)
+		{
+			return null;
+		}
+
+		if (!SafeToEvaluateTwice(through.Expression, model))
+		{
+			return null;
+		}
+
+		string type = property.Type.ToDisplayString();
+		return $"{{ {type} repairCopy = {through}; repairCopy.{left.Name} = {assignment.Right}; "
+			+ $"{through} = repairCopy; }}";
+	}
+
+	/// <summary>
+	/// Whether writing this expression out twice runs nothing that could have an effect.
+	/// </summary>
+	private static bool SafeToEvaluateTwice(ExpressionSyntax expression, SemanticModel model)
+	{
+		while (true)
+		{
+			switch (expression)
+			{
+				case ThisExpressionSyntax:
+					return true;
+				case IdentifierNameSyntax:
+					return model.GetSymbolInfo(expression).Symbol is ILocalSymbol or IParameterSymbol or IFieldSymbol;
+				case MemberAccessExpressionSyntax member:
+					if (model.GetSymbolInfo(member).Symbol is not IFieldSymbol)
+					{
+						return false;
+					}
+					expression = member.Expression;
+					continue;
+				default:
+					return false;
+			}
+		}
+	}
 }

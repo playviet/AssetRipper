@@ -646,6 +646,7 @@ internal static partial class InvalidSourceRepair
 				?? RewritePrimitiveStorage(node, model)
 				?? RewriteNullValueType(node, model)
 				?? RewriteNarrowingAssignment(node, model)
+				?? RewriteStructPropertyMember(node, model)
 				?? RewriteBackingField(node, model);
 
 			if (text is not null)
