@@ -586,3 +586,64 @@ Judged on the markers (`indirect` −1, `unmanaged` −2) and on correctness (or
 cfscore, branches all level), against `commented` +6 which CLAUDE.md designates the noisy one and which is
 here exactly the cascade of two operands. **An unresolved indirect call is a pipeline failure; a correct
 statement waiting on its operands is not.**
+
+---
+
+## Round 9 — 1.9.10, export 533 — a declaration beats a bare width at a parameter. REVERTED
+
+With `EqualityComparer<W>::Equals` now named (round 8), its two arguments still wore `System.Int64` - the
+width of the register they arrived in - so the call could not be written: a long does not convert to an
+unconstrained `W`. `SharpenFromReturn` has made exactly this argument for **return** types since 1.3.x; the
+parameter side was never made, and `SetTypeIfUnknown` cannot make it because the local is not unknown, it is
+wrong. One clause in `LocalVariables.Fork.SetTypeFromParameter`: where the local is a bare integer and the
+callee's parameter type is a named reference **or a generic parameter**, take the parameter type.
+
+| | 531 | 533 |
+|---|---|---|
+| compare2 full / partial / dead | 3248 / 155 / 108 | same |
+| commented | 499 | **502** |
+| unmanaged · notfound · indirect | 394 · 39 · 20 | **unchanged** |
+| livecount live / branches | 37900 / 9672 | **37894** / 9672 |
+| generation failures | 0 | 0 |
+
+**No marker moved, live fell 6, commented rose 3. Reverted.**
+
+It did what it was designed to do — `(equalityComparer.Equals((W)num17, y) ? 1 : 0)` became
+`(equalityComparer.Equals(x, y) ? 1 : 0)` — and it bought nothing, because the cast did not go away, it
+**moved into the declaration**:
+
+```csharp
+//W x = (W)num7;                       <- num7 is the alloca
+//W y = val6;                          <- val6 from `W val5 = (W)(obj - 40L)`
+//long num20 = (equalityComparer.Equals(x, y) ? 1 : 0);
+```
+
+And it cost two live statements each in `IListExtension` and `IEnumerableExtension`, which were not the
+target at all.
+
+**The diagnosis is the deliverable**: the argument's *type* was never the blocker. Both arguments are a `W`
+**read out of an alloca** — a value copied into a `T`-sized buffer, where the read through the buffer is
+what cannot be written. That is the same family as rounds 2–4, one level further in, and it is what the next
+attempt should fix. `current.Value` is already live one line above, which is the same value by another
+name: the fix is to make the read *be* that name, not to retype the read.
+
+---
+
+## Where it stands, master `dad92ee7e` (export 471) → 1.9.9 (export 531)
+
+| | 471 = master | **531 = this branch** |
+|---|---|---|
+| compare2 full / partial / dead | 3247 / 160 / 108 | **3248 / 155 / 108** |
+| commented | 508 | **499** |
+| unmanaged | 403 | **394** |
+| indirect | 21 | **20** |
+| cfscore full | 609 | 609 |
+| decisions | 1326/1382 | 1326/1382 |
+| roundtrip whole / facts | 1043 / — | 1043 / 11190 |
+| **oracle** run/same · full+right · full+WRONG | 79/54 · 49 · 16 | **79/54 · 49 · 16** |
+| generation failures | — | **0** |
+| seam `genMethod` full / partial | 42 / 24 (36.4%) | **43 / 23 (34.8%)** |
+
+Five kept rounds, four reverted with a diagnosis each. Bodies that went from doing the wrong thing to doing
+the right one, none of which any compilability scorer can see: `ArrayExtension::ResizeArray`,
+`IListExtension::Shuffle` (partial → full), `IDictionaryExtension::TryGetKeyByValue` and `GetKeysByValue`.
