@@ -38,6 +38,10 @@ def load(path):
         text[path] = open(path, encoding="utf-8", errors="replace").read()
     return text[path]
 
+#Six examples is enough to recognise a shape and never enough to census one. Every family
+#census so far has had to re-run this by hand; `WHYCOST_EXAMPLES=999` prints them all.
+LIMIT = int(os.environ.get("WHYCOST_EXAMPLES", 6))
+
 stat = defaultdict(lambda: [0, 0, 0])   # code -> [total, commented, missing-file]
 examples = defaultdict(list)
 
@@ -65,10 +69,10 @@ for code, where, msg, said in sorted(rows):
             break
     if hit:
         s[1] += 1
-        if len(examples[code]) < 6:
+        if len(examples[code]) < LIMIT:
             examples[code].append((where, msg[:110], said[:110]))
     else:
-        if len(examples[code + " KEPT"]) < 6:
+        if len(examples[code + " KEPT"]) < LIMIT:
             examples[code + " KEPT"].append((where, msg[:110], said[:110]))
 
 print(f"{'code':8} {'sites':>6} {'lost':>6} {'kept':>6} {'nofile':>6}")

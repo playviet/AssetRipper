@@ -104,15 +104,37 @@ internal static partial class InvalidSourceRepair
 			return null;
 		}
 
-		return receiver.SpecialType is SpecialType.System_Boolean or SpecialType.System_Char
+		//A POINTER to the primitive rather than the primitive - `((float*)(nint)num)->m_value`, which is
+		//how a value reached through an address arrives. The field and the pointed-at storage are the same
+		//here too, so the access says exactly what a dereference says. The receiver cannot simply be
+		//returned as it is above: that would hand back the address instead of the number, so this branch
+		//has to spell the `*` and cannot share the line below. 22 of the 35 lost `CS1061` statements at
+		//1.2.30 are this one shape - `long` 12, `int` 6, `float` 4.
+		//`p[0]` and not `*p`, though they are the same dereference: the scorers split a file into members
+		//with ast-grep, whose C# grammar fails on a unary `*` and collapses everything after it into one
+		//member. Emitting the star cost 9 members of `IListExtension` and `IEnumerableExtension` as a
+		//phantom `missing` - a measurement artefact that would have been read as a regression forever
+		//after. Indexing a pointer is the same instruction and parses.
+		if (receiver is IPointerTypeSymbol pointer)
+		{
+			return IsPrimitiveStorage(pointer.PointedAtType) ? $"({access.Expression})[0]" : null;
+		}
+
+		return IsPrimitiveStorage(receiver) ? access.Expression.ToString() : null;
+	}
+
+	/// <summary>
+	/// Whether this type is one whose whole content is the single <c>m_value</c> field.
+	/// </summary>
+	private static bool IsPrimitiveStorage(ITypeSymbol type)
+	{
+		return type.SpecialType is SpecialType.System_Boolean or SpecialType.System_Char
 			or SpecialType.System_SByte or SpecialType.System_Byte
 			or SpecialType.System_Int16 or SpecialType.System_UInt16
 			or SpecialType.System_Int32 or SpecialType.System_UInt32
 			or SpecialType.System_Int64 or SpecialType.System_UInt64
 			or SpecialType.System_Single or SpecialType.System_Double
-			or SpecialType.System_IntPtr or SpecialType.System_UIntPtr
-			? access.Expression.ToString()
-			: null;
+			or SpecialType.System_IntPtr or SpecialType.System_UIntPtr;
 	}
 
 	private static string? RewriteBackingField(SyntaxNode node, SemanticModel model)
