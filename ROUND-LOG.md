@@ -200,4 +200,17 @@ resolving: noise leaving, in every case.
 
 **My sixteen are now twelve, and 128 commented statements are 94.**
 
+### The execution oracle at 1.8.6
+
+`scratchpad-tools/oracle.sh` against `corpus/corpus.apk` (copied into the worktree; it is gitignored):
+
+```
+79 methods run, 51 behave the same, 28 do not
+rated `full` 65   of those right 46   of those whole and WRONG 19
+```
+
+**Identical to `corpus/BASELINE.md` in every cell.** So none of the five kept rounds has broken a body that
+was computing the right answer — and none of the corpus's 79 shapes exercises what they fixed, which is why
+it neither rose nor fell.
+
 
