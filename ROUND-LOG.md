@@ -258,4 +258,44 @@ What moved the other way is theirs and expected: `allscore` 2122 → 2117 and `c
 (unmanaged 15 → 19, files clean 92 → 91, `notecensus` losers 71 → 76) — the five bodies that now admit
 incompleteness instead of returning `default(T)`.
 
+## 1.8.8 — export 498 — arithmetic over two floats does not produce a boolean — **KEPT**
+
+`VectorExtensions::IntersectLineSegments2D` opens with `Subtract v22 @ V4_v1 (System.Boolean), p2start.x,
+p1start.x` — a float subtraction typed **Boolean**, because a backward phi edge stamped the type of `V4`'s
+later life (a comparison result) onto the value in it now. Twelve statements went with it, multiplying a
+float by a `bool`.
+
+`SharpenAVectorRegister` overrules a bare integer and nothing else, so `Boolean` blocked its own correction.
+It now overrules `System.Boolean` too. **That is safe exactly here and nowhere else**: this is only reached
+from `PropagateArithmetic`, which upstream calls for `Add`/`Subtract`/`Multiply`/`Divide` and the shifts and
+never for a comparison, and the logical operations are excluded above it — so the question is always "what
+does arithmetic over two known floats produce", and the answer is never a boolean.
+
+| | 497 | 498 |
+|---|---|---|
+| `compare2` commented | 472 | **458** |
+| `livecount` | | **+15 live, +6 branches**, only `VectorExtensions.cs` |
+| everything else | | level: full 2557, partial 152, unmanaged 383, allscore 2117/116, decisions 1326, roundtrip 11194/1044, notes 290/76, cfscore 609, genfail 0 |
+
+Twelve statements come back and read as the source: `num12 = num2 * num3`, the two divisions, and the four
+comparisons that decide whether the segments meet. **This lands in `VectorExtensions.cs`, which is shared
+with the struct-return agent** — the rule itself is global and nowhere near the struct-return path, and the
+only file in the game it moves is this one, but it is flagged for the merge.
+
+What is left in that body is a second local stamped the same way (`bool flag = (byte)(int)num3 != 0`) and
+`_ = "Invalid instruction: … Jump target not found in method: 0x231F0C0"`, which is a branch out of the
+method's own range and a different family.
+
+### The execution oracle at 1.8.8
+
+```
+79 methods run, 54 behave the same, 25 do not      (BASELINE.md: 51 / 28)
+rated `full` 65   of those right 49   whole and WRONG 16      (BASELINE.md: 65 / 46 / 19)
+```
+
+**Three shapes stopped being whole-and-wrong**, against the corpus baseline and against my own reading at
+1.8.6, which was identical to it. The struct-return merge is in this reading too, so the three are not
+necessarily mine — but nothing of mine cost a correct body, which is the question the oracle is here to
+answer.
+
 

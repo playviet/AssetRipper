@@ -523,11 +523,21 @@ public static partial class LocalVariables
     /// is what a value of unknown kind ends up as, and a value in v0..v31 is a float - so between the two
     /// there is nothing to weigh. Only in a vector register, and only overruling a bare integer, so a type
     /// that says something is never thrown away.
+    ///
+    /// <b>And a `System.Boolean`, in this one place.</b> A backward phi edge stamps the type of a register's
+    /// later life onto the value in it now: `V4` holds `p2start.x - p1start.x` and then, further down,
+    /// a comparison result, and the subtraction came out `System.Boolean` -
+    /// `VectorExtensions::IntersectLineSegments2D` reads
+    /// `bool flag = (byte)(int)(p2start.x - p1start.x) != 0;` and then multiplies a float by it. This is only
+    /// reached from `PropagateArithmetic`, which upstream calls for `Add`/`Subtract`/`Multiply`/`Divide` and
+    /// the shifts and never for a comparison, and the logical operations are excluded above it - so the
+    /// question here is always "what does arithmetic over two known floats produce", and the answer is never
+    /// a boolean.
     /// </remarks>
     private static bool SharpenAVectorRegister(LocalVariable local, TypeAnalysisContext? type)
     {
         if (type?.FullName is not ("System.Single" or "System.Double")
-            || !IsABareInteger(local.Type)
+            || !(IsABareInteger(local.Type) || local.Type?.FullName == "System.Boolean")
             || local.Register.Name is not { Length: > 1 } name || name[0] is not ('V' or 'S' or 'D'))
         {
             return false;
