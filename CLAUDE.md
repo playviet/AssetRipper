@@ -64,13 +64,22 @@ scratchpad/cfscore.py <out>                 # 96 originals, scored method by met
 scratchpad/compare2.py <out>                # every body in the game, not just the 96
 scratchpad/roundtrip.py <out>               # what the binary says the method does, no source needed
 scratchpad/decisions.py <out>               # did the branching survive
-scratchpad/difftest.py <out>                # run it against the original and compare the answers
+scratchpad/allscore.py <out>/Assets/...     # all 427 originals, not the 96; the honest rate
 ```
 
-Five scorers, because each is blind somewhere the next one is not. The last is the only one that can tell a
-method that is right from one that only looks right, and it is the one to believe when they disagree. There is
-also a corpus built on purpose - `scratchpad/corpus/`, a Unity project compiled to arm64 il2cpp - where every
-method has known source; `scratchpad/autodiff.py` runs the whole of it without being told what to test.
+Each is blind somewhere the next one is not, and all of them ask whether a body **compiles whole** rather
+than whether it **computes the right answer**.
+
+**The execution oracle that answered the second question is LOST** - `difftest.py`, both corpus projects and
+their binaries, with no copy in either backup. `autodiff.py` survives in `scratchpad-tools/` and needs only
+`<originalSource.cs> <recoveredSource.cs>`, so what has to be rebuilt is the **corpus**: a Unity project of
+known-source shapes compiled to arm64 il2cpp. See `il2cpp-the-execution-oracle-is-gone` in memory. Until it
+is back, weigh `decisions.py` and `roundtrip.py` hardest, because nothing left can catch a body that is
+whole and wrong.
+
+**Back a tool up the moment you change it.** `scratchpad/` is a session temp directory and has now lost
+files four times. `AssetRipper/scratchpad-tools/` is the durable home and is tracked in git; `memory/tools/`
+mirrors it.
 
 Keep a change only if it makes the recovery **better**, which is not the same as making `full` go up. `full`
 counts methods that compile whole, and a method can compile whole and be wrong: an execution oracle found nine
