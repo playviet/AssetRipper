@@ -1,0 +1,12 @@
+#!/bin/zsh
+# p2 <mode> ... - probe2 against the binary unzipped once out of the APK named in apkpath.
+SP=${0:A:h}
+export DOTNET_ROOT=$HOME/.dotnet
+export PATH=$HOME/.dotnet:$PATH
+APK="$(cat $SP/apkpath)"
+if [ ! -f $SP/bin/libil2cpp.so ]; then
+  mkdir -p $SP/bin
+  unzip -o -j "$APK" 'lib/arm64-v8a/libil2cpp.so' -d $SP/bin > /dev/null
+  unzip -o -j "$APK" 'assets/bin/Data/Managed/Metadata/global-metadata.dat' -d $SP/bin > /dev/null
+fi
+dotnet $SP/probe2/bin/Release/net10.0/probe2.dll $SP/bin/libil2cpp.so $SP/bin/global-metadata.dat 6000.0.78f1 "$@"

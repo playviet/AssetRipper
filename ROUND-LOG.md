@@ -298,4 +298,25 @@ rated `full` 65   of those right 49   whole and WRONG 16      (BASELINE.md: 65 /
 necessarily mine — but nothing of mine cost a correct body, which is the question the oracle is here to
 answer.
 
+## Where it ends — 1.8.8 / export 498
+
+Unity gate **12 CS7069**, its known floor, unchanged from 496 and from their 471.
+
+`Unknown` slice: **27 methods, 249 commented** (was 29 / 286 at 490). Two of the 27 — `VectorExtensions::With`
+10 and `Cell::GetCatBoundsInContainer` 1 — **entered with the struct-return merge, not with anything of
+mine**: the slice at 497, before my last round, already carried both.
+
+**My sixteen, 128 commented at 490 → 80 in twelve methods at 498**, and of what is left:
+
+| left | what it is |
+|---|---|
+| `GetReadyProvider` 15, `ResolveImpressionCount` 9 (+`NotifyRevenuePaid` 8) | the interface walk, tail-merged — diagnosed and written up, not built |
+| `BaseAbilityBuyPopup::Show` 15 | an absolute address `0x50D4000` merged with a field address and read through; 7 such literals game-wide |
+| `SpawnParticleEffect` 9, `Awake` 6, `EncodeAllInfoIntoVertices` 3 | a struct on the stack / in registers |
+| `GenerateSlicedFilledSprite` 7, `IsRaycastLocationValid` 6 | shared file, not touched |
+| `DrawFeatherBorder` 5 | `(Color32)(color & 0xFFFFFF)`, one site |
+| `ParseFormattedDateString` 2 | an identity `+ 0L` nothing folds, and the front member where the declaration says the struct |
+| `ActiveHash` 2 | the instruction after a call reads the receiver's SSA version, not the result's |
+| `IntersectLineSegments2D` 1 | a second local stamped `Boolean`, and a jump target outside the method |
+
 
