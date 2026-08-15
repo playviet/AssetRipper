@@ -380,6 +380,29 @@ say the same thing.
 
 The execution oracle is **unmoved at 54/79 and 49/65** — and it does exercise interface dispatch
 (`SharedPick`, `ValuePick`, `SumSteps`), so this is a CFG rewrite measured by the one instrument that would
-notice it going wrong.
+notice it going wrong. Unity gate **12 CS7069**, its floor.
+
+`Unknown` slice **27 → 24 methods, 249 → 217 commented**; all three interface methods left it outright.
+**My sixteen are ten methods and 56 commented statements, from 128.**
+
+## After nine rounds there is no family left, only a tail
+
+`owedcensus2.py` over the whole export at 499: **85 owed bodies whose first commented statement was read**,
+and the roots are singletons. The largest are `_ = null;` (4) and `long v = obj - N;` (4); everything else is
+one or two. So the way to pick the next round here is by *shape*, not by this slice — and two of my own
+leftovers were sized this way and are worth writing down rather than building:
+
+* **`BaseAbilityBuyPopup::Show`, 15** — the metadata-init guard's `ADRP` leaves a page constant in X21;
+  `MetadataInitGuardRemover` deletes the guard, but SSA destruction has already materialised that constant
+  into edge copies, and it merges with `this + 0x98` (`&_abilitySlotUI`), which `FieldAddressSinking` then
+  refuses at `sourceNotALocal`. The asm settles what to do: **both** arms of the isinst do
+  `MOV X21, X19; STR X1, [X21 + 0x98]!`, so the constant edge cannot reach the read at all. It is an
+  impossible-edge phi, not a real choice — fix the dead edge copy, not the sinking rule.
+* **`ActiveHash`, 2 — and it is NOT broad: 1 site game-wide.** `CBZ X0, join; …; BLR; join: SUB W8, W0, W21`
+  is `s?.GetHashCode() ?? 0`. The null edge carries X0 still holding the string, so the phi merges a
+  reference with a number, `CannotBeTheSameValue` refuses that copy, and the subtraction is left reading the
+  string. What would fix it is the general fact that **a register a branch was taken on because it tested
+  zero is zero on that edge** — conditional constant propagation, which belongs in `SsaForm` and is a bigger
+  change than the two statements justify.
 
 
