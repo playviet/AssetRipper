@@ -669,6 +669,7 @@ edge-copy construction, and nothing is in `VectorExtensions.cs`.
 | 9 | `Analysis/LocalVariables.Fork.cs` | `SetTypeFromParameter` | reverted |
 | 10 | `Analysis/InvokerThunk.cs` | `Dead` — one `COPYFOLD_TRACE` line only | diagnostic |
 | 11 | `Analysis/InvokerThunk.cs` | new `ArgumentRegisterBookkeeping`, `IsAnArgumentRegister`, `IsTheFrame`; `AnswerIntoTheCopyItFeeds`; `Erase` | **kept** |
+| 12 | `Analysis/SharingMeansAReference.cs` | `Run` (comparison fold + `fromTheTest`), new `IsFromTheTest`, `Compare` | **kept** |
 
 ---
 
@@ -848,3 +849,96 @@ The `Equals` call is still commented, and now for exactly **one** reason: its *s
 `W val5 = (W)(obj - 40L)`. That is the `value` **parameter** spilled into a `T`-sized buffer — a different
 root from a call's answer buffer, reached through a `Select` between the value-type and reference cases at
 `325..328`. Half of a two-operand statement, recovered and verified rather than assumed.
+
+---
+
+## Round 12 — 1.9.12, export 536 — a settled comparison decides its branch. **KEPT, narrowly**
+
+**File and functions**: `Analysis/SharingMeansAReference.cs` only — `Run` gains a `fromTheTest` set and a
+comparison-folding branch; new `IsFromTheTest` and `Compare`. No upstream file, nothing in `SsaForm`.
+
+### The chain, diagnosed at the pass's own position
+
+Taking the one operand I named. The `value` argument comes from a branch il2cpp writes to ask whether `T`
+is a value type — `probe2 rawisil`:
+
+```
+341 ConditionalJump @346, Z    ; if T is a value type, SKIP the two dereferences
+342 Move X8, [X26]             ; deref the get_Value buffer
+344 Move X9, [X28]             ; deref the `value` spill slot
+348 Move [X29-20], X8          ; the thunk's frame, slot 0
+349 Move [X29-18], X9          ; slot 1
+```
+
+**The polarity is right and `InvokerThunk.Unpack`'s assumption is right**: for a reference `W` the invoker
+frame wants the address of a location holding the object, so the live arm dereferences and the frame slot
+holds the object. What poisons it is that the *other* arm — value-type, impossible in a shared body — leaves
+X9 holding the **address**, and the two edge copies into the merged local carry different things:
+
+```
+-1 Move v659 @ X9_v23 (W), v76 @ X28_v1 (W)      <- the address  (the impossible arm)
+-1 Move v659 @ X9_v23 (W), [v76 @ X28_v1 (W)]    <- the value    (the live arm)
+```
+
+and the address wins, giving `W val5 = (W)(obj - 40L);`.
+
+### Why the branch was still there
+
+`SharingMeansAReference` had already settled the test to `Move v653, 0` — and stopped. `CheckNotEqual v654,
+v653, 0` was left standing, and `ConstantBranchFolding` re-evaluates *the comparison the condition is
+defined by*, so a `Move` of an answer tells it nothing. **This is the rule
+`il2cpp-the-generic-seam-is-generic-methods` already states — mark and rewrite the instruction the branch's
+condition is defined by — applied one link further along than it was the first time.**
+
+Two details, each of which cost a probe round:
+
+* **Leave it a comparison.** Rewriting to `Move verdict, 0` gives `Evaluate` two operands and it declines.
+  Substituting the constants and keeping the opcode is what it is built to read.
+* **Rewriting is not enough; it must be marked.** `ConstantBranchFolding.HasSettledAnswer(instruction)` —
+  without it the pass refuses, by design, so that a register merely holding a number cannot decide a branch.
+
+Narrowed to comparisons with an operand descended from the value-type test (`fromTheTest`), so this is not
+general constant folding wearing this pass's name.
+
+### Measured — and what it did not do
+
+| | 534 | **536** |
+|---|---|---|
+| compare2 full / partial / dead | 3248 / 155 / 108 | **identical** |
+| commented · unmanaged · notfound · indirect | 491 · 391 · 39 · 20 | **identical** |
+| cfscore · decisions · roundtrip · oracle · gen failures | 609/91 · 1326 · 1043/11191 · 79/54·49·16 · 0 | **identical** |
+| livecount live / branches | 37896 / 9672 | **37879 / 9664** |
+
+**Not one scorer moved.** What moved is 8 impossible branches and 17 statements, and reading the diff says
+what they were:
+
+```csharp
+// 534                                    // 536
+long num5 = 0L;                           long num5 = num2;
+long num6 = num2;                         num5 = (((long*)num2))[0];
+if (num5 == 0) { num6 = *(long*)num2; }
+```
+
+il2cpp's value-type/reference guard, which the source never had, replaced by the unconditional dereference.
+Kept on the same reasoning round 8 was kept on and which the coordinator endorsed: **`livecount` counts
+machinery as live** — it counts `_ = "Unmanaged memory load…"` as live too — so a −17 that is entirely
+machinery is not code lost. The fork already removes analogous machinery on purpose
+(`MetadataInitGuardRemover`, `RgctxGuardFolding`, `ClassInitCallRemover`).
+
+**It did not deliver the predicted body**, and that is stated plainly: `equalityComparer.Equals(value2,
+value)` is still commented. The branch is gone; **the edge copies are not**. Both definitions of `v659`
+survive the fold, so the address still wins.
+
+### Handoff, verified rather than guessed
+
+That last step is `il2cpp-a-block-that-throws-takes-no-edge`'s family — *the check is gone, the edge is
+not* — and it is the other agent's in-flight work (dead edge copies on impossible edges). I did not build
+it. What is now true and was not before:
+
+> The branch is folded and the arm is provably impossible. The **only** thing between
+> `IDictionaryExtension::TryGetKeyByValue` / `GetKeysByValue` and a live
+> `equalityComparer.Equals(value2, value)` is the edge copy `-1 Move v659 @ X9_v23 (W), v76 @ X28_v1 (W)`
+> on the now-dead edge. Remove edge copies on edges `UnreachableBlockRemover` has taken away, and the
+> dereference is the only definition left.
+
+Both halves are probe-verified; neither is a guess.
