@@ -595,4 +595,66 @@ What makes it unusually favourable if it is taken: the affected population is **
 small, so a callee-side-only change can be measured exactly. The mergeability question to answer first is
 whether `ParameterOperands` can be given a fork-side sibling rather than edited in place.
 
+## 1.8.13 / 1.8.14 — exports 504, 505 — a composite over eight bytes takes two registers — **KEPT**
+
+**Files changed: `Analysis/ParametersOnTheStack.cs` (the bulk), one line in
+`InstructionSets/NewArmV8InstructionSet.cs::GetArgumentOperandsForCall`, one line in
+`InstructionSets/NewArmV8InstructionSet.Fork.cs::AddRuntimeMethodOperand`.** Nothing in upstream's
+`ParameterOperands`; the sibling fix's hook was waiting, exactly as recorded.
+
+AAPCS64 passes a composite by value in **consecutive** general registers while it fits in two, and anything
+larger **indirectly** in one. So the only case the one-register-per-parameter walk gets wrong is the composite
+of **nine to sixteen bytes** — which is why `27 methods take a big composite` narrows to `3 CFramework methods
+actually shift`: most of the 27 are over sixteen bytes and were already right by accident.
+
+`Nullable<T>` needs its own size. **A generic type records no layout**, so the metadata calls
+`Nullable<Vector3>`, `Nullable<Color>` and `Nullable<Single>` all nine bytes where the truth is 16, 20 and 8 —
+on three different sides of the two boundaries. `CompositeSize` adds an instantiation up from the fields of
+the type it instantiates, substituting the argument.
+
+### The three checks, made before the export
+
+| | |
+|---|---|
+| **must not move** | a method with no 9–16-byte composite must be byte-identical. `probe2 paramregs` twice, once with `PARAMWIDEN_OFF=1`, crossed by the new `paramcheck.py`: **2673 of 97522 methods moved and 0 of them lacked such a parameter.** The 103 that have one and did not move have it as their last parameter. |
+| **count** | `diff` first reported 8 violations — all **alignment artifacts**, neighbouring identical lines inside a shifted hunk. `paramcheck.py` compares positionally because the two runs list methods in the same order, and reports 0. A hunk-based diff cannot check this invariant. |
+| **prediction** | `Pool::Spawn` was predicted `X0,X1,X3,X4,X6,X7` from the ISIL and came out exactly that, from `X0,X1,X2,X3,X4,X5`. `And v144, parent @ X4, 255` is now `And v144, localScale @ X4 (Nullable<Vector3>), 255`. |
+
+### Both sides, and why that is not the reverted call-side attempt
+
+1.8.13 was callee-side only and measured **worse** — `full` 2560→2559, commented 421→422 — for a precise
+reason: `PoolManager::Spawn` forwards its own parameters to `Pool::Spawn`, its own moved and the call's did
+not, so the forwarding stopped lining up and the call was commented out. 1.8.14 widens
+`GetArgumentOperandsForCall` as well and it goes back.
+
+**This is not the stack half that was reverted twice.** The registers a caller puts an argument in are the
+ones the callee reads it from, so the correction is identical on both sides; what collided at 1.1.22 was the
+outgoing *stack* area being named with the same `stack_N` as the caller's own incoming parameters. No operand
+count changes here, only which register each names.
+
+| | 502 | 505 |
+|---|---|---|
+| every scorer | | **identical**: full 2560, partial 149, commented 421, unmanaged 345, indirect 19, allscore 2120/113, decisions 1326, roundtrip 11194/1044, notes 287/72, cfscore 609, genfail 0 |
+| `default(...)` stand-ins | 923 | 923 |
+| `livecount` | | −3 live, −4 branches, in `Pool.cs` and `PoolManager.cs` only |
+
+**That is what this class of fix does** — it replaces wrong values, not markers, so the numbers cannot move
+and the evidence has to be the source:
+
+```
+- UnityEngine.Object obj = default(UnityEngine.Object);
+- if (obj != null) transform.SetParent((Transform)obj, worldPositionStays: false);
++ if (parent != null) transform.SetParent(parent, worldPositionStays: false);
+```
+
+`SetParent` was being handed a value the method never had. And five call sites in `PoolManager`:
+`Spawn(localPos, localRot, (Vector3?)(object)localScale.HasValue, parent)` becomes
+`Spawn(localPos, (Quaternion?)(object)localRot.HasValue, localScale, parent)`; `Spawn(poolName, null, null,
+localScale)` — which had **dropped `parent` altogether** — becomes `Spawn(poolName, null, localRot, null,
+parent)`. The `−4 branches` is `livecount` counting the `?` in `Vector3?` on the four invented
+`Vector3? localScale = default(Vector3?);` declarations that are gone; `decisions.py` is unmoved at 1326 of
+1382, and it is the instrument that asks whether the original's branching survived.
+
+`standins.sh` and `paramcheck.py` are new and backed up, with `probe2 paramregs`.
+
 

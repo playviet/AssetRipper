@@ -1353,6 +1353,11 @@ public partial class NewArmV8InstructionSet : Cpp2IlInstructionSet
             }
         }
 
+        //A composite of nine to sixteen bytes takes two of the integer registers, and the walk above hands
+        //out one apiece. The registers a caller puts an argument in are the ones the callee reads it from,
+        //so this is the same correction on both sides - unlike the stack half, which is not.
+        Cpp2IL.Core.Analysis.ParametersOnTheStack.Widen(ret, contextBeingCalled);
+
         //After every parameter, so that nothing which counts operands off the parameter list sees them.
         ret.AddRange(alsoOccupied);
 

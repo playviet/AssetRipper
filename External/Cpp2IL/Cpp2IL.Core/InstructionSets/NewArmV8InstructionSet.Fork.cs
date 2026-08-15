@@ -829,6 +829,13 @@ public partial class NewArmV8InstructionSet
         if (stepped)
             used++;
 
+        //And the parameters that take more than the one integer register the walk above counts: a composite
+        //of nine to sixteen bytes takes two, so everything after it - the runtime method included - moves
+        //along. Stated as the difference so that every method without such a parameter counts exactly as it
+        //did. See ParametersOnTheStack.Widen, which moves the parameters themselves.
+        if (System.Environment.GetEnvironmentVariable("PARAMWIDEN_OFF") != "1")
+            used += Cpp2IL.Core.Analysis.ParametersOnTheStack.ExtraIntegerRegisters(context);
+
         if (used >= 8)
             return;
 

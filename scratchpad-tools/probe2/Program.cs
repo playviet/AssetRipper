@@ -1395,6 +1395,34 @@ if (args[3] == "isil")
 }
 
 // invalid [assemblySubstring] - every arm64 word the disassembler refuses, by encoding.
+// paramregs [assemblySubstring] - one line per method: its parameter operand assignment.
+//
+// For diffing a change to the argument allocator against itself. Run once with PARAMWIDEN_OFF=1 and once
+// without, and `diff` says exactly which methods' naming moved - which is the only way to check that a
+// method whose parameters all fit a register is byte-identical, and that the count that moved is the count
+// predicted. No scorer can see a wrong parameter register.
+if (args[3] == "paramregs")
+{
+	foreach (AssemblyAnalysisContext asm in app.Assemblies)
+	{
+		if (args.Length > 4 && !asm.Definition.AssemblyName.Name.Contains(args[4])) continue;
+		foreach (TypeAnalysisContext type in asm.Types)
+		foreach (MethodAnalysisContext m in type.Methods)
+		{
+			if (m.UnderlyingPointer == 0) continue;
+			string regs;
+			// ParameterOperands is filled in by Analyze, not on construction - reading it without analysing
+			// gives an empty list for every method, which diffs as "nothing moved" and is worthless.
+			try { regs = string.Join(",", app.InstructionSet.GetParameterOperandsFromMethod(m).Select(o => o?.ToString() ?? "?")); }
+			catch (Exception e) { regs = "THREW " + e.GetType().Name; }
+			int extra = 0;
+			try { extra = Cpp2IL.Core.Analysis.ParametersOnTheStack.ExtraIntegerRegisters(m); } catch { }
+			Console.WriteLine($"{type.FullName}::{m.Name}\t{Signature(m)}\t{regs}\textra={extra}");
+		}
+	}
+	return;
+}
+
 // bigparams [assemblySubstring] - every method taking a by-value composite the argument allocator gives one
 // register and the machine gives two, or passes by reference.
 //

@@ -58,6 +58,10 @@ public static class ParametersOnTheStack
     /// </summary>
     public static void Place(List<object> operands, MethodAnalysisContext method)
     {
+        //Before the stack question, the register one: a composite of nine to sixteen bytes takes TWO of the
+        //integer registers, and the walk hands out one apiece.
+        Widen(operands, method);
+
         //`this` occupies the first integer register and the first operand.
         var first = method.IsStatic ? 0 : 1;
 
@@ -148,9 +152,112 @@ public static class ParametersOnTheStack
         return placed;
     }
 
+    /// <summary>
+    /// Renames the integer-register parameters after one that takes two of them.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// AAPCS64 passes a composite by value in <b>consecutive</b> general registers while it fits in two, and
+    /// passes anything larger indirectly - the caller copies it somewhere and hands over a pointer, which is
+    /// one register like any other. So the only case the one-register-per-parameter walk gets wrong is the
+    /// composite of <b>nine to sixteen bytes</b>, and every parameter after one of those is in the wrong
+    /// register.
+    /// </para>
+    /// <para>
+    /// <c>Pool::Spawn(Nullable&lt;Vector3&gt;, Nullable&lt;Quaternion&gt;, Nullable&lt;Vector3&gt;, Transform)</c>
+    /// says it outright. A <c>Nullable&lt;Vector3&gt;</c> is sixteen bytes and takes two; a
+    /// <c>Nullable&lt;Quaternion&gt;</c> is twenty and goes indirectly in one. The walk named the parameters
+    /// x1, x2, x3, x4 and the machine used x1-x2, x3, x4-x5, x6 - so the body's
+    /// <c>And v144, parent @ X4, 255</c> is a <c>Nullable</c>'s <c>hasValue</c> byte read out of a register
+    /// called <c>parent</c>, and <c>ShiftRight v165 (Single), methodInfo @ X5, 32</c> is a float taken out of
+    /// one called <c>methodInfo</c>. A <c>Transform</c> is not masked with 255 and a <c>MethodInfo</c> is not
+    /// shifted for a float: these are <b>wrong values</b>, and no scorer can see them.
+    /// </para>
+    /// <para>
+    /// <b>It does nothing at all unless some parameter is one of those.</b> That is deliberate and is the
+    /// property to check when this is measured: a method whose every parameter fits in a register must come
+    /// out byte-identical, and the count of methods whose naming moves must equal the count of methods with
+    /// such a parameter and nothing else.
+    /// </para>
+    /// <para>
+    /// The vector run is left alone entirely. The two runs are independent, so widening an integer parameter
+    /// cannot move a float one, and touching the vector naming here would risk the homogeneous-float work
+    /// that already owns it.
+    /// </para>
+    /// </remarks>
+    public static void Widen(List<object> operands, MethodAnalysisContext method)
+    {
+        //A short circuit, so that the before and after of this one rule can be taken from one build. The
+        //property being checked is that a method with no such parameter comes out byte-identical, and that
+        //is only worth anything if both readings are of the same code.
+        if (System.Environment.GetEnvironmentVariable("PARAMWIDEN_OFF") == "1")
+            return;
+
+        var first = method.IsStatic ? 0 : 1;
+
+        if (operands.Count < first + method.Parameters.Count)
+            return;
+
+        var widens = false;
+
+        foreach (var parameter in method.Parameters)
+            if (Occupies(parameter.ParameterType) is { Registers: > 1, IsVector: false })
+                widens = true;
+
+        if (!widens)
+            return;
+
+        var integers = method.IsStatic ? 0 : 1;
+
+        for (var i = 0; i < method.Parameters.Count; i++)
+        {
+            var (registers, isVector, _, _) = Occupies(method.Parameters[i].ParameterType);
+
+            if (isVector)
+                continue;
+
+            //Only where the walk gave it a register at all. One already replaced - by this pass on an earlier
+            //call, or by anything else - is not renamed back into the run.
+            if (integers < Aapcs64.RegistersPerRun && operands[first + i] is Register)
+                operands[first + i] = new Register(null, "X" + integers);
+
+            integers += registers;
+        }
+    }
+
+    /// <summary>
+    /// How many integer registers a method's parameters take beyond the one apiece the walk hands out.
+    /// </summary>
+    /// <remarks>
+    /// The runtime method pointer arrives after the declared parameters, so it moves along with them. Stated
+    /// as the <em>difference</em> so that <see cref="NewArmV8InstructionSet"/>'s own count - which has its own
+    /// rules about which parameters consume an integer register - is left exactly as it was for every method
+    /// that has no such parameter.
+    /// </remarks>
+    public static int ExtraIntegerRegisters(MethodAnalysisContext method)
+    {
+        var extra = 0;
+
+        foreach (var parameter in method.Parameters)
+            if (Occupies(parameter.ParameterType) is { Registers: var registers, IsVector: false } && registers > 1)
+                extra += registers - 1;
+
+        return extra;
+    }
+
     /// <summary>Which run a parameter is passed in, how much of it it takes, and how much room it needs.</summary>
     private static (int Registers, bool IsVector, long Size, long Alignment) Occupies(TypeAnalysisContext? type)
     {
+        //A composite by value: two registers while it fits in two, and indirectly - one register holding a
+        //pointer - once it does not. **Asked before the namespace test below**, because `System.Nullable<T>`
+        //is in `System` and would otherwise be taken for a scalar and given one register, which is the whole
+        //defect. Only a value type larger than a word can reach it, so no primitive is disturbed.
+        if (type is { IsValueType: true, IsEnumType: false } && HomogeneousFloatStruct.Count(type) is not > 0
+            && CompositeSize(type) is { } bytes && bytes > 8)
+        {
+            return bytes <= 16 ? (2, false, bytes, 8) : (1, false, 8, 8);
+        }
+
         if (type is { Namespace: nameof(System) } scalar)
         {
             return scalar.Name switch
@@ -168,6 +275,85 @@ public static class ParametersOnTheStack
             return (floats, true, Aapcs64.SizeOf(type) ?? floats * 4, 4);
 
         return (1, false, 8, 8);
+    }
+
+    /// <summary>
+    /// How many bytes a composite occupies by value, including the generic instantiations whose size the
+    /// metadata does not record.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <see cref="Aapcs64.SizeOf"/> reads the recorded instance size and takes the object header off it,
+    /// which is exact for an ordinary struct and useless for a generic instance: a generic type records no
+    /// layout at all, so <c>Nullable&lt;Vector3&gt;</c>, <c>Nullable&lt;Color&gt;</c> and
+    /// <c>Nullable&lt;Single&gt;</c> all come back as nine bytes. Sixteen, twenty and eight is the truth, and
+    /// they land on three different sides of the two boundaries that matter.
+    /// </para>
+    /// <para>
+    /// So an instantiation is added up from the fields of the type it instantiates, with each field's own
+    /// type substituted from the arguments and laid out at its natural alignment. An unknown field stops the
+    /// sum rather than being guessed at - one wrong answer here moves every parameter after it.
+    /// </para>
+    /// </remarks>
+    private static long? CompositeSize(TypeAnalysisContext type)
+    {
+        if (type is not GenericInstanceTypeAnalysisContext instance)
+            return Aapcs64.SizeOf(type);
+
+        long total = 0;
+        long widest = 1;
+
+        foreach (var field in instance.GenericType.Fields)
+        {
+            if (field.IsStatic)
+                continue;
+
+            var held = field.FieldType is GenericParameterTypeAnalysisContext { Index: var index }
+                && index < instance.GenericArguments.Count
+                    ? instance.GenericArguments[index]
+                    : field.FieldType;
+
+            var (size, alignment) = SizeAndAlignment(held);
+
+            if (size <= 0)
+                return null;
+
+            total = RoundUp(total, alignment) + size;
+            widest = System.Math.Max(widest, alignment);
+        }
+
+        return total > 0 ? RoundUp(total, widest) : null;
+    }
+
+    /// <summary>What one field of a composite takes up, and what it has to sit on a multiple of.</summary>
+    private static (long Size, long Alignment) SizeAndAlignment(TypeAnalysisContext? type)
+    {
+        var pointerSize = (long)(type?.AppContext.Binary.PointerSize ?? 8);
+
+        if (type is null || !type.IsValueType)
+            return (pointerSize, pointerSize);
+
+        if (type.IsEnumType)
+            return (4, 4);
+
+        if (type.Namespace == nameof(System))
+        {
+            return type.Name switch
+            {
+                "Boolean" or "SByte" or "Byte" => (1, 1),
+                "Int16" or "UInt16" or "Char" => (2, 2),
+                "Int32" or "UInt32" or "Single" => (4, 4),
+                "Int64" or "UInt64" or "Double" or "IntPtr" or "UIntPtr" => (8, 8),
+                _ => (0, 1),
+            };
+        }
+
+        //A struct of floats is four-aligned however many of them it holds; anything else is asked of the
+        //metadata, and a size it does not record stops the sum above.
+        if (HomogeneousFloatStruct.Count(type) is { } floats && floats > 0)
+            return (Aapcs64.SizeOf(type) ?? floats * 4, 4);
+
+        return (CompositeSize(type) ?? 0, 8);
     }
 
     private static long RoundUp(long value, long to) => (value + to - 1) / to * to;
