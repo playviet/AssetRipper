@@ -647,3 +647,111 @@ name: the fix is to make the read *be* that name, not to retype the read.
 Five kept rounds, four reverted with a diagnosis each. Bodies that went from doing the wrong thing to doing
 the right one, none of which any compilability scorer can see: `ArrayExtension::ResizeArray`,
 `IListExtension::Shuffle` (partial → full), `IDictionaryExtension::TryGetKeyByValue` and `GetKeysByValue`.
+
+---
+
+## File and function index, for the merge
+
+Every round of this branch, by exactly what it touched. Nothing here is in `SsaForm`, `SsaForm.Fork` or
+edge-copy construction, and nothing is in `VectorExtensions.cs`.
+
+| round | file | function(s) | kept? |
+|---|---|---|---|
+| 1 | `Analysis/ClearingASizedByT.cs` | `ElementAt`, new `Hoisted`/`Access`; destination-store branch in `Run` | **kept** |
+| 2 | `Analysis/InvokerThunk.cs` | `AnswerIntoTheCopyItFeeds` + 12 private helpers (salvaged) | **kept** |
+| 2 | `Analysis/KeyFunctionArguments.cs` | new `Reads` | **kept** |
+| 2 | `Analysis/SlotAddressRead.cs` | `Run` (one condition), `Held` | **kept** |
+| 2 | `Analysis/RuntimeMethodCallRecovery.cs`, `Analysis/InterfaceCallRecovery.cs` | one line each in `Run` | **kept** |
+| 3 | `Analysis/InvokerThunk.cs` | `Erase` — the frame-pointer clause | **kept** |
+| 4 | `Analysis/ClearingASizedByT.cs` | `Run` — the buffer already typed `T` | **kept** |
+| 5, 6 | `Analysis/InvokerThunk.cs` | `Dead`, and the unnamed-call clause in `AnswerIntoTheCopyItFeeds` | reverted |
+| 7, 8 | **new** `Analysis/VirtualMethodInfoSlot.cs`; `Analysis/LocalVariables.cs` (one line, `Run`'s fixpoint) | `Run`, `Header`, `FindSlot` | **kept** |
+| 9 | `Analysis/LocalVariables.Fork.cs` | `SetTypeFromParameter` | reverted |
+| 10 | `Analysis/InvokerThunk.cs` | `Dead` — one `COPYFOLD_TRACE` line only | diagnostic |
+
+---
+
+## Round 10 — the collapsed root, taken in probe alone. NO EXPORT SPENT
+
+The coordinator's instruction was to predict the exported body before building and to check that rather than
+the marker count. Doing so cost one probe run instead of an export, and the answer was no.
+
+### The prediction
+
+`IDictionaryExtension::TryGetKeyByValue`'s comparison should read
+
+```csharp
+W val = current.Value;                              // today: `_ = current.Value;`
+if (equalityComparer.Equals(val, value)) { … }      // today: commented, both operands alloca reads
+```
+
+The raw ISIL says why it does not, and it is **not** a copy at all:
+
+```
+302 Move [X29-20], X26      ; the thunk's argument frame word 0
+303 Subtract X3, X29, 32    ; the argument frame
+306 Move X4, X26            ; X4 = the ANSWER BUFFER
+308 IndirectCall X8         ; get_Value, writing the W into [X26]
+…
+358 Call EqualityComparer`1<W>.Equals, …, v660 @ X8_v34, v659 @ X9_v23
+```
+
+`v660` traces back to `v73 @ X26` — **the buffer itself**, read directly. `v626`, the local
+`RuntimeMethodCallRecovery` attached to `get_Value` as its answer, is an X0 that nothing ever wrote. So the
+value exists under two names, exactly as predicted, and the buffer is read *directly* rather than copied
+out of — which is a fourth shape, not the one `AnswerIntoTheCopyItFeeds` handles.
+
+### Why the fold is refused, traced to the bottom
+
+One line added to `InvokerThunk.Dead` under `COPYFOLD_TRACE` prints the instruction the walk stops at.
+Every refusal in all six members bottoms out the same way:
+
+```
+COPYFOLD   dead-stops at 658 Call 1E7BB80, …                 <- an unresolved tail call after a throw
+COPYFOLD   dead-stops at -1 Phi v124 @ X4_v8, v125 @ X4_v7, v46 @ X4
+COPYFOLD refused … read by -1 Phi v125 @ X4_v7, v163 @ X4_v1, v409 @ X4_v3  | 308 get_Value
+```
+
+**X4 is the register the invoker convention passes the answer buffer in.** Every thunked call in a body
+writes it, so SSA destruction merges its versions at every join and leaves a phi web joining all of them;
+the web bottoms out at whichever unresolved call is handed the speculative argument run.
+
+### Re-testing the round-6 clause, because the situation had changed
+
+Rounds 5 and 6 widened "who counts as a reader" to exclude a call nothing has named, and I reverted both as
+inert. They were measured **before round 8 named `EqualityComparer<W>::Equals`**, so re-testing was right
+(`il2cpp-remeasure-the-baseline`). Re-landed on top of round 8 and run in probe:
+
+* `Equals`'s own refusal changed from `read by -1 Move v161 @ X4_v10` to **`nothing reads the buffer`** —
+  the clause does work;
+* `get_Value` and `get_Key` still refuse, now bottoming out at `472 IndirectCall v528 @ X8_v59, …`, whose
+  callee is a **local**, so `Operands[0] is ulong` does not cover it;
+* and across `IEnumerableExtension`, `ArrayExtension` and `IDictionaryExtension`, **not one new fold**.
+
+Inert a third time, established without an export. **Reverted**; the reason is written into the pass beside
+the clause so the next session does not try it a fourth time.
+
+Extending it to `IndirectCall` is the obvious next widening and I did **not** build it: an `IndirectCall`
+that a later turn of the fixpoint resolves really does read its arguments, and the fold would already have
+happened and cannot be undone. That is the silent-wrong-value shape of round 7, and it is not worth it for a
+guard that has never yet unlocked a body.
+
+### What this actually says, and it crosses the file boundary
+
+Weakening *who counts as a reader* is the wrong lever and has now failed three times. The buffer is not
+really read by those instructions; the **phi web over an argument register should not exist**, and `Dead()`
+is a workaround for it. That is edge-copy construction, which is the other agent's territory this week — so
+per the boundary rule I am flagging it rather than building it. Concretely, the question for arbitration is:
+
+> Should SSA destruction emit an edge copy for a register that is only ever an outgoing **argument**
+> position (X0–X7 under the invoker convention, X4 here) and is redefined by every call, or is a phi over
+> such a register bookkeeping that should never be materialised?
+
+If the answer is that it should not exist, `AnswerIntoTheCopyItFeeds` reaches `TakeLast`, `AddRange`,
+`get_Value` and `get_Key` with **no further widening at all** — its existing "nothing but the one copy reads
+the buffer" guard becomes true on its own terms. `PickRandom` stays refused and correctly so: its buffer
+really is copied to two places.
+
+Kept from this round: the one `COPYFOLD_TRACE` `dead-stops at` line in `InvokerThunk.Dead`, which is what
+turned a whole export into one probe run, and the comment recording the three inert attempts. **No
+behavioural change; the tree still reproduces export 531.**

@@ -320,6 +320,15 @@ public static class InvokerThunk
             //given turns up as somebody else's speculative operand. It is the same local, which is what says
             //it is a leftover rather than an argument: a value the program really passed there would be a
             //fresh version, written for that call. Anything reaching the buffer by another name still counts.
+            //
+            //**Widening this to "any call nothing has named reads nothing" is inert - measured three times**
+            //(1.9.5/526, 1.9.6/527 by export, and once more in probe alone at 1.9.9). It is *true* and it
+            //never unlocks a body: the refusal moves to the next reader and stops there. What the buffer
+            //register is really caught on is the phi web SSA destruction leaves over **X4**, the register the
+            //invoker convention passes the answer buffer in - every thunked call in a body writes it, so the
+            //versions are merged at every join, and the web bottoms out at whichever unresolved
+            //`IndirectCall` is handed the speculative argument run. `COPYFOLD_TRACE` prints that terminal
+            //reader on a `dead-stops at` line. The answer is not to keep weakening who counts as a reader.
             if (instruction.OpCode is OpCode.Call or OpCode.CallVoid or OpCode.IndirectCall
                 && KeyFunctionArguments.Reads(method, instruction) is null
                 && instruction.Operands.Skip(instruction.OpCode == OpCode.Call ? 2 : 1)
@@ -545,6 +554,9 @@ public static class InvokerThunk
                 || instruction.Destination is not LocalVariable written
                 || !Dead(method, written, seen))
             {
+                if (CopyTrace)
+                    System.Console.Error.WriteLine($"COPYFOLD   dead-stops at {instruction}  (following {local})");
+
                 return false;
             }
         }
