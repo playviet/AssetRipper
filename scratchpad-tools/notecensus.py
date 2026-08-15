@@ -22,6 +22,12 @@ shape_methods = collections.Counter()      # note shape -> methods carrying it
 shape_lost = collections.Counter()         # note shape -> those with a commented statement
 shape_notes = collections.Counter()
 
+# The `Expected <anything>, but got Unknown` slice, which is where the statements are actually lost:
+# `Unknown` is ILSpy saying the stack slot had no type at all. Tracked method by method because the win
+# condition of a round aimed at it is *these* methods and *their* commented statements going down, and the
+# shape table above cannot say that - one method carries several shapes and is counted in each.
+unknown_methods = []
+
 for directory, _sub, files in os.walk(root):
     for name in sorted(files):
         if not name.endswith('.cs'):
@@ -38,6 +44,8 @@ for directory, _sub, files in os.walk(root):
             for a, b in NOTE.findall(text):
                 shapes.add('%s<-%s' % (a, b))
                 shape_notes['%s<-%s' % (a, b)] += 1
+            if any(s.endswith('<-Unknown') for s in shapes):
+                unknown_methods.append((name, member, found['commented']))
             if shapes:
                 with_note += 1
                 with_note_commented += lost
@@ -65,3 +73,9 @@ for shape, n in shape_notes.most_common(20):
     print('%6d %8d %5d %6s   %s'
           % (n, shape_methods[shape], shape_lost[shape],
              rate(shape_lost[shape], shape_methods[shape]), shape))
+
+lost_methods = [m for m in unknown_methods if m[2]]
+print('\nUNKNOWN slice: %d methods, %d of them lose a statement, %d commented statements in all'
+      % (len(unknown_methods), len(lost_methods), sum(m[2] for m in unknown_methods)))
+for name, member, commented in sorted(unknown_methods, key=lambda m: -m[2]):
+    print('  %5d  %-34s %s' % (commented, name, member))
