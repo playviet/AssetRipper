@@ -259,3 +259,54 @@ was the only thing that moved the wrong way at 522 and it was one missing condit
 
 **The killed agent's work is vindicated but was one condition short of measurable.** Had it been measured as
 it stood it would have read as commented +7 for notfound −8, which is the kind of result that gets reverted.
+
+---
+
+## Round 4 — 1.9.4, export 524 — the buffer the analysis has already called a `T`
+
+The last piece of the killed agent's set, held back from round 2 so it could be attributed on its own:
+`ClearingASizedByT` takes a copy's value into the **buffer** rather than into the call's answer register
+wherever that buffer is already typed `T` — the body reads it as the value, not as somewhere to look. With
+the same `Erase` step beside it (and the round-3 frame-pointer clause applied there too, which the original
+lacked), so the allocation behind the local goes when the local becomes the value.
+
+**KEPT.**
+
+| | 523 | **524** |
+|---|---|---|
+| compare2 **full** / partial / dead | 3252 / 151 / 108 | **3253 / 150 / 108** |
+| **commented** | 490 | **479** |
+| **unmanaged** | 385 | **382** |
+| notfound | 39 | **39** |
+| roundtrip facts / whole | 11186 / 1043 | **11187** / 1043 |
+| cfscore · decisions · gen failures | 609/92, 1326/1382, 0 | **all level** |
+
+`IListExtension::Shuffle` goes **partial → full**, and it is right, not merely whole:
+
+```csharp
+int index = UnityEngine.Random.Range(0, maxExclusive);
+T val = list[index];  T val2 = list[num2];
+list[num2] = val;     list[index] = val2;
+```
+
+which is the original's `(list[i], list[j]) = (list[j], list[i])` inside
+`for (int i = list.Count - 1; i > 0; i--)`. `TransformExtension::GetComponentsInChildrenFD` lost all four of
+its commented statements; `GetKeysByValue` 36 → 33. `Swap` gained one (5 → 6) and is the only regression in
+the file.
+
+---
+
+## Where the family stands, 520 → 524
+
+| | 520 (master) | **524** |
+|---|---|---|
+| compare2 full / partial | 3252 / 151 | **3253 / 150** |
+| commented | 494 | **479** |
+| unmanaged | 389 | **382** |
+| notfound | 50 | **39** |
+| cfscore · decisions · roundtrip · gen failures | 609/92 · 1326/1382 · 11186/1043 · 0 | **609/92 · 1326/1382 · 11187/1043 · 0** |
+
+Bodies that changed from doing the wrong thing to doing the right one, none of which any compilability
+scorer could see: `ArrayExtension::ResizeArray` (copied nothing → `array[i] = input[i]`),
+`IListExtension::Shuffle` (the whole swap), `IDictionaryExtension::TryGetKeyByValue` and `GetKeysByValue`
+(compared a zeroed `KeyValuePair` → compare the real one).

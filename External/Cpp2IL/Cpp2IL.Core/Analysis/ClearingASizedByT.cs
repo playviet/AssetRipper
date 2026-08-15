@@ -173,6 +173,36 @@ public static class ClearingASizedByT
                 continue;
             }
 
+            //Or the buffer being filled is one the analysis has already called a `T`. Then the body reads it
+            //as the value and not as somewhere to look - `IListExtension::Shuffle` hands it straight to
+            //`set_Item` - so the value belongs in the buffer, for the same reason as an element source above.
+            //Putting it in the copy's answer register instead leaves the buffer holding what the allocation
+            //put there, and the declaration of that is `T val = (T)(sp - size)`, which cannot be written and
+            //takes with it every statement that used the local.
+            if (named != "memset" && into is { Type: { } held } && IsAValue(held))
+            {
+                call.OpCode = OpCode.Move;
+                call.Operands = [into, filled];
+                holds[into] = into;
+
+                //And the allocation that made the buffer goes with it, for the same reason
+                //`InvokerThunk.Erase` takes one away: the local holds the value now, and a second definition
+                //saying it is `sp - size` is what the generator has to write as `T val = (T)(num2 - num)` -
+                //a conversion that does not exist. The frame it is taken off may be a named slot or the frame
+                //pointer register itself, which has no definition anywhere in the body.
+                if (definitions.TryGetValue(into, out var made)
+                    && made is { OpCode: OpCode.Subtract, Operands: [_, LocalVariable frame, _] }
+                    && (!definitions.ContainsKey(frame)
+                        || (frame.Register.Name is { } anchor
+                            && (anchor.StartsWith(StackSlots.AddressPrefix) || anchor.StartsWith(StackSlots.ValuePrefix)))))
+                {
+                    made.OpCode = OpCode.Nop;
+                    made.Operands = [];
+                }
+
+                continue;
+            }
+
             if (first == 2 && call.Operands[1] is LocalVariable answer)
             {
                 call.OpCode = OpCode.Move;
