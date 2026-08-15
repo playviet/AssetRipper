@@ -403,7 +403,7 @@ internal static partial class InvalidSourceRepair
 				: IsMissingSomething(id)
 					? FindFixupEdit(node, id)
 					: (lastAttempt ? null : FindStatement(node)) is { } statement
-						? FindRewriteEdit(file, statement, problems, compilation) ?? new Edit(statement.Span, null)
+						? FindRewriteEdit(file, statement, problems, compilation) ?? CommentEdit(file, statement)
 						: FindBodyEdit(node);
 
 			if (edit is null)
