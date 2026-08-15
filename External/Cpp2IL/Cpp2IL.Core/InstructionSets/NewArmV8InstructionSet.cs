@@ -503,8 +503,10 @@ public partial class NewArmV8InstructionSet : Cpp2IlInstructionSet
                 var memInternal = mem as MemoryOperand?;
                 var mem2 = new MemoryOperand((Register)memInternal!.Value.Base!, addend: memInternal.Value.Addend + destRegSize);
 
-                Add(address, OpCode.Move, dest1, mem);
-                Add(address, OpCode.Move, dest2, mem2);
+                var pairFirst = !PairClobbersItsOwnBase(instruction);
+
+                Add(address, OpCode.Move, pairFirst ? dest1 : dest2, pairFirst ? mem : mem2);
+                Add(address, OpCode.Move, pairFirst ? dest2 : dest1, pairFirst ? mem2 : mem);
                 break;
             case Arm64Mnemonic.BL:
                 if (context.AppContext.MethodsByAddress.TryGetValue(instruction.BranchTarget, out var possibleMethods))

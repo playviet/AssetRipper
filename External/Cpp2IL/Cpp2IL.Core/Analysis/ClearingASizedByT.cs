@@ -97,6 +97,14 @@ public static class ClearingASizedByT
             {
                 filled = value;
             }
+            //Or the source is a field of the object, whose address a shared body has to ask the runtime for
+            //because it cannot know the offset. <see cref="FieldFromItsRuntimeInfo"/> runs directly above this
+            //and names the helper's answer wherever every use of it is a place an address belongs - a copy's
+            //source being one - so by here the operand is the field itself and reading it back is `x.field`.
+            else if (call.Operands[first + 1] is FieldReference source)
+            {
+                filled = source;
+            }
             //Or it is an element of an array of `T`, whose address the compiler worked out a step at a time
             //because it could not know the stride when it compiled the body. `SharedElementIsAPointer` has
             //answered the stride by then - a shared body's `T` is a reference - so what is left is the
@@ -128,6 +136,28 @@ public static class ClearingASizedByT
             //collection take them.
             var into = call.Operands[first] as LocalVariable;
 
+            //Except where the buffer being filled is the method's **own return buffer**. A fully shared body
+            //answers through a pointer its caller passed, and `SeedSharedReturnBuffer` has already made the
+            //`Return` name that buffer - so writing the value into the call's answer register instead leaves
+            //the returned local assigned by nothing at all, which the generator writes as `return default(T)`.
+            //`InvokerThunk.FoldAnswerIntoTheReturn` states the same fact for the one copy it knows about;
+            //this is it for a copy out of anywhere else. Only where the answer register is dead, since it is
+            //the destination pointer that `memcpy` hands back and something may still be reading it.
+            //
+            //**And never for the clear.** A buffer nothing assigns is already written out as `T val =
+            //default(T); return val;`, which is exactly what clearing it to nought means and is the one
+            //spelling C# has for it: saying it here instead makes the generator write `return (T)null`, and
+            //`null` does not convert to an unconstrained `T`, so a `return default(T)` that compiled becomes
+            //a commented statement. `ArrayExtension::GetRandom` and both `IEnumerableExtension::GetRandom`
+            //were lost to exactly that before this condition was added.
+            if (named != "memset" && into is { Name: InvokerThunk.ReturnBuffer }
+                && !ReadAnywhere(graph, call.Operands.ElementAtOrDefault(1) as LocalVariable, call))
+            {
+                call.OpCode = OpCode.Move;
+                call.Operands = [into, filled];
+                continue;
+            }
+
             if (first == 2 && call.Operands[1] is LocalVariable answer)
             {
                 call.OpCode = OpCode.Move;
@@ -142,6 +172,30 @@ public static class ClearingASizedByT
                 call.Operands = [];
             }
         }
+    }
+
+    /// <summary>Whether anything but the copy itself reads a local, in any position.</summary>
+    private static bool ReadAnywhere(Graphs.ISILControlFlowGraph graph, LocalVariable? local, Instruction copy)
+    {
+        if (local is null)
+            return false;
+
+        foreach (var instruction in graph.Instructions)
+        {
+            if (ReferenceEquals(instruction, copy))
+                continue;
+
+            for (var operand = instruction.IsAssignment ? 1 : 0; operand < instruction.Operands.Count; operand++)
+                switch (instruction.Operands[operand])
+                {
+                    case LocalVariable other when ReferenceEquals(other, local):
+                    case MemoryOperand memory when ReferenceEquals(memory.Base, local) || ReferenceEquals(memory.Index, local):
+                    case FieldReference reference when ReferenceEquals(reference.Local, local):
+                        return true;
+                }
+        }
+
+        return false;
     }
 
     /// <summary>

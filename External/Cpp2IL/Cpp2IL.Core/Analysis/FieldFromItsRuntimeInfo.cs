@@ -82,7 +82,7 @@ public static class FieldFromItsRuntimeInfo
                     //An unresolved call always carries every integer register, so the answer is there whether
                     //anything wanted it or not; a `CallVoid` in this position is a shape this cannot speak for.
                     if (first != 2 || call.Operands[1] is not LocalVariable answer
-                        || Uses(graph, call, answer) is not { Count: > 0 } uses)
+                        || Uses(method, graph, call, answer) is not { Count: > 0 } uses)
                     {
                         continue;
                     }
@@ -172,8 +172,8 @@ public static class FieldFromItsRuntimeInfo
     /// that neither pass has to move for the other: a read through the address at no further distance, the
     /// receiver of a call on a value type, and a by-reference argument.
     /// </remarks>
-    private static List<(Instruction Instruction, int Operand)>? Uses(ISILControlFlowGraph graph,
-        Instruction call, LocalVariable address)
+    private static List<(Instruction Instruction, int Operand)>? Uses(MethodAnalysisContext method,
+        ISILControlFlowGraph graph, Instruction call, LocalVariable address)
     {
         var found = new List<(Instruction, int)>();
 
@@ -182,7 +182,7 @@ public static class FieldFromItsRuntimeInfo
             if (ReferenceEquals(instruction, call))
                 continue;
 
-            var wantsAnAddress = AddressPositions(instruction);
+            var wantsAnAddress = AddressPositions(method, instruction);
 
             for (var operand = 0; operand < instruction.Operands.Count; operand++)
             {
@@ -239,12 +239,29 @@ public static class FieldFromItsRuntimeInfo
     }
 
     /// <summary>Which operands of a call are places an address belongs.</summary>
-    private static HashSet<int> AddressPositions(Instruction instruction)
+    private static HashSet<int> AddressPositions(MethodAnalysisContext method, Instruction instruction)
     {
         var positions = new HashSet<int>();
 
-        if (!instruction.IsCall || instruction.Operands.Count == 0
-            || instruction.Operands[0] is not MethodAnalysisContext callee)
+        if (!instruction.IsCall || instruction.Operands.Count == 0)
+            return positions;
+
+        //A copy the width of a `T` is how a shared body reads a field it cannot name the offset of, and the
+        //second argument of `memcpy` is an address by definition. Only the **source**: the destination of a
+        //copy is a store, and <see cref="ClearingASizedByT"/> reads the destination as the buffer being
+        //filled - handing it a field there would take a write away with nothing said in its place.
+        if (instruction.Operands[0] is ulong imported)
+        {
+            if (method.AppContext.Binary is LibCpp2IL.Elf.ElfFile binary
+                && binary.ImportedFunctionAt(imported) is "memcpy" or "memmove")
+            {
+                positions.Add((instruction.OpCode == OpCode.Call ? 2 : 1) + 1);
+            }
+
+            return positions;
+        }
+
+        if (instruction.Operands[0] is not MethodAnalysisContext callee)
             return positions;
 
         var receiver = instruction.OpCode == OpCode.Call ? 2 : 1;

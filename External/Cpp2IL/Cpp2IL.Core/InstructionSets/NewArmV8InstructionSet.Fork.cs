@@ -1746,4 +1746,57 @@ public partial class NewArmV8InstructionSet
         return null;
     }
 
+    /// <summary>
+    /// Whether a load pair writes its own base register with its <em>first</em> destination.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A pair is one instruction and both halves are addressed off the base as it was on entry, but ISIL has
+    /// no pairs - upstream writes two moves, the second addressed off the same register the first has just
+    /// overwritten. Where the two are the same register that second move reads a value the machine never
+    /// addressed with, silently and with no marker:
+    /// </para>
+    /// <code>
+    /// LDP X8, X9, [X8]                                 // X8 = table[0], X9 = table[1]
+    /// Move v33 (Il2CppClass&lt;Sequence`1&lt;T&gt;&gt;), [v31 (Il2CppRgctx)]
+    /// Move v34,                                        [v33 + 8]   // should be [v31 + 8]
+    /// </code>
+    /// <para>
+    /// That is how a shared body opens: entry nought of the runtime generic context is the containing class
+    /// and entry one is the class of <c>T</c>, and reading the second through the first leaves the size the
+    /// body then allocas by - <c>[Il2CppClass&lt;T&gt; + 0xFC]</c> - based on something nothing can name. Every
+    /// pass that asks whether a length is a class's own size then declines, so the alloca, the copies sized by
+    /// it and the field addresses handed to them all stay as unmanaged memory.
+    /// </para>
+    /// <para>
+    /// The two loads are independent of one another, so emitting the second first says exactly what the
+    /// machine does. Only this order is wrong: where the <b>second</b> destination is the base the first move
+    /// has not touched it yet, which is why the answer is not simply "always swap".
+    /// </para>
+    /// </remarks>
+    private static bool PairClobbersItsOwnBase(Arm64Instruction instruction)
+    {
+        if (instruction.MemBase == Arm64Register.INVALID || instruction.Op0Kind != Arm64OperandKind.Register)
+            return false;
+
+        var written = RegisterNumber(instruction.Op0Reg);
+
+        //A `w` destination is the low half of the same register, so it clobbers the base just as surely.
+        var clobbers = written >= 0 && written != 31 && written == RegisterNumber(instruction.MemBase);
+
+        //Says which analysed bodies this actually reaches. A binary-wide count of the encoding says nothing
+        //about how many of them are in methods anything looks at.
+        if (clobbers && System.Environment.GetEnvironmentVariable("LDP_TRACE") == "1")
+            System.Console.WriteLine($"LDPBASE {currentMethod?.DeclaringType?.Name}::{currentMethod?.Name} @ {instruction.Address:X}");
+
+        return clobbers;
+    }
+
+    /// <summary>A general purpose register's number, whichever width it was named at.</summary>
+    private static int RegisterNumber(Arm64Register register) => register switch
+    {
+        >= Arm64Register.X0 and <= Arm64Register.X31 => register - Arm64Register.X0,
+        >= Arm64Register.W0 and <= Arm64Register.W31 => register - Arm64Register.W0,
+        _ => -1,
+    };
 }
