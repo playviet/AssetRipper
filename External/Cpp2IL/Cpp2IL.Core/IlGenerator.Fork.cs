@@ -1442,9 +1442,22 @@ public static partial class IlGenerator
     /// `Corpus::SumSteps` threw where the original returned.
     /// </remarks>
     private static bool OnlyAskedIfItIsNull(LocalVariable local)
+        => CurrentContext?.ControlFlowGraph is { } graph && OnlyAskedIfItIsNull(local, graph, new HashSet<LocalVariable>());
+
+    /// <remarks>
+    /// The question is followed through a copy. Destroying SSA leaves the answer a block away from the
+    /// register that was cleared - <c>Corpus::Using</c> clears the exception slot in one block, the edge copy
+    /// moves it into a second local in another, and only that second local is compared against zero. Asking
+    /// only about direct reads therefore said no, the zero stayed a zero, <c>if (obj == null)</c> was false,
+    /// and the recovered <c>using</c> threw <c>OutOfMemoryException</c> where the original returned. A copy
+    /// carries the value unchanged, so "nothing does anything with it except ask whether it is zero" is a
+    /// question about the copy's uses just as much as about this local's.
+    /// </remarks>
+    private static bool OnlyAskedIfItIsNull(LocalVariable local, ISILControlFlowGraph graph, HashSet<LocalVariable> seen)
     {
-        if (CurrentContext?.ControlFlowGraph is not { } graph)
-            return false;
+        //A cycle of copies answers nothing either way, and following it again would not terminate.
+        if (!seen.Add(local))
+            return true;
 
         foreach (var instruction in graph.Instructions)
         {
@@ -1456,6 +1469,19 @@ public static partial class IlGenerator
                 //Written to, which says nothing about what it is.
                 if (operand == 0 && instruction.OpCode != OpCode.Call && instruction.OpCode != OpCode.CallVoid)
                     continue;
+
+                //Copied into another local the analysis never typed either: the copy holds exactly this
+                //value, so ask the same question of it. A typed destination is not followed - there the
+                //declaration decides, and this rule is only for the slots that have none.
+                if (instruction.OpCode == OpCode.Move
+                    && operand == 1
+                    && instruction.Operands.Count == 2
+                    && instruction.Operands[0] is LocalVariable { Type: null } copy)
+                {
+                    if (!OnlyAskedIfItIsNull(copy, graph, seen))
+                        return false;
+                    continue;
+                }
 
                 if (instruction.OpCode is not (OpCode.CheckEqual or OpCode.CheckNotEqual)
                     || instruction.Operands.Count < 3
