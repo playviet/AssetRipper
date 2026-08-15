@@ -696,4 +696,23 @@ invented `long numN = default(long);` declarations collapsing to two. What arriv
 `decisions.py` unmoved at 1326 is again the instrument that settles a large negative `livecount`, and the
 oracle — which covers the generic shapes these files are — is unmoved too.
 
+**And it paid out the handoff.** The `Unknown` slice goes **23 methods / 213 commented → 23 / 181**, and the
+fall is almost entirely the generic seam: `GetKeysByValue` 31→23, `TryGetKeyByValue` 30→20, `TakeLast` 16→12,
+`PickRandom` 11→6, `ToNewlineDelimitedJson` 9→5, `AddRange` 12→11. That is the other agent's blocked thread
+paying out with no further work from it, which is what it said would happen.
+
+## Where it stands — 1.8.15 / export 506
+
+| | master's 471 | 506 |
+|---|---|---|
+| `compare2` full, decompiled-only of 2815 | 2553 (90.7%) | **2560** (90.9%) |
+| commented / unmanaged / notfound / indirect | 508 / 403 / 50 / 21 | **382** / **329** / **49** / **19** |
+| `default(...)` stand-ins | — | **888** (923 two rounds ago) |
+| `cfscore` full · `decisions` · `roundtrip` whole | 609 · 1326 · 1043 | 609 · 1326 · **1044** |
+| **`Unknown` slice** | 29 methods / 286 (at 490) | **23 / 181** |
+| oracle · Unity gate · genfail | 54/79, 49/65 · 12 · 0 | unchanged |
+
+**Twelve kept rounds, two reverted with reasons.** Against master: **+7 whole, −126 commented, −74 unmanaged,
+−1 notfound, −2 indirect, +1 roundtrip whole, nothing down.**
+
 
