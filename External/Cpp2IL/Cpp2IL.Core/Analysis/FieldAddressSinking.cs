@@ -88,7 +88,18 @@ public static class FieldAddressSinking
             //and 88 and reads one a component at a time (`this + 56`, `+ 60`, `+ 64`, `+ 68`); only 56 was
             //even a field, and one unnameable producer makes the whole chain refuse, so all four were lost.
             if (WithinAField(owner, offset, header) is var (outer, inner) && outer is not null && inner is not null)
+            {
                 addresses[made] = (instruction, inner, held, (int)(offset - outer.Offset), outer, (int)outer.Offset);
+                continue;
+            }
+
+            //And the owner being the struct itself rather than something holding one. `StaticFieldAddressBase`
+            //rests an address on a static struct's own local - `Vector2.zero` - so the distance is measured
+            //from the struct's front and lands on one of its own members, with no field in between. The same
+            //objection and the same answer as above: a primitive member has no rest to lose, so a read at
+            //nought through its address is exactly it.
+            if (owner.IsValueType && MemberAt(owner, offset, header) is { } member)
+                addresses[made] = (instruction, member, held, (int)offset, null, 0);
         }
 
         if (addresses.Count == 0)
@@ -162,9 +173,22 @@ public static class FieldAddressSinking
         //As above: recorded from the struct's own start, so no header to add.
         var wanted = offset;
 
+        //Or a field that is itself a **primitive**, which the objection above does not reach: a `float` has
+        //no rest to lose, so a read at nought through its address is exactly it. That is the same argument
+        //`WithinAField` already makes about a member one level down, and refusing it here left
+        //`GameHubRouter::GameId` choosing between two `int` fields it could not name.
         return owner.Fields.FirstOrDefault(f => !f.IsStatic && f.Offset == wanted
-            && f.FieldType is { IsValueType: false });
+            && (f.FieldType is { IsValueType: false } || IsWholeAtNought(f)));
     }
+
+    /// <summary>The struct's own member lying exactly at that distance from its front.</summary>
+    /// <remarks>
+    /// A struct records its members from its own start, but a boxed one carries the header, and which the
+    /// metadata used is not worth guessing: ask for both, as <see cref="WithinAField"/> does.
+    /// </remarks>
+    private static FieldAnalysisContext? MemberAt(TypeAnalysisContext owner, long offset, int header)
+        => owner.Fields.FirstOrDefault(f => !f.IsStatic && f.Offset == offset && IsWholeAtNought(f))
+           ?? owner.Fields.FirstOrDefault(f => !f.IsStatic && f.Offset == offset + header && IsWholeAtNought(f));
 
     /// <summary>
     /// The struct field that <b>contains</b> that distance, and the member of it lying exactly there.

@@ -184,6 +184,19 @@ public static class FieldAddressRecovery
                         || ReferenceEquals(memory.Index, address):
                         return null;
 
+                    //A read at nought that the resolver has already named. Where the address register wears
+                    //a primitive's own type, `[v116]` has become `v116.m_value` - the storage field of the
+                    //`Single` itself - which is the same read said one step later, and the field's value is
+                    //what it stands for. Refusing it cost `CustomBigInteger` both `ToString` overloads,
+                    //whose other use - the receiver of `Single.ToString` - this could already name.
+                    case FieldReference { Offset: 0 } storage when ReferenceEquals(storage.Local, address)
+                        && address.Type is { IsValueType: true, Namespace: nameof(System) } primitive
+                        && storage.Field.DeclaringType is { } declared
+                        && declared.FullName == primitive.FullName:
+
+                        found.Add((instruction, operand));
+                        continue;
+
                     case FieldReference reference when ReferenceEquals(reference.Local, address):
                         return null;
                 }

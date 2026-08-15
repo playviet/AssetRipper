@@ -297,6 +297,13 @@ public static class ForkPipeline
         // straight into the addition, and neither the recovery nor the sinking below reads that shape.
         FieldAddressBase.Run(method);
 
+        // And beside it, the same undoing for the other base the sinking cannot read: a distance into a type's
+        // static storage. `Vector2.zero.y` is `Add v121, [Il2CppClass<Vector2> + 0xB8], 4`, and one producer
+        // the sinking cannot name refuses the whole chain - so `BaseButton::DoStateTransition`, which chooses
+        // between a static `Color` and a field of `this`, loses both arms. Here rather than lower down,
+        // because the static storage read is still in this form at this point and the resolver names it later.
+        StaticFieldAddressBase.Run(method);
+
         FieldAddressRecovery.Run(method);
 
         // Directly after it, on the additions it declined: 62 of the 77 it refuses in Assembly-CSharp are
@@ -709,5 +716,10 @@ public static class ForkPipeline
         ThrowTheConstructedException.Run(method);
 
         DeadFrameArithmetic.Run(method);
+
+        // Counts and changes nothing, and only when ADDBASE_CENSUS names a file: the surviving additions of a
+        // reference and a byte offset, which is the CS0019 family. Last of all, so what it sees is what the
+        // generator sees.
+        UntypedBaseCensus.Run(method);
     }
 }
