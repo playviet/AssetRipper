@@ -97,7 +97,12 @@ public static class InterfaceCallRecovery
                 continue;
 
             if (Dispatch(instruction.Operands[0], definitions, method) is not { } dispatch)
+            {
+                //One dispatch that stands for several calls, which no single answer can describe. Handled by
+                //splitting rather than by choosing - see TailMerged.
+                changed |= TailMerged(method, block, instruction, definitions);
                 continue;
+            }
 
             if (MethodInSlot(dispatch.Interface, dispatch.Slot) is not { } callee || callee.IsStatic)
                 continue;
@@ -162,6 +167,323 @@ public static class InterfaceCallRecovery
         }
 
         return changed;
+    }
+
+    /// <summary>One walk of a dispatch the compiler tail-merged, and everything needed to write its call.</summary>
+    private readonly record struct Arm(Block Block, Block Guard, TypeAnalysisContext Interface, int Slot,
+        LocalVariable Receiver, MethodAnalysisContext Callee);
+
+    /// <summary>
+    /// Recovers a dispatch that stands for <b>several</b> calls, by giving each of them its own.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// il2cpp writes the interface walk out at the call site, and where two calls on the same interface sit in
+    /// different arms of the same <c>if</c>, the compiler <b>tail-merges</b> them: two complete walks, each
+    /// ending at its own slot, both writing the same registers, meeting at one indirect call.
+    /// <c>TrackingManager::ResolveImpressionCount</c> is the shape - <c>[offsets] + 32</c> on one arm and
+    /// <c>[offsets] + 30</c> on the other.
+    /// </para>
+    /// <para>
+    /// <b>Every previous attempt at this crossing was a rule that picked a definition, and all four were
+    /// reverted</b> ([[il2cpp-object-is-not-a-declaration]]). The reason they cannot work is not that the rule
+    /// was wrong: the local genuinely holds two different slots naming two different methods, so there is no
+    /// answer to pick. Nothing short of separating the two paths can be right, and that is what this does.
+    /// </para>
+    /// <para>
+    /// The separation needs no renaming, which is what keeps it small. Each arm already computes its own slot
+    /// and its own class into locals of its own; what they share is the *tail*, and the tail's only lasting
+    /// output is the call's result register. So the call block is cut in two at the indirect call, each arm
+    /// gets the call it stood for written into it and jumps straight to the second half, and each walk's
+    /// opening test is sent to its own arm. Both arms then assign the same result local - which is what the
+    /// merged code did - and everything after the call is untouched and reached from both.
+    /// </para>
+    /// <para>
+    /// Refused unless every way into the call block passes through one of the walks being replaced: anything
+    /// else reaches the tail without an answer of its own.
+    /// </para>
+    /// </remarks>
+    private static bool TailMerged(MethodAnalysisContext method, Block callBlock, Instruction call,
+        Dictionary<LocalVariable, List<Instruction>> definitions)
+    {
+        if (method.AppContext.Binary.is32Bit || call.Operands.Count < 3)
+            return false;
+
+        foreach (var (found, fromClass, throughInvoker) in Entries(call.Operands[0], definitions))
+        {
+            //A callee reached through the invoker thunk is handed a frame rather than registers, and the
+            //frame is built in the shared tail. That is a second question and this one does not touch it.
+            if (throughInvoker || fromClass < VTableOffset64)
+                continue;
+
+            var inVtable = fromClass - Il2CppClassUsefulOffsets.GetVtableOffset(method.AppContext.MetadataVersion, false);
+
+            if (inVtable < 0 || inVtable % SlotWidth != 0)
+                continue;
+
+            //The tail itself is singly defined - it is the shared part. What it reads is not.
+            if (Single(found, definitions) is not { OpCode: OpCode.Add, Operands: [_, LocalVariable runtimeClass, LocalVariable scaled] }
+                || Single(scaled, definitions) is not { OpCode: OpCode.ShiftLeft, Operands: [_, LocalVariable counted, { } by] }
+                || Constant(by) != EntriesToBytes)
+            {
+                continue;
+            }
+
+            var arms = Arms(method, definitions, counted, runtimeClass, (int)(inVtable / SlotWidth));
+
+            if (arms.Count >= 2 && EveryWayIn(callBlock, arms))
+                return Separate(method, callBlock, call, arms);
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// One arm per block that gives <b>both</b> the slot and the class a value, which is how taking single
+    /// assignment form apart lays an edge's copies out: all of one edge's, in one block.
+    /// </summary>
+    /// <remarks>
+    /// Pairing them by block is what makes this safe. Reading the two locals' definitions separately would
+    /// pair a slot from one walk with a class from the other and name a method on the wrong object - which is
+    /// exactly the mistake the previous four rules made, in a different place.
+    /// </remarks>
+    private static List<Arm> Arms(MethodAnalysisContext method, Dictionary<LocalVariable, List<Instruction>> definitions,
+        LocalVariable counted, LocalVariable runtimeClass, int baseSlot)
+    {
+        var arms = new List<Arm>();
+
+        foreach (var block in method.ControlFlowGraph!.Blocks)
+        {
+            if (Defines(block, counted) is not { } slotCopy || Defines(block, runtimeClass) is not { } classCopy)
+                continue;
+
+            if (Reached(slotCopy, definitions) is not { } sum || Reached(classCopy, definitions) is not { } ownClass)
+                continue;
+
+            //Where the walk stopped, and how far into the interface's part of the table the method sits. The
+            //slot can be counted before the scaling or added after it, exactly as `Scaling` reads it.
+            LocalVariable walked;
+            long slot;
+
+            if (Single(sum, definitions) is { OpCode: OpCode.Add, Operands: [_, MemoryOperand { Index: null, Scale: 0, Addend: 0, Base: LocalVariable at }, { } added] }
+                && Constant(added) is { } entries && entries >= 0 && entries <= MaximumSlot)
+            {
+                (walked, slot) = (at, entries);
+            }
+            else if (Single(sum, definitions) is { OpCode: OpCode.Move, Operands: [_, MemoryOperand { Index: null, Scale: 0, Addend: 0, Base: LocalVariable only }] })
+            {
+                (walked, slot) = (only, 0);
+            }
+            else
+            {
+                continue;
+            }
+
+            if (InterfaceComparedAgainst(walked, method, definitions) is not { } declared
+                || LoadedFrom(ownClass, definitions) is not { } receiver
+                || MethodInSlot(declared, baseSlot + (int)slot) is not { } callee || callee.IsStatic
+                || Opening(method, ownClass) is not { } guard || ReferenceEquals(guard, block))
+            {
+                continue;
+            }
+
+            arms.Add(new Arm(block, guard, declared, baseSlot + (int)slot, receiver, callee));
+        }
+
+        return arms;
+    }
+
+    /// <summary>The instruction in this block that gives the local a value, where exactly one does.</summary>
+    private static Instruction? Defines(Block block, LocalVariable local)
+    {
+        Instruction? only = null;
+
+        foreach (var instruction in block.Instructions)
+        {
+            if (instruction.Destination is not LocalVariable written || !ReferenceEquals(written, local))
+                continue;
+
+            if (only != null)
+                return null;
+
+            only = instruction;
+        }
+
+        return only;
+    }
+
+    /// <summary>What the copy on this edge was copied from, which is where that arm's own value lives.</summary>
+    private static LocalVariable? Reached(Instruction copy, Dictionary<LocalVariable, List<Instruction>> definitions)
+        => copy is { OpCode: OpCode.Move, Operands: [_, LocalVariable from] } && definitions.ContainsKey(from) ? from : null;
+
+    /// <summary>The test that opens a walk: the one asking how many interfaces this class has.</summary>
+    private static Block? Opening(MethodAnalysisContext method, LocalVariable runtimeClass)
+        => method.ControlFlowGraph!.Blocks.FirstOrDefault(candidate =>
+            candidate.BlockType == BlockType.TwoWay
+            && candidate.Instructions.Count > 0
+            && candidate.Instructions[^1].OpCode == OpCode.ConditionalJump
+            && candidate.Instructions.Any(instruction => instruction.Operands.Any(operand =>
+                operand is MemoryOperand { Base: LocalVariable held } read
+                && read.Addend == InterfaceCountOffset
+                && ReferenceEquals(held, runtimeClass))));
+
+    /// <summary>Whether every path into the shared tail comes through one of the walks being replaced.</summary>
+    private static bool EveryWayIn(Block callBlock, List<Arm> arms)
+        => callBlock.Predecessors.All(predecessor => arms.Any(arm => Reaches(arm.Guard, predecessor, callBlock)));
+
+    /// <summary>
+    /// Cuts the tail in two and writes each arm's own call into the arm.
+    /// </summary>
+    private static bool Separate(MethodAnalysisContext method, Block callBlock, Instruction call, List<Arm> arms)
+    {
+        var cfg = method.ControlFlowGraph!;
+        var voidType = method.AppContext.SystemTypes.SystemVoidType;
+        var written = new List<(Arm Arm, List<object> Operands, bool Void)>();
+
+        foreach (var arm in arms)
+        {
+            var returnsNothing = ReferenceEquals(arm.Callee.ReturnType, voidType);
+
+            if (!returnsNothing && call.Operands[1] is not LocalVariable)
+                return false;
+
+            if (Aapcs64.ParametersOf(arm.Callee, call.Operands) is not { } parameters
+                || !parameters.All(operand => AvailableIn(arm.Block, operand, cfg)))
+            {
+                return false;
+            }
+
+            var operands = new List<object> { arm.Callee };
+
+            if (!returnsNothing)
+                operands.Add(call.Operands[1]);
+
+            operands.Add(arm.Receiver);
+            operands.AddRange(parameters);
+            written.Add((arm, operands, returnsNothing));
+        }
+
+        var at = callBlock.Instructions.IndexOf(call);
+
+        if (at < 0)
+            return false;
+
+        //The second half of the tail: everything after the call, which both arms still reach and which is
+        //untouched. Its predecessors become the arms.
+        var after = new Block { ID = cfg.Blocks.Max(block => block.ID) + 1 };
+        after.Instructions.AddRange(callBlock.Instructions.Skip(at + 1));
+        callBlock.Instructions.RemoveRange(at + 1, callBlock.Instructions.Count - at - 1);
+
+        foreach (var successor in callBlock.Successors)
+        {
+            successor.Predecessors.Remove(callBlock);
+            successor.Predecessors.Add(after);
+            after.Successors.Add(successor);
+        }
+
+        callBlock.Successors.Clear();
+        cfg.Blocks.Add(after);
+        after.CalculateBlockType();
+
+        foreach (var (arm, operands, returnsNothing) in written)
+        {
+            while (arm.Block.Instructions.Count > 0
+                   && arm.Block.Instructions[^1].OpCode is OpCode.Jump or OpCode.ConditionalJump)
+            {
+                arm.Block.Instructions.RemoveAt(arm.Block.Instructions.Count - 1);
+            }
+
+            arm.Block.AddInstruction(new Instruction(call.Index, returnsNothing ? OpCode.CallVoid : OpCode.Call, operands.ToArray()));
+            arm.Block.AddInstruction(new Instruction(call.Index, OpCode.Jump, after));
+
+            foreach (var successor in arm.Block.Successors)
+                successor.Predecessors.Remove(arm.Block);
+
+            arm.Block.Successors.Clear();
+            arm.Block.Successors.Add(after);
+            after.Predecessors.Add(arm.Block);
+            arm.Block.CalculateBlockType();
+
+            //And the walk's opening test goes straight to the arm, which is what makes the loop, the
+            //not-found exit and the runtime helper unreachable.
+            foreach (var successor in arm.Guard.Successors)
+                successor.Predecessors.Remove(arm.Guard);
+
+            arm.Guard.Successors.Clear();
+            arm.Guard.Instructions[^1].OpCode = OpCode.Jump;
+            arm.Guard.Instructions[^1].Operands = [arm.Block];
+            arm.Guard.Successors.Add(arm.Block);
+            arm.Block.Predecessors.Add(arm.Guard);
+            arm.Guard.CalculateBlockType();
+        }
+
+        cfg.RemoveUnreachableBlocks();
+        return true;
+    }
+
+    /// <summary>
+    /// Whether a value the merged call read is still in hand where the arm's own call is being written.
+    /// </summary>
+    /// <remarks>
+    /// The arguments were laid out before the walk began, so in practice they are - but the shared tail is
+    /// also a place a value can be built, and one built there is not available on the arm's own path. Asked
+    /// as dominance over the graph as it stands, because the dominator tree computed at the start of analysis
+    /// is several rewrites out of date by now.
+    /// </remarks>
+    private static bool AvailableIn(Block arm, object operand, ISILControlFlowGraph cfg)
+    {
+        if (operand is not LocalVariable local)
+            return true;
+
+        var dominators = Dominators(cfg);
+
+        foreach (var block in cfg.Blocks)
+            if (Defines(block, local) is not null && !dominators[arm].Contains(block) && !ReferenceEquals(block, arm))
+                return false;
+
+        return true;
+    }
+
+    /// <summary>Which blocks every path to each block must pass through.</summary>
+    private static Dictionary<Block, HashSet<Block>> Dominators(ISILControlFlowGraph cfg)
+    {
+        var dominators = new Dictionary<Block, HashSet<Block>>();
+
+        foreach (var block in cfg.Blocks)
+            dominators[block] = ReferenceEquals(block, cfg.EntryBlock) ? [cfg.EntryBlock] : [.. cfg.Blocks];
+
+        for (var changed = true; changed;)
+        {
+            changed = false;
+
+            foreach (var block in cfg.Blocks)
+            {
+                if (ReferenceEquals(block, cfg.EntryBlock) || block.Predecessors.Count == 0)
+                    continue;
+
+                HashSet<Block>? meet = null;
+
+                foreach (var predecessor in block.Predecessors)
+                    meet = meet is null ? [.. dominators[predecessor]] : Meet(meet, dominators[predecessor]);
+
+                meet ??= [];
+                meet.Add(block);
+
+                if (meet.SetEquals(dominators[block]))
+                    continue;
+
+                dominators[block] = meet;
+                changed = true;
+            }
+        }
+
+        return dominators;
+    }
+
+    private static HashSet<Block> Meet(HashSet<Block> one, HashSet<Block> other)
+    {
+        one.IntersectWith(other);
+        return one;
     }
 
     /// <summary>

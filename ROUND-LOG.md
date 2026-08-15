@@ -325,4 +325,61 @@ mine**: the slice at 497, before my last round, already carried both.
 | `ActiveHash` 2 | the instruction after a call reads the receiver's SSA version, not the result's |
 | `IntersectLineSegments2D` 1 | a second local stamped `Boolean`, and a jump target outside the method |
 
+## 1.8.9 — export 499 — the tail-merged interface call, separated — **KEPT**
+
+The last interface-walk family in the game: 16 sites in 3 files, all mine, worth the 32 commented statements
+I predicted. **Four earlier attempts at this crossing were rules that picked a definition and all four were
+reverted** (`il2cpp-object-is-not-a-declaration`). The reason they cannot work is not that the rule was
+wrong — the local genuinely holds two different slots naming two different methods, because the compiler
+tail-merged two calls into one dispatch, so **there is no answer to pick**. Only separating the paths can be
+right.
+
+`InterfaceCallRecovery.TailMerged` / `Arms` / `Separate`. The separation needs **no renaming**, which is what
+keeps it to ~200 lines: each arm already computes its own slot and its own class into locals of its own, and
+the only lasting output of the shared tail is the call's result register. So the call block is cut in two at
+the indirect call, each arm gets the call it stood for written into it and jumps to the second half, and each
+walk's opening test is sent to its own arm. Both arms assign the same result local — which is what the merged
+code did.
+
+Arms are paired **by block**: one arm per block that gives *both* the slot and the class a value, which is
+how SSA destruction lays an edge's copies out. Reading the two locals' definitions separately would pair a
+slot from one walk with a class from the other and name a method on the wrong object — the same mistake the
+four reverted rules made, in a different place. Refused unless every way into the call block passes through
+one of the walks being replaced, and unless every argument is available where the arm's call is written
+(dominance computed over the graph as it stands, the analysis-time dominator tree being many rewrites old).
+
+| | 498 | 499 |
+|---|---|---|
+| `compare2` full / partial | 2557 / 152 | **2559** / **150** |
+| `compare2` commented | 458 | **426** |
+| `compare2` unmanaged / indirect | 383 / 21 | **348** / **18** |
+| `allscore` ALL full / partial | 2117 / 116 | **2119** / **114** |
+| `notecensus` methods / losing | 290 / 76 | **288** / **73** |
+| `decisions` | 1326 of 1382 | **1326 of 1382** |
+| roundtrip, cfscore, genfail | | level |
+
+`ResolveImpressionCount` is now the source exactly, with no marker, no note and no commented statement:
+
+```csharp
+int num;
+if (IsInterstitialFormat(adFormat)) num = _trackingSaveData.adiCount;
+else { if (!IsRewardedFormat(adFormat)) { … return _trackingSaveData.IncrementCustomCount("imp_" + text); }
+       num = _trackingSaveData.advCount; }
+return num + 1;
+```
+
+`GetReadyProvider` recovers all four `IAdsNetwork.IsInterstitialReady/IsAppOpenReady/IsRewardedReady/
+IsNativeReady` calls, its `foreach` over `mediationOrder` and its `switch`, with four benign width notes left.
+
+**`livecount` reads −194 live and −58 branches, and that is the point rather than a regression.** What left is
+the walk: a guard, a compare-and-step loop and a runtime-helper fallback, sixteen times over — machinery il2cpp
+writes at the call site, which was never source. The check that settles it is `decisions.py`, which asks
+whether the *original's* branching survived and is **unmoved at 1326 of 1382**; deleting 58 real branches
+could not leave it still. `full` up, `partial` down, `unmanaged` −35 and the bodies reading as their source
+say the same thing.
+
+The execution oracle is **unmoved at 54/79 and 49/65** — and it does exercise interface dispatch
+(`SharedPick`, `ValuePick`, `SumSteps`), so this is a CFG rewrite measured by the one instrument that would
+notice it going wrong.
+
 
