@@ -305,6 +305,9 @@ the file.
 | unmanaged | 389 | **382** |
 | notfound | 50 | **39** |
 | cfscore · decisions · roundtrip · gen failures | 609/92 · 1326/1382 · 11186/1043 · 0 | **609/92 · 1326/1382 · 11187/1043 · 0** |
+| **allscore** (all 427 originals) full / partial | 2119 / 114 (91.1%) | **2120 / 113** (91.1%) |
+| allscore commented · unmanaged · notfound | 394 · 275 · 44 | **379 · 268 · 33** |
+| allscore `CFramework` full% | 87.5 | **87.6** |
 
 Bodies that changed from doing the wrong thing to doing the right one, none of which any compilability
 scorer could see: `ArrayExtension::ResizeArray` (copied nothing → `array[i] = input[i]`),
@@ -397,3 +400,43 @@ So the remaining three need the guard **relaxed in kind**, not widened in covera
 copy may read the buffer" is too strong when the buffer register stays live into exception blocks and when
 the value is legitimately copied twice. That is a design change, not a condition, and it should be measured
 on its own.
+
+---
+
+## What is left in the eleven, and what to do next
+
+| member | commented, 520 → 524 | root |
+|---|---|---|
+| `IDictionaryExtension::GetKeysByValue` | 33 → 33 | the `EqualityComparer<W>.Default.Equals` call is an unresolved `IndirectCall`; the pair itself now assigns |
+| `IDictionaryExtension::TryGetKeyByValue` | 30 → 30 | same |
+| `IEnumerableExtension::TakeLast` | 16 → 16 | the copy-fold guard, see round 6 |
+| `ArrayExtension::AddRange` | 12 → 12 | same, through an `IndirectCall` |
+| `IEnumerableExtension::PickRandom` | 11 → 11 | the buffer is genuinely copied twice; the guard is right to refuse |
+| `JsonExtension::ToNewlineDelimitedJson` | 9 → 9 | not reached this session |
+| `ArrayExtension::ResizeArray` | 6 → **3** | closed by round 1 |
+| `SlicedFilledImage::SetStruct` | 5 → 5 | **not fixable as a typing bug** |
+| `ArrayExtension::Remove` | 4 → 4 | `COPYFOLD` says "nothing reads the buffer" for `Array.IndexOf` |
+| `ArrayExtension::CompareArray` | 3 → **2** | closed by round 1 |
+| `BaseTrackingSaveData::Set` | 1 → 1 | same as `SetStruct` |
+| `IListExtension::Shuffle` (not in the brief) | 8 → **0, and `full`** | closed by round 4 |
+
+Ranked next steps:
+
+1. **Relax the copy-fold guard in kind.** `PickRandom` proves "one reader only" is too strong: a value
+   copied to two places is still that value. Answering into the first copy's destination and leaving the
+   second as an ordinary assignment between two locals would reach all three remaining members.
+2. **The `EqualityComparer<W>.Default.Equals` indirect call** is what both `IDictionaryExtension` members
+   are really lost to — 63 of the 130 statements. It arrives as `IndirectCall … (should have been resolved
+   before IL gen)` with the comparer in X0 and the two values beside it; the callee is a virtual slot on a
+   shared `EqualityComparer<W>`.
+3. **`SetStruct`/`Set` want an export-level answer, not an analysis one** — a generic definition whose only
+   registered body is a concrete instantiation's. Either write it under the instantiation it really is, or
+   decline the body rather than emit an uncompilable one.
+
+## Memory written this session
+
+* `il2cpp-a-value-type-generic-has-no-shared-body` — why `SetStruct` recovers as `bool`, and why no typing
+  pass can be at fault
+* `il2cpp-the-header-was-hoisted-out-of-the-loop` — round 1, and the recorded negative it corrects
+* `il2cpp-the-copy-out-of-the-thunks-buffer` — rounds 2–4, the `X29` condition, and rounds 5–6 as
+  documented negatives
