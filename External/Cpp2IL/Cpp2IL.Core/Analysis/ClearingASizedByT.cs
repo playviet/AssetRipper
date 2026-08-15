@@ -120,6 +120,21 @@ public static class ClearingASizedByT
                 continue;
             }
 
+            //Or what is being *filled* is an element of an array of `T`, and then the copy is a store:
+            //`output[index] = input[index]` compiles to `memcpy(&output[i], &input[i], sizeof(T))` with both
+            //addresses worked out the same way. Recovering only the source writes the value into the
+            //destination *address*, which says nothing and loses the store outright - so the two halves have
+            //to be taken together, and this is the only place both are in hand.
+            //
+            //**Never for the clear.** `memset(&array[i], 0, sizeof(T))` would become `array[i] = (T)0`, and
+            //nought does not convert to an unconstrained `T` - the same trap as the return buffer below.
+            if (named != "memset" && ElementAt(call.Operands[first], definitions, pointerSize) is { } destination)
+            {
+                call.OpCode = OpCode.Move;
+                call.Operands = [destination, filled];
+                continue;
+            }
+
             //Where only the *source* was an element, the value goes into the buffer the copy filled -
             //**not** into the call's answer, which is a register the copy happens to return and nothing reads.
             //Saying it there let the collection take the whole chain, and `RandomInArray` returned an empty
@@ -219,29 +234,70 @@ public static class ClearingASizedByT
     /// The array element an address is, where it was worked out as <c>array + index*width + 0x20</c>.
     /// </summary>
     /// <remarks>
-    /// Only the copy's <em>source</em> is asked. Doing the same for its destination - which would be
-    /// <c>output[i] = input[i]</c> - was built at 1.1.20 and measured **byte-identical on every scorer**:
-    /// the copies inside `ResizeArray` and `AddRange` are stepped by a walking pointer rather than by a
-    /// multiply per iteration, so no element address is worked out for this to find. That is the
-    /// no-subscript family, and it is a different root.
+    /// <para>
+    /// Two shapes, and which one the compiler emits depends only on whether the step past the header could be
+    /// lifted out of the loop:
+    /// </para>
+    /// <code>
+    /// Add v78, array, v77      ; the scaled index      Add v137, array, 32   ; hoisted, once
+    /// Add v81, v78, 32         ; past the header       Add v227, v137, v226  ; the scaled index
+    /// </code>
+    /// <para>
+    /// Only the first was recognised, and the second is what <c>ArrayExtension::ResizeArray</c>,
+    /// <c>AddRange</c> and <c>CompareArray</c> are made of - the note on this method used to say those
+    /// stepped a walking pointer with no element address to find, and that reading was wrong: the multiply is
+    /// there, per iteration, and only the header had moved.
+    /// </para>
     /// </remarks>
     private static MemoryOperand? ElementAt(object operand, Dictionary<LocalVariable, Instruction> definitions, int pointerSize)
     {
-        //Past the header, which is the last step and the one that says this is an element and not a field.
+        var header = pointerSize == 4 ? 0x10 : 0x20;
+
         if (operand is not LocalVariable address || !definitions.TryGetValue(address, out var made)
-            || made is not { OpCode: OpCode.Add, Operands: [_, LocalVariable summed, { } past] }
-            || Constant(past) != (pointerSize == 4 ? 0x10 : 0x20))
+            || made is not { OpCode: OpCode.Add, Operands: [_, { } first, { } second] })
         {
             return null;
         }
 
-        if (!definitions.TryGetValue(summed, out var sum)
-            || sum is not { OpCode: OpCode.Add, Operands: [_, { } left, { } right] })
+        //Past the header as the last step, which is what the compiler emits where the index is free at the
+        //access.
+        if (Constant(second) == header && first is LocalVariable summed
+            && definitions.TryGetValue(summed, out var sum)
+            && sum is { OpCode: OpCode.Add, Operands: [_, { } left, { } right] }
+            && Access(left, right, definitions, pointerSize, header) is { } straight)
+        {
+            return straight;
+        }
+
+        //Or past the header first and hoisted, the scaled index being all that is left inside the loop.
+        return Hoisted(first, second, definitions, pointerSize, header)
+            ?? Hoisted(second, first, definitions, pointerSize, header);
+    }
+
+    /// <summary>An element reached through a base that is the array's own first element, worked out once.</summary>
+    private static MemoryOperand? Hoisted(object elements, object offset, Dictionary<LocalVariable, Instruction> definitions,
+        int pointerSize, int header)
+    {
+        if (elements is not LocalVariable held || !definitions.TryGetValue(held, out var made)
+            || made is not { OpCode: OpCode.Add, Operands: [_, { } one, { } other] })
         {
             return null;
         }
 
-        //Either order: the array plus the scaled index, or the scaled index plus the array.
+        //Either order again: the array plus the header, or the header plus the array.
+        if (Constant(other) == header)
+            return Access(one, offset, definitions, pointerSize, header);
+
+        if (Constant(one) == header)
+            return Access(other, offset, definitions, pointerSize, header);
+
+        return null;
+    }
+
+    /// <summary>The access an array and a scaled subscript stand for, in either order.</summary>
+    private static MemoryOperand? Access(object left, object right, Dictionary<LocalVariable, Instruction> definitions,
+        int pointerSize, int header)
+    {
         foreach (var (holder, offset) in new[] { (left, right), (right, left) })
         {
             if (holder is not LocalVariable array
@@ -264,7 +320,7 @@ public static class ClearingASizedByT
             };
 
             if (index != null)
-                return new MemoryOperand(array, index, pointerSize == 4 ? 0x10 : 0x20, (int)width);
+                return new MemoryOperand(array, index, header, (int)width);
         }
 
         return null;
