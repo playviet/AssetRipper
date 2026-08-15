@@ -1,0 +1,26 @@
+# The repo root ignores `packages/`, and the filesystem is case-insensitive, so Unity's own `Packages/` -
+# the manifest that decides which engine modules the build contains - was silently excluded. Without it the
+# corpus does not rebuild to the same binary.
+!/Packages/
+
+# Unity output. Only Assets/, Packages/ and ProjectSettings/ are the corpus.
+/Library/
+/Temp/
+/.utmp/
+/Obj/
+/obj/
+/Logs/
+/UserSettings/
+/Build/
+/Builds/
+/[Bb]uild[Ss]/
+*.apk
+*.aab
+*.log
+*.csproj
+*.sln
+*.unityproj
+*.pidb
+*.booproj
+*.svd
+*.userprefs

@@ -1,0 +1,5 @@
+<linker>
+  <!-- Nothing in Assembly-CSharp may be stripped: a stripped method has no body to recover, and the
+       corpus then reports a defect that is really an absence. -->
+  <assembly fullname="Assembly-CSharp" preserve="all" />
+</linker>

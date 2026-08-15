@@ -70,20 +70,27 @@ scratchpad/allscore.py <out>/Assets/...     # all 427 originals, not the 96; the
 Each is blind somewhere the next one is not, and all of them ask whether a body **compiles whole** rather
 than whether it **computes the right answer**.
 
-**The execution oracle that answered the second question is LOST** - `difftest.py`, both corpus projects and
-their binaries, with no copy in either backup. `autodiff.py` survives in `scratchpad-tools/` and needs only
-`<originalSource.cs> <recoveredSource.cs>`, so what has to be rebuilt is the **corpus**: a Unity project of
-known-source shapes compiled to arm64 il2cpp. See `il2cpp-the-execution-oracle-is-gone` in memory. Until it
-is back, weigh `decisions.py` and `roundtrip.py` hardest, because nothing left can catch a body that is
-whole and wrong.
+**The execution oracle that answers the second question is `corpus/`** - a Unity project of known-source
+shapes built to an arm64 il2cpp apk, exported, and then *executed* against its own source:
+
+```sh
+corpus/README.md                            # build the apk; only when a shape is added, ~4 min
+scratchpad-tools/autodiff.py corpus/Assets/Corpus.cs <out>/.../Corpus.cs 2000 | tee oracle.txt
+scratchpad-tools/corpusscore.py <out>/.../Corpus.cs oracle.txt    # what `full` is worth
+```
+
+`corpus/BASELINE.md` is the last measurement and names the root of every failure. Run it every stretch: it is
+the only measure that catches a body that is whole and wrong, and it found **19 of the 65 shapes rated `full`
+computing the wrong answer**, three of them recovered as an empty `return default(T)`.
 
 **Back a tool up the moment you change it.** `scratchpad/` is a session temp directory and has now lost
-files four times. `AssetRipper/scratchpad-tools/` is the durable home and is tracked in git; `memory/tools/`
-mirrors it.
+files four times - the corpus among them, twice. `AssetRipper/scratchpad-tools/` is the durable home and is
+tracked in git; `memory/tools/` mirrors it, `memory/tools/corpus/` included.
 
 Keep a change only if it makes the recovery **better**, which is not the same as making `full` go up. `full`
-counts methods that compile whole, and a method can compile whole and be wrong: an execution oracle found nine
-of ten methods rated `full` and two of ten that actually work. So weigh the correctness measures - does it
+counts methods that compile whole, and a method can compile whole and be wrong: the corpus rates 65 shapes
+`full` and 19 of them answer wrongly, and an earlier oracle found nine of ten game methods rated `full` and
+two of ten that actually work. So weigh the correctness measures - does it
 still branch, does it still compute the right answer - above the compilability ones, and where they disagree,
 say which you followed and why. A read that becomes a marker is better than a read that quietly returns
 element zero, even though the marker costs `full` and the wrong answer does not.
