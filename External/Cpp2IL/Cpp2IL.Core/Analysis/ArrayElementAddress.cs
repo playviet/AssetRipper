@@ -107,10 +107,13 @@ public static class ArrayElementAddress
             }
         }
 
+        //Every instruction as this pass sees it, not as the finished ISIL shows it: the scaling that says
+        //whether an offset is a subscript is several passes upstream and may already have been rewritten.
         if (System.Environment.GetEnvironmentVariable("CHAIN_TRACE") is { } wanted && method.Name.Contains(wanted))
             foreach (var instruction in graph.Instructions)
-                if (instruction.OpCode == OpCode.Add && instruction.Operands is [LocalVariable made, ..])
-                    System.Console.WriteLine($"CHAIN {(chains.ContainsKey(made) ? "yes" : "no ")} {instruction}");
+                System.Console.WriteLine(instruction.Operands is [LocalVariable made, ..] && chains.ContainsKey(made)
+                    ? $"CHAIN yes {instruction}"
+                    : $"CHAIN no  {instruction}");
 
         if (chains.Count == 0)
             return;
@@ -122,11 +125,24 @@ public static class ArrayElementAddress
 
             for (var i = 0; i < instruction.Operands.Count; i++)
             {
-                //An index that is really a byte offset. Where the compiler kept one instead of a subscript the
-                //addressing mode already names the array, so nothing here has a chain to fold - but the index
-                //still steps by the element's width and still is not a subscript. `ArrayAccessRecovery` takes
-                //it for one, which is why `_cornersCache[c].x` read elements 0, 12, 24 and 36 of a four-element
-                //array: it compiled, it scored whole, and it was wrong.
+                //An index that is really a byte offset, in the plainest form: the subscript was scaled by the
+                //element and the product left in the addressing mode rather than added into the address.
+                //`ArrayAccessRecovery` takes it for a subscript, so `offsets[i * 12]` reads elements 0, 12 and
+                //24 of a three-element array - it compiles, it scores whole, and it is wrong.
+                //`ParticleEffectsLibrary::SpawnParticleEffect` is the case, over a `Vector3[]`.
+                if (instruction.Operands[i] is MemoryOperand { Index: LocalVariable scaledIndex, Scale: 0 or 1 } byOffset
+                    && ElementOf(byOffset.Base ?? "") is { } elementIndexed
+                    && ArrayTypeInference.Width(elementIndexed, pointerSize) is { } stride && stride > 1
+                    && Scaled(scaledIndex, definitions, stride) is { } subscripted && subscripted.Width == stride)
+                {
+                    instruction.Operands[i] = new MemoryOperand(byOffset.Base, subscripted.Index, byOffset.Addend, stride);
+                    continue;
+                }
+
+                //And the other way it gets there: the compiler kept a byte offset instead of a subscript and
+                //stepped it by the element's width once round the loop. `_cornersCache[c].x` read elements 0,
+                //12, 24 and 36 of a four-element array before this, and the counter moving beside the offset
+                //is what says which element was meant.
                 if (instruction.Operands[i] is MemoryOperand { Index: LocalVariable stepping, Scale: 0 or 1 } stepped
                     && ElementOf(stepped.Base ?? "") is { } walked
                     && ArrayTypeInference.Width(walked, pointerSize) is { } wide && wide > 1
@@ -404,14 +420,49 @@ public static class ArrayElementAddress
 
         return made switch
         {
-            { OpCode: OpCode.ShiftLeft, Operands: [_, { } value, { } by] } when Constant(by) is { } places && places is > 0 and < 8
+            { OpCode: OpCode.ShiftLeft, Operands: [_, { } value, { } by] } when Settled(by, definitions) is { } places && places is > 0 and < 8
                 => (value, 1 << (int)places),
-            { OpCode: OpCode.Multiply, Operands: [_, { } value, { } times] } when Constant(times) is { } width && width is > 1 and <= 128
+            { OpCode: OpCode.Multiply, Operands: [_, { } value, { } times] } when Settled(times, definitions) is { } width && width is > 1 and <= 128
                 => (value, (int)width),
-            { OpCode: OpCode.Multiply, Operands: [_, { } times, { } value] } when Constant(times) is { } width && width is > 1 and <= 128
+            { OpCode: OpCode.Multiply, Operands: [_, { } times, { } value] } when Settled(times, definitions) is { } width && width is > 1 and <= 128
                 => (value, (int)width),
             _ => null,
         };
+    }
+
+    /// <summary>
+    /// The constant an operand stands for, following the moves a widening put between the literal and its
+    /// use.
+    /// </summary>
+    /// <remarks>
+    /// A stride is a literal in the source and a literal in the machine code, but not always a literal
+    /// operand here: <c>(long)i * 12</c> widens both sides first, and the twelve arrives as
+    /// <c>Move v100 (Int32), 12</c> then <c>Move v101 (Int64), v100</c>. A conversion is not a move
+    /// ([[il2cpp-a-conversion-is-not-a-move]]) and is written as one, so the multiply reads a *local* and
+    /// every question asked about the width - is this a subscript, is the stride the element's own - is
+    /// answered no. <c>ParticleEffectsLibrary::SpawnParticleEffect</c> indexes a <c>Vector3[]</c> exactly so,
+    /// and the three reads of one element came out as an addition on the array and two loads from unmanaged
+    /// memory.
+    /// </remarks>
+    private static long? Settled(object operand, Dictionary<LocalVariable, Instruction> definitions)
+    {
+        for (var depth = 0; depth < 4; depth++)
+        {
+            if (Constant(operand) is { } value)
+                return value;
+
+            if (operand is not LocalVariable local || !definitions.TryGetValue(local, out var made)
+                //A conversion is a Move with the target as a third operand, so the pattern has to allow it -
+                //and it is the whole point: this is following a literal through the widening. A narrowing
+                //that changed the value would give a width the element does not have, and the caller's
+                //`stride == scaled.Width` refuses that anyway.
+                || made is not { OpCode: OpCode.Move, Operands: [_, { } from, ..] })
+                return null;
+
+            operand = from;
+        }
+
+        return null;
     }
 
     private static long? Constant(object operand)

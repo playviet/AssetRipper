@@ -140,4 +140,38 @@ A store that never happened is the class of defect the compilability scorers can
 (`il2cpp-the-store-that-never-happened`), and nothing regressed anywhere, so a fall in `live` that is
 entirely noise leaving is not a reason to revert.
 
+## 1.8.5 — export 495 — the stride was widened before it was multiplied — **KEPT**
+
+`ParticleEffectsLibrary::SpawnParticleEffect` indexes a `Vector3[]`, and `(long)i * 12` widens both sides
+first, so the twelve arrives as `Move v100 (Int32), 12` then `Move v101 (Int64), v100` and the multiply
+reads a **local**. Every question `ArrayElementAddress` asks about a scaling is answered by
+`Constant(times)`, so all three reads of the element were lost: two as unmanaged loads through
+`array + i*12`, and the third — the one whose byte offset stayed in the addressing mode — as
+`offsets[i * 12]`, which **compiles, scores whole and reads the wrong element**.
+
+Three changes in `ArrayElementAddress`, all one idea:
+* `Settled` follows a literal through the moves a widening put in front of it. A conversion is a `Move`
+  with the target as a **third** operand, so the pattern has to be `[_, { } from, ..]` — matching exactly
+  two operands is why the first build of this measured nothing at all.
+* the shift and both multiply arms ask `Settled` instead of `Constant`.
+* a new branch beside the walker one: an index that is a subscript **scaled by the element** is turned into
+  the subscript, with the scale in the addressing mode. That is the half that fixes a wrong answer.
+
+| | 494 | 495 |
+|---|---|---|
+| `compare2` unmanaged / commented | 388 / 467 | **383** / **465** |
+| everything else | | level: full 2561, partial 148, allscore 2121, decisions 1326, roundtrip 11190/1044, notes 292/72, cfscore 609/6, genfail 0 |
+
+`livecount` −2, and the diff says why:
+
+```
+- long num = (long)CurrentParticleEffectIndex * 12L;   _ = "Unmanaged memory load: [v103+28]";
+- float z2 = z + 0;
++ long num = CurrentParticleEffectIndex;
++ float z = positionInWorldToSpawn.z + particleEffectSpawnOffsets[num].z;
+```
+
+Two reads that returned a literal nought now return the value, and the one that was reading element `i*12`
+of a three-element array now reads element `i`. Five ILSpy notes went with them.
+
 
