@@ -80,7 +80,14 @@ public static class SlotAddressRead
                     //holds whatever is put into it, and where that is itself untyped the slot is untyped too
                     //and the two are declared alike, which is a statement that compiles and is true. Without
                     //this the store had nowhere to go and the generator dropped it in silence; 55 of them.
-                    var writing = operand == 0 && instruction is { OpCode: OpCode.Move, Operands: [_, LocalVariable] };
+                    //A call that answers into a frame word writes it as surely as a store does, and this is
+                    //the only thing that says so. `InvokerThunk.AnswerIntoTheCopyItFeeds` sends a thunked
+                    //call's answer to the word the copy out of its buffer filled, and takes the buffer's
+                    //address out of that word with the copy - so nothing else names the slot at all, and
+                    //without this the answer stays a store through a pointer nothing can write down.
+                    var answering = operand == 1 && instruction is { OpCode: OpCode.Call, Operands: [MethodAnalysisContext, ..] };
+                    var writing = answering
+                        || (operand == 0 && instruction is { OpCode: OpCode.Move, Operands: [_, LocalVariable] });
                     var held = Held(instruction, operand);
 
                     if (held is null && !writing)
@@ -103,7 +110,12 @@ public static class SlotAddressRead
     /// What the slot holds, taken from the place the value is going to or coming from.
     /// </summary>
     private static TypeAnalysisContext? Held(Instruction instruction, int operand)
-        => instruction.OpCode == OpCode.Move && instruction.Operands.Count == 2
+    {
+        //A call's answer says what the word holds exactly: it is the callee's return type and nothing else.
+        if (operand == 1 && instruction is { OpCode: OpCode.Call, Operands: [MethodAnalysisContext callee, ..] })
+            return callee.ReturnType;
+
+        return instruction.OpCode == OpCode.Move && instruction.Operands.Count == 2
             ? (operand == 1 ? instruction.Operands[0] : instruction.Operands[1]) switch
             {
                 LocalVariable { Type: { } type } => type,
@@ -111,6 +123,7 @@ public static class SlotAddressRead
                 _ => null,
             }
             : null;
+    }
 
     /// <summary>A frame offset as the slot names write it: hexadecimal, with a leading minus.</summary>
     private static long? Offset(string written)

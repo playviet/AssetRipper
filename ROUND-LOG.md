@@ -139,3 +139,123 @@ if (array != null) { if (num6 >= array.Length) break;
 — **the source, exactly**. That is a body that copied nothing now copying the right element, which no
 compilability scorer can see and which is the whole point of this family. Every correctness measure is level
 and three markers went away, so nothing was traded for it.
+
+---
+
+## Round 2 — 1.9.2, export 522 — the salvaged `AnswerIntoTheCopyItFeeds`, measured for the first time
+
+### Why this and not something of my own
+
+`probe2 rawisil IEnumerableExtension TakeLast` settles what the rest of the family is:
+
+```
+260 Move X8, [X1+10]        ; the interface method's invoke_impl thunk
+261 Subtract X3, X29, 16    ; the thunk's argument frame
+264 Move X4, X23            ; X4 = the answer buffer - an ALLOCA, not a frame slot
+266 IndirectCall X8, ...
+267 Move X0, X24            ; dst: the local's own alloca
+269 Move X1, X23            ; src: the buffer the thunk just wrote
+271 Move X2, X22            ; sizeof(T)
+273 Call 4AFBB20 (memcpy)
+```
+
+`InvokerThunk` already has two of the three shapes the answer pointer can take -
+`FoldAnswerIntoTheReturn` (the method's own return buffer) and `AnswerIntoTheSlotItNames` (a named frame
+slot). This is the third: **an alloca, copied once into the alloca the local is kept in**, and neither
+existing rule reaches it. It is the root of `TakeLast`, `PickRandom`, `AddRange`, `TryGetKeyByValue`,
+`GetKeysByValue`, `Shuffle` and `Swap` — most of the 130 statements.
+
+The killed agent (`worktree-agent-a0ff9f5531c8d92fe`) had written exactly this rule and never measured it.
+Its base commit `4e68dca82` is an ancestor of master and `git diff 4e68dca82 HEAD` over the five files is
+empty, so its working copies drop in cleanly. Taken as one coherent unit:
+
+| file | what it adds |
+|---|---|
+| `Analysis/InvokerThunk.cs` | `AnswerIntoTheCopyItFeeds` + 12 helpers (+389 lines), `COPYFOLD_TRACE` |
+| `Analysis/KeyFunctionArguments.cs` | `Reads(method, call)` — how many operands an import really reads, so a leftover register is not counted as a use |
+| `Analysis/SlotAddressRead.cs` | a call that answers into a frame word writes it, which is what names the word |
+| `Analysis/RuntimeMethodCallRecovery.cs`, `Analysis/InterfaceCallRecovery.cs` | one line each, the new rule between the other two |
+
+**Deliberately NOT taken**: their `ClearingASizedByT` addition (a separate hypothesis about a buffer the
+analysis has already typed `T`, and it collides with round 1's edit to the same file). Held for round 3 so
+the two are attributable apart.
+
+### Measured
+
+| | 521 | **522** |
+|---|---|---|
+| compare2 full / partial / dead | 3252 / 151 / 108 | **same** |
+| **notfound** | 47 | **39** |
+| unmanaged | 388 | **386** |
+| **commented** | 490 | **497** |
+| cfscore · decisions · roundtrip · gen failures | 609/92, 1326/1382, 11186/1043, 0 | **all level** |
+
+The rule **works**. `IListExtension::Shuffle` and `Swap` lost five `Method not found @4AFBB20` markers and a
+dozen dead alloca statements; `TryGetKeyByValue`'s loop went from
+
+```csharp
+_ = enumerator4.Current;
+_ = "Method not found @4AFBB20";
+_ = keyValuePair.Value;
+```
+
+to `keyValuePair = enumerator4.Current;` — the assignment the source actually has. `COPYFOLD_TRACE=1`
+confirms the fold: `folded IDictionaryExtension::TryGetKeyByValue into v84 @ X27_v1`.
+
+**The +7 commented is one missing condition, not the rule being wrong.** The declaration behind the folded
+local survived as
+
+```csharp
+//KeyValuePair<T, W> keyValuePair = (KeyValuePair<T, W>)(num6 - num8);
+```
+
+`Erase` is meant to take that away and refused, because it asks the alloca's base to be a named stack slot
+(`stackaddr_`/`stack_`) and this one is `82 Subtract v84 @ X27_v1, v1 @ X29, v80` — off the **frame pointer
+register itself**, which stack analysis never names because it names what the frame *holds*, not what
+anchors it. So the fold landed, the local was retyped `KeyValuePair<T, W>`, and its uncompilable declaration
+took every use with it. All +7 are in the two `IDictionaryExtension` members.
+
+Not yet keep-or-revert; round 3 supplies the missing condition and the two are judged together.
+
+---
+
+## Round 3 — 1.9.3, export 523 — the alloca taken off the frame pointer
+
+One condition in `InvokerThunk.Erase`: an allocation may be `sub xN, x29, size` as well as
+`sub xN, <named slot>, size`. What says the base is the frame rather than a value is that it has **no
+definition anywhere in the body** — it is an entry value. Where it does have one, the old name test still
+applies unchanged, so nothing that was refused for being a real value becomes erasable.
+
+**KEPT — rounds 2 and 3 together.**
+
+| | 521 | 522 | **523** |
+|---|---|---|---|
+| compare2 full / partial / dead | 3252 / 151 / 108 | same | **same** |
+| commented | 490 | 497 | **490** |
+| unmanaged | 388 | 386 | **385** |
+| notfound | 47 | 39 | **39** |
+| cfscore full · clean files | 609 · 92/96 | = | **=** |
+| decisions | 1326/1382 | = | **=** |
+| roundtrip whole / facts | 1043 / 11186 | = | **=** |
+| generation failures | 0 | 0 | **0** |
+
+So the pair is **commented level, unmanaged −3, notfound −8, everything else level** against the round-1
+baseline — and the statements behind those markers are the point:
+
+```csharp
+// 521                                       // 523
+_ = enumerator4.Current;                     KeyValuePair<T, W> current = enumerator4.Current;
+_ = "Method not found @4AFBB20";             _ = current.Value;
+_ = keyValuePair.Value;
+```
+
+`TryGetKeyByValue` and `GetKeysByValue` now have the `foreach`'s pair as a real local assigned by
+`Current`, where before the call's answer was discarded and the pair was `default(KeyValuePair<T, W>)` —
+a loop that compared a zeroed pair against the value, scored `full`, and was wrong. `IListExtension::Shuffle`
+and `Swap` lost five `Method not found` markers and twelve dead alloca statements the same way.
+
+Judged on the markers and on the statements, not on `commented`, exactly as `CLAUDE.md` directs: `commented`
+was the only thing that moved the wrong way at 522 and it was one missing condition, which 523 supplies.
+
+**The killed agent's work is vindicated but was one condition short of measurable.** Had it been measured as
+it stood it would have read as commented +7 for notfound −8, which is the kind of result that gets reverted.

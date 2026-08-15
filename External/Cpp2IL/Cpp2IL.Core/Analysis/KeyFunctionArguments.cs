@@ -53,6 +53,39 @@ public static class KeyFunctionArguments
         ["exp2"] = 1, ["exp2f"] = 1, ["ldexp"] = 2, ["ldexpf"] = 2, ["fmod"] = 2, ["fmodf"] = 2,
     };
 
+    /// <summary>
+    /// How many arguments an import reads, where its name is one this knows and so one whose extra register
+    /// operands are speculation rather than use.
+    /// </summary>
+    /// <remarks>
+    /// Asked before <see cref="Run"/> has trimmed anything, by a pass that has to tell a register an import
+    /// really reads from one it was merely handed. Reading a leftover as a use is what made
+    /// <c>IListExtension::Shuffle</c> refuse its second fold: <c>X4</c> still held the previous call's buffer
+    /// and the <c>memcpy</c> three instructions later was carrying it as its own seventh operand.
+    /// </remarks>
+    public static int? Reads(MethodAnalysisContext method, Instruction call)
+    {
+        if (call.Operands is [string helper, ..])
+            return Takes.TryGetValue(helper, out var named) ? named : null;
+
+        if (call.Operands is not [ulong address, ..])
+            return null;
+
+        if (method.AppContext.Binary is LibCpp2IL.Elf.ElfFile binary
+            && binary.ImportedFunctionAt(address) is { } imported && Imported.TryGetValue(imported, out var takes))
+        {
+            return takes;
+        }
+
+        //The field helper is neither: an ordinary address in the binary, recognised by what its body does.
+        return RuntimeFieldHelper.Of(method.AppContext, address) switch
+        {
+            RuntimeFieldHelper.Kind.Address => 2,
+            RuntimeFieldHelper.Kind.Store => 3,
+            _ => null,
+        };
+    }
+
     public static bool Run(MethodAnalysisContext method)
     {
         if (method.ControlFlowGraph is not { } graph)
