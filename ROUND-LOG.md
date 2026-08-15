@@ -5,6 +5,30 @@ Agent worktree `agent-a1b56a3f561e1056d`. Versions 1.8.0–1.8.29, exports 490�
 Baseline reference numbers are taken from export **356** (fork 1.4.1), the export the note census in
 `il2cpp-ilspy-notes-are-a-scorer` was taken on, plus my own untouched build at **1.8.0 / export 490**.
 
+## The shared-`riprun` hazard, checked
+
+A warning arrived that another session's `riprun` restored `assetripper.cpp2il.core/1.8.0` — my range — out
+of a stale `project.assets.json`, and exported clean with numbers identical to baseline. **It did not happen
+here**, and three things made that so:
+
+* my scratchpad is *inside this worktree*, with its own `nuget.config` carrying an **absolute** path to this
+  worktree's `LocalPackages` and a `<clear/>` above it, so the main tree's config cannot be merged in;
+* `bumpz.sh` wipes `riprun/obj` and `riprun/bin` and then **fails the round** unless `riprun.deps.json`
+  names the version just packed;
+* `grep -o "assetripper.cpp2il.core/[0-9.]*" scratchpad/riprun/obj/project.assets.json` reads **1.8.6**
+  after round 496 — my own last bump — and is checked in `roundz.sh` from 497 on.
+
+Corroborating: every round here moved numbers in the direction the ISIL predicted, and `probe2` — built by
+**ProjectReference**, with no package in the path at all — showed each change in the ISIL before the export
+was paid for. A build that never happened cannot do that.
+
+## Rebased onto the HFA struct return
+
+`dad92ee7e` ("The callee assembles its vector return") merged in at 1.8.6 → 1.8.7. Their export 471 is the
+new reference: compare2 full 3247 (2553 of 2815 decompiled, 90.7%), commented 508, unmanaged 403,
+cfscore 609, roundtrip 1043, decisions 1326, gate 12. Version conflicts resolved in my favour (1.8.7);
+nothing else conflicted.
+
 ## 1.8.0 — export 490 — baseline, no code change
 
 Purpose: prove the worktree toolchain measures this tree and not another agent's, and fix the numbers every
@@ -212,5 +236,26 @@ rated `full` 65   of those right 46   of those whole and WRONG 19
 **Identical to `corpus/BASELINE.md` in every cell.** So none of the five kept rounds has broken a body that
 was computing the right answer — and none of the corpus's 79 shapes exercises what they fixed, which is why
 it neither rose nor fell.
+
+## 1.8.7 — export 497 — the merge measured, against their export 471
+
+No code of mine changed; this is the six kept rounds re-measured **on top of** `dad92ee7e`. Package version
+restored: `assetripper.cpp2il.core/1.8.7`, checked from `project.assets.json`.
+
+| | 471 (HFA alone) | 497 (HFA + my six) |
+|---|---|---|
+| `compare2` full, decompiled-only of 2815 | 2553 (90.7%) | **2557** (90.8%) |
+| `compare2` commented | 508 | **472** |
+| `compare2` unmanaged | 403 | **383** |
+| `cfscore` full | 609 | 609 |
+| `roundtrip` whole | 1043 | **1044** |
+| `decisions` | 1326 | 1326 |
+
+**+4 whole, −36 commented, −20 unmanaged, +1 roundtrip whole, nothing down.** My six rounds stack cleanly on
+the struct-return work.
+
+What moved the other way is theirs and expected: `allscore` 2122 → 2117 and `cfscore`'s marker line
+(unmanaged 15 → 19, files clean 92 → 91, `notecensus` losers 71 → 76) — the five bodies that now admit
+incompleteness instead of returning `default(T)`.
 
 
