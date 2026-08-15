@@ -90,4 +90,24 @@ from the outer index and stepped by one, which is the `for (int j = i; ...)` the
 was added beside the existing `CHAIN_TRACE` — a walk that never starts is invisible from the export, since
 the pointer arithmetic simply stays.
 
+## 1.8.3 — export 493 — a constant is a value already — **KEPT**
+
+`GameHubRouter::GameId` chooses between `v.game_id` and `"default"` and then loads, which is exactly the
+shape `FieldAddressSinking` exists for — but the chain walks every *source* of every member and refused at
+`sourceNotALocal`, because one arm of the choice is a string literal. A constant is a value already: there is
+nothing on that arm to rewrite, and nothing about it that makes the chain an address. Allowed for a string
+and for a nought (which where a reference belongs is `null`) and for nothing else — any other number moved
+into a place that is then read through would be a hard-coded address, which managed code does not have.
+
+| | 492 | 493 |
+|---|---|---|
+| `compare2` full / partial / commented | 2560 / 149 / 470 | **2561** / **148** / **467** |
+| `allscore` ALL full / partial | 2120 / 113 | **2121** / **112** |
+| `roundtrip` facts / whole | 11188 / 1043 | **11190** / **1044** |
+| `notecensus` noted / losing | 293 / 73 | **292** / **72** |
+| `livecount` | | **+3 live, +1 branch**, only `GameHubRouter.cs` |
+| cfscore, decisions, genfail, floatbits | | level |
+
+`GameId` now reads as its source and carries no note at all.
+
 

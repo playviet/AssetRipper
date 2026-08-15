@@ -323,6 +323,16 @@ public static class FieldAddressSinking
                                     && instruction.Operands[0] is LocalVariable { Type: { IsValueType: false } })
                                     continue;
 
+                                //A constant is a value already, so there is nothing on that arm to rewrite
+                                //and nothing about it that makes the chain an address. One arm of the choice
+                                //being a string literal is the plainest form of what this pass is for -
+                                //`GameHubRouter::GameId` chooses between `v.game_id` and `"default"` - and a
+                                //nought is the same statement about a reference. Only those two: any other
+                                //number moved into a place that is then read through would be a hard-coded
+                                //address, which managed code does not have and which this must not read.
+                                if (instruction.Operands[source] is string || IsNull(instruction.Operands[source]))
+                                    continue;
+
                                 if (instruction.Operands[source] is not LocalVariable feeding)
                                     return Refuse("sourceNotALocal " + instruction);
 
@@ -359,6 +369,9 @@ public static class FieldAddressSinking
 
         return (members, reads);
     }
+
+    /// <summary>A nought, which where a reference belongs is <c>null</c> and not an address.</summary>
+    private static bool IsNull(object operand) => operand is long and 0 or int and 0 or ulong and 0 or uint and 0;
 
     private static (HashSet<LocalVariable>, List<(Instruction, int, LocalVariable)>)? Refuse(string why)
     {
