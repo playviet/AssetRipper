@@ -280,6 +280,7 @@ public static class InvokerThunk
             return Refused(method, call, "no alloca behind the buffer");
 
         Instruction? copy = null;
+        List<Instruction> reads = [];
 
         foreach (var instruction in method.ControlFlowGraph!.Instructions)
         {
@@ -345,6 +346,24 @@ public static class InvokerThunk
             if (instruction.Destination is LocalVariable named && Dead(method, named, []))
                 continue;
 
+            //Or it is single assignment form's own bookkeeping about an argument register, which is a
+            //different question from where the value goes afterwards.
+            if (ArgumentRegisterBookkeeping(instruction, definitions))
+                continue;
+
+            //Or the body does not copy the value out at all - it reads straight through the pointer, which
+            //is what a shared body does when the `T` it fetched is only ever handed on. `KeyValuePair<T,W>`'s
+            //`get_Value` is told to write X26 and the comparison two lines later reads `[X26]`; the local
+            //`RuntimeMethodCallRecovery` attached as the call's answer is an X0 that nothing ever wrote, so
+            //the value exists under two names and the wrong one is the one the statement uses. These are
+            //gathered rather than refused, and answered below.
+            if (instruction is { OpCode: OpCode.Move, Operands: [LocalVariable, MemoryOperand { Index: null, Scale: 0, Addend: 0, Base: LocalVariable through }] }
+                && ReferenceEquals(Single(through, definitions), made))
+            {
+                reads.Add(instruction);
+                continue;
+            }
+
             //Anything but the one copy reading the buffer means the answer is wanted somewhere else as well,
             //and folding the copy away would leave that reader with a buffer nothing fills.
             if (copy != null)
@@ -358,6 +377,28 @@ public static class InvokerThunk
             }
 
             copy = instruction;
+        }
+
+        //Nothing copied it out, but the body read through it: then **the read is the value**, and that is the
+        //whole of the fix. The call answers into the buffer local the reads name, each read becomes a plain
+        //copy of it, and the allocation that had made it an address goes the same way it does for a copy.
+        //Only where there is no `memcpy` at all - a body that does both is one this cannot speak for.
+        if (copy is null && reads.Count > 0
+            && reads[0].Operands[1] is MemoryOperand { Base: LocalVariable held })
+        {
+            if (CopyTrace)
+                System.Console.Error.WriteLine($"COPYFOLD read    {method.DeclaringType?.Name}::{method.Name}  through {held}  x{reads.Count}  |  {call}");
+
+            Erase(method, held, definitions);
+
+            if (call.Operands[0] is MethodAnalysisContext answering && IsAnAddress(held.Type))
+                held.Type = answering.ReturnType;
+
+            foreach (var read in reads)
+                read.Operands[1] = held;
+
+            call.Operands[1] = held;
+            return true;
         }
 
         if (copy is null)
@@ -417,6 +458,9 @@ public static class InvokerThunk
             if (instruction.Operands.Count == 0 || !Fills(instruction, into))
                 continue;
 
+            if (CopyTrace)
+                System.Console.Error.WriteLine($"COPYFOLD   erase candidate {instruction}");
+
             //Either the allocation itself, where the value's home is the register it landed in, or the store
             //that put it in the frame word the value is going to.
             var alloca = instruction is { OpCode: OpCode.Move, Operands: [_, LocalVariable put] }
@@ -431,10 +475,7 @@ public static class InvokerThunk
             //(KeyValuePair<T, W>)(num6 - num8);`, which cannot be written, and every use of the local went
             //with it. That is +7 commented statements for a fold that had worked.
             if (alloca is not { OpCode: OpCode.Subtract, Operands: [_, LocalVariable frame, _] }
-                || (!definitions.ContainsKey(frame)
-                    ? frame.Register.Name is null
-                    : frame.Register.Name is not { } named
-                        || !(named.StartsWith(StackSlots.AddressPrefix) || named.StartsWith(StackSlots.ValuePrefix))))
+                || !IsTheFrame(frame, definitions, []))
             {
                 continue;
             }
@@ -442,6 +483,41 @@ public static class InvokerThunk
             instruction.OpCode = OpCode.Nop;
             instruction.Operands = [];
         }
+    }
+
+    /// <summary>
+    /// Whether what an allocation was taken off is the frame, however many copies of it stand in the way.
+    /// </summary>
+    /// <remarks>
+    /// Three spellings, and the third is the one that hid for a round. A frame slot the stack analysis has
+    /// named; the frame pointer register itself, which is an entry value with no definition anywhere in the
+    /// body (stack analysis names what the frame *holds*, never what anchors it); and **a copy of that
+    /// register into a scratch one**, which is what the compiler emits when it wants the frame pointer twice.
+    /// `TryGetKeyByValue`'s `get_Value` buffer is `sub x26, x8, size` where `x8` was loaded from `x29` three
+    /// instructions earlier, and the finished dump shows `v1 @ X29` there only because a later pass
+    /// copy-propagates it - at the moment `Erase` runs the operand is still `v71 @ X8_v5`, whose name is
+    /// neither prefix, so the allocation survived and the local kept a second definition saying it is an
+    /// address. That is exactly the declaration the generator cannot write.
+    /// </remarks>
+    private static bool IsTheFrame(LocalVariable local, Dictionary<LocalVariable, List<Instruction>> definitions,
+        HashSet<LocalVariable> seen)
+    {
+        if (!seen.Add(local))
+            return false;
+
+        if (local.Register.Name is { } named
+            && (named.StartsWith(StackSlots.AddressPrefix) || named.StartsWith(StackSlots.ValuePrefix)))
+        {
+            return true;
+        }
+
+        //Nothing in the body writes it, so it arrived with the frame.
+        if (!definitions.TryGetValue(local, out var places))
+            return local.Register.Name is not null;
+
+        //Or it is a copy of something that did. Only a copy - anything computed is a value, not the frame.
+        return places.Count == 1 && places[0] is { OpCode: OpCode.Move, Operands: [_, LocalVariable from] }
+            && IsTheFrame(from, definitions, seen);
     }
 
     /// <summary>Whether an instruction writes the place an answer is about to be sent to.</summary>
@@ -563,6 +639,88 @@ public static class InvokerThunk
 
         return true;
     }
+
+    /// <summary>
+    /// Whether an instruction mentioning the buffer is single assignment form's bookkeeping about an
+    /// argument register rather than a reading of what the buffer holds.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>This is a different predicate from the three that failed</b>, and the difference is what it keys
+    /// on. Widening by <em>instruction kind</em> - "a `Move` is not a reader", then "a call nothing has named
+    /// is not a reader" - was measured inert three times (1.9.5/526, 1.9.6/527, and once in probe alone at
+    /// 1.9.9): the refusal moves to the next reader and stops there. This keys on a <em>structural</em>
+    /// property instead, and one the trace has already proved: a copy single assignment form invented,
+    /// landing in a register the convention uses to pass arguments, every definition of which is another
+    /// such copy.
+    /// </para>
+    /// <para>
+    /// [[il2cpp-an-edge-copy-is-not-two-names]] is the general statement - the copies destruction leaves are
+    /// "one register's several tenants meeting at a join", and a name that fits the value on one edge is not
+    /// a name for the values on the others. An argument register under the invoker convention is the purest
+    /// case: <b>every thunked call in the body redefines it</b>, so its versions are merged at every join and
+    /// the web joins values that have nothing to do with one another.
+    /// </para>
+    /// <para>
+    /// <b>Not by removing the copy.</b> Two measured results say that lever costs more than it pays -
+    /// [[il2cpp-a-block-that-throws-takes-no-edge]] bought commented 185 -> 97 and paid 38 markers, and
+    /// [[il2cpp-a-copy-is-where-a-lane-crosses]] shows those copies are often a parameter lane's only reader.
+    /// The copy must go on existing; what changes is what it is taken to imply.
+    /// </para>
+    /// <para>
+    /// <b>Three conditions, and the last is the one that keeps a real reader.</b> A copy of the value itself
+    /// is told from bookkeeping about a register only by the destination's type - the same distinction
+    /// <c>HomogeneousFloatParameters</c> has to make, where the first register of a run is both the struct
+    /// and its first field - so a destination the analysis has given a real type to is a reader and is left
+    /// alone. And one real store anywhere among the definitions means somebody put a value in that register
+    /// on purpose.
+    /// </para>
+    /// </remarks>
+    private static bool ArgumentRegisterBookkeeping(Instruction instruction,
+        Dictionary<LocalVariable, List<Instruction>> definitions)
+    {
+        //A copy destruction invented carries index -1; anything the program itself wrote has a real one.
+        if (instruction.Index != -1 || instruction.OpCode is not (OpCode.Move or OpCode.Phi)
+            || instruction.Destination is not LocalVariable merged
+            || !IsAnArgumentRegister(merged.Register.Name))
+        {
+            return false;
+        }
+
+        //The destination naming the value rather than a place is what says this one is a real reader.
+        if (!IsAnAddress(merged.Type))
+            return false;
+
+        if (!definitions.TryGetValue(merged, out var places) || places.Count == 0)
+            return false;
+
+        foreach (var place in places)
+            if (place.Index != -1 || place.OpCode is not (OpCode.Move or OpCode.Phi))
+                return false;
+
+        return true;
+    }
+
+    /// <summary>
+    /// Whether a register is one the calling convention takes back at every call.
+    /// </summary>
+    /// <remarks>
+    /// <c>X0</c> to <c>X7</c> are the argument run and <c>X8</c> is the indirect result register - this fork
+    /// models an indirectly returning call as writing <c>[X8]</c> (<c>GetCallResultOperand</c>), so it is
+    /// clobbered by every call in exactly the way the argument registers are, and the invoker thunk's own
+    /// answer buffer is loaded through it. A callee-saved register is not here: a value kept in one is a
+    /// value the compiler meant to survive a call, which is the opposite of bookkeeping.
+    /// <para>
+    /// **A register a call really writes is safe without a special case.** A <c>Call</c> defining <c>X0</c>
+    /// is not an edge copy and has a real instruction index, so the "every definition is an edge copy" test
+    /// in <see cref="ArgumentRegisterBookkeeping"/> refuses it. That is what keeps a returned value from
+    /// being read as bookkeeping about the register it came back in.
+    /// </para>
+    /// </remarks>
+    private static bool IsAnArgumentRegister(string? name)
+        => name is { Length: > 1 } && name[0] is 'X' or 'x'
+            && int.TryParse(name.Substring(1), out var number)
+            && number >= 0 && number <= Aapcs64.RegistersPerRun;
 
     /// <summary>Says why a fold was refused, where the fold is being traced.</summary>
     private static bool Refused(MethodAnalysisContext method, Instruction call, string why)

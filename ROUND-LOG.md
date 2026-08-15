@@ -668,6 +668,7 @@ edge-copy construction, and nothing is in `VectorExtensions.cs`.
 | 7, 8 | **new** `Analysis/VirtualMethodInfoSlot.cs`; `Analysis/LocalVariables.cs` (one line, `Run`'s fixpoint) | `Run`, `Header`, `FindSlot` | **kept** |
 | 9 | `Analysis/LocalVariables.Fork.cs` | `SetTypeFromParameter` | reverted |
 | 10 | `Analysis/InvokerThunk.cs` | `Dead` — one `COPYFOLD_TRACE` line only | diagnostic |
+| 11 | `Analysis/InvokerThunk.cs` | new `ArgumentRegisterBookkeeping`, `IsAnArgumentRegister`, `IsTheFrame`; `AnswerIntoTheCopyItFeeds`; `Erase` | **kept** |
 
 ---
 
@@ -755,3 +756,95 @@ really is copied to two places.
 Kept from this round: the one `COPYFOLD_TRACE` `dead-stops at` line in `InvokerThunk.Dead`, which is what
 turned a whole export into one probe run, and the comment recording the three inert attempts. **No
 behavioural change; the tree still reproduces export 531.**
+
+---
+
+## Round 11 — 1.9.11, export 534 — the argument-register web, and the read through the buffer. **KEPT**
+
+Arbitrated: the premise (a phi over an argument register is bookkeeping, not a reading) is right, the lever
+(stop SSA destruction emitting it) is wrong and paid for twice already, and the correct change is entirely
+inside `Analysis/InvokerThunk.cs`. Built there, in two steps, both tested in probe before any export.
+
+**File and functions**: `Analysis/InvokerThunk.cs` only —
+new `ArgumentRegisterBookkeeping`, new `IsAnArgumentRegister`, new `IsTheFrame`;
+`AnswerIntoTheCopyItFeeds` (a `reads` list and the branch that answers into the buffer);
+`Erase` (frame test now goes through `IsTheFrame`). **Nothing in `SsaForm`, `SsaForm.Fork`, or edge-copy
+construction. No upstream file, so no `FORK.md` row.**
+
+### Step A — the predicate, and why it is not the lever that failed three times
+
+The three failures keyed on **instruction kind** (a `Move` is not a reader; a call nothing has named is not
+a reader) and each time the refusal moved to the next reader. This keys on a **structural** property the
+trace had already proved: a copy single assignment form invented (index −1), landing in a register the
+convention takes back at every call, **every definition of which is another such copy**. Three conditions,
+and the third is what keeps a real reader:
+
+* the destination must be typed as a place, not as the value — the same distinction
+  `HomogeneousFloatParameters` has to make, where the first register of a run is both the struct and its
+  first field;
+* one real store anywhere among the definitions and somebody put a value in that register on purpose;
+* **a register a call really writes needs no special case** — a `Call` defining `X0` is not an edge copy and
+  has a real instruction index, so the test refuses it. That is what stops a returned value being read as
+  bookkeeping about the register it came back in.
+
+`X0`–`X8`: the argument run plus the indirect-result register, which this fork models as the destination of
+an indirectly returning call and which the invoker thunk's answer buffer is loaded through. Callee-saved
+registers are excluded — a value kept in one is a value meant to survive a call, the opposite of
+bookkeeping.
+
+### Step B — the collapsed root itself
+
+With the web no longer counting as a reader, the true blocker appeared, and it is a **fourth shape** that no
+existing rule covers: the body does not copy the value out of the buffer at all, it **reads straight through
+the pointer**. `KeyValuePair<T,W>::get_Value` is told to write X26 and the comparison reads `[X26]`, while
+the local `RuntimeMethodCallRecovery` attached as the call's answer is an X0 that nothing ever wrote — the
+value under two names, and the statement using the wrong one. So: the call answers into the buffer local the
+reads name, each read becomes a plain copy of it, and the allocation goes.
+
+`Erase` then refused, and this cost the round its one detour: at the moment it runs the allocation reads
+`Subtract v73 @ X26_v1, v71 @ X8_v5, v72` — the frame pointer **through a copy**. The finished dump shows
+`v1 @ X29` there only because a later pass copy-propagates it. `IsTheFrame` now follows the copy chain; the
+three spellings of "the frame" are a named slot, the register itself (an entry value with no definition),
+and a copy of it into a scratch register.
+
+### Predicted before building, and checked in probe
+
+Predicted: `W val = current.Value; if (equalityComparer.Equals(val, value))`. Probe, before the export:
+
+```
+308 Call KeyValuePair`2<T, W>.get_Value, v73 @ X26_v1 (W), v84 (KeyValuePair`2<T, W>)
+358 Call EqualityComparer`1<W>.Equals, v255, v100, v73 @ X26_v1 (W), v659 @ X9_v23 (W)
+```
+
+Both arguments typed `W`, the buffer is the call's answer, the allocation gone.
+
+### The controls
+
+* **`PickRandom` must stay refused** — its buffer really is copied to two places. `IEnumerableExtension.cs`
+  is **byte-identical** between 531 and 534. The falsifier passes; the predicate is not too wide.
+* `TakeLast` also stays refused, on a phi over X1 whose destination is typed `System.Int32` — control 2
+  declining, correctly.
+
+### Measured
+
+| | 531 | **534** |
+|---|---|---|
+| compare2 full / partial / dead | 3248 / 155 / 108 | **same** |
+| **commented** | 499 | **491** |
+| **unmanaged** | 394 | **391** |
+| notfound · indirect | 39 · 20 | **39 · 20** |
+| cfscore full · clean files | 609 · 91/96 | **level** |
+| decisions | 1326/1382 | **level** |
+| roundtrip whole / facts | 1043 / 11190 | **1043 / 11191** |
+| **oracle** run/same · full+right · full+WRONG | 79/54 · 49 · 16 | **79/54 · 49 · 16** |
+| generation failures | 0 | **0** |
+| livecount live / branches | 37900 / 9672 | 37896 / 9672 |
+
+**KEPT.** `W value2 = current.Value;` is **live** in both `TryGetKeyByValue` and `GetKeysByValue` — the
+statement predicted, recovered. The livecount −4 is two allocations `Erase` removed and two address
+statements with them, against the two real statements gained.
+
+The `Equals` call is still commented, and now for exactly **one** reason: its *second* argument,
+`W val5 = (W)(obj - 40L)`. That is the `value` **parameter** spilled into a `T`-sized buffer — a different
+root from a call's answer buffer, reached through a `Select` between the value-type and reference cases at
+`325..328`. Half of a two-operand statement, recovered and verified rather than assumed.
