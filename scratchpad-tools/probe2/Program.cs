@@ -1395,6 +1395,46 @@ if (args[3] == "isil")
 }
 
 // invalid [assemblySubstring] - every arm64 word the disassembler refuses, by encoding.
+// bigparams [assemblySubstring] - every method taking a by-value composite the argument allocator gives one
+// register and the machine gives two, or passes by reference.
+//
+// AAPCS64: a composite of 9..16 bytes takes TWO general registers, and one over 16 bytes is passed by
+// reference. `MethodAnalysisContext.ParameterOperands` hands out one register per parameter, so every
+// parameter after such a one is off by at least one register. Homogeneous float structs are excluded: they
+// go in the vector registers and the fork already models them.
+if (args[3] == "bigparams")
+{
+	int seenMethods = 0, affected = 0;
+	var byType = new Dictionary<string, int>();
+
+	foreach (AssemblyAnalysisContext asm in app.Assemblies)
+	{
+		if (args.Length > 4 && !asm.Definition.AssemblyName.Name.Contains(args[4])) continue;
+		foreach (TypeAnalysisContext type in asm.Types)
+		foreach (MethodAnalysisContext m in type.Methods)
+		{
+			if (m.UnderlyingPointer == 0) continue;
+			seenMethods++;
+			bool hit = false;
+			foreach (ParameterAnalysisContext p in m.Parameters)
+			{
+				TypeAnalysisContext t = p.ParameterType;
+				if (t == null || !t.IsValueType || t.IsEnumType) continue;
+				if (Cpp2IL.Core.Analysis.HomogeneousFloatStruct.Count(t) is int n && n > 0) continue;
+				long? size = Cpp2IL.Core.Analysis.Aapcs64.SizeOf(t);
+				if (size is not > 8) continue;
+				hit = true;
+				byType[t.FullName + " (" + size + "b)"] = byType.GetValueOrDefault(t.FullName + " (" + size + "b)") + 1;
+			}
+			if (hit) { affected++; Console.WriteLine($"{type.FullName}::{m.Name}  {Signature(m)}"); }
+		}
+	}
+
+	Console.WriteLine($"\n{affected} of {seenMethods} methods take a by-value composite over 8 bytes that is not an HFA");
+	foreach (var kv in byType.OrderByDescending(k => k.Value)) Console.WriteLine($"  {kv.Value,4}  {kv.Key}");
+	return;
+}
+
 //
 // An instruction Disarm will not decode is reported with mnemonic INVALID and address 0, so nothing
 // downstream knows where it was and a branch to it loses its target outright. ARM64 is fixed width and the

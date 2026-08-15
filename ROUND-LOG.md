@@ -555,6 +555,44 @@ So neither top-level code yields a family of mine bigger than about ten. **The l
 single body**: `Pool::Spawn`, 20 commented statements, third in the `Unknown` slice, and both CS0019 families
 point straight into it — `object obj10 = this + 88L;` through `+ 100L` (four consecutive primitive fields
 addressed one at a time) and `float num = (object?)localRot >> 32;` (a struct living in one general register,
-its members read by shifting). That is the next target.
+its members read by shifting).
+
+### And reading `Pool::Spawn` found the family the shape census could not see
+
+Its signature settles it:
+
+```
+GameObject (Nullable`1<Vector3> localPos, Nullable`1<Quaternion> localRot,
+            Nullable`1<Vector3> localScale, Transform parent)      regs=[X0,X1,X2,X3,X4,X5]
+```
+
+One register per parameter — but a `Nullable<Vector3>` is sixteen bytes, and **AAPCS64 gives a composite of
+9–16 bytes two general registers and passes one over sixteen by reference**. So every parameter after the
+first Nullable is in the wrong register, and the ISIL says so outright: `And v144, parent @ X4, 255` is a
+Nullable's `hasValue` byte read out of the register called `parent`, and
+`ShiftRight v165 (Single), methodInfo @ X5, 32` is a float extracted from the one called `methodInfo`.
+
+**The `Nullable<T>` label in the original brief is wrong.** This is not a Nullable-reading problem;
+`il2cpp-a-nullable-is-two-bytes-one-question` does not apply. It is argument-register allocation.
+
+Sized before building, with two new instruments (`probe2 bigparams`, `costof.py`, both backed up):
+**27 of 4928 methods**, holding **37 commented statements across 7 bodies** — `Pool::Spawn` 20,
+`VectorExtensions::With` 10, `ProceduralImage::EncodeAllInfoIntoVertices` 3, and four singletons. By type:
+`Nullable<Vector3>` 7, `Nullable<Color>` 6, `Nullable<Single>` 3, `Nullable<Quaternion>` 2,
+`AnimatorStateInfo` 36b, `PlayStoreSubscriptionData` 56b, `Bounds`, `Ray`, `ReadOnlySpan<byte>`…
+
+**This is the largest coherent family left outside the generic seam, and the shape census could not see it**
+— it had scattered these bodies across CS0030, CS0019 and the `Unknown` slice. Third instance of a general
+fact beating its own site census.
+
+**Not built, and deliberately.** `MethodAnalysisContext.ParameterOperands` is **upstream**, and the *call*
+side consumes it too (`Aapcs64.ParametersOf` reads a callee's operands to lay out a call); two earlier
+attempts at the call side of argument allocation were reverted. Ten of the thirty-seven statements are in
+`VectorExtensions.cs`, which is off limits to me. Both facts are the coordinator's to weigh, not mine to
+decide unilaterally — so it is written up rather than half-landed.
+
+What makes it unusually favourable if it is taken: the affected population is **27 methods**, countable and
+small, so a callee-side-only change can be measured exactly. The mergeability question to answer first is
+whether `ParameterOperands` can be given a fork-side sibling rather than edited in place.
 
 
