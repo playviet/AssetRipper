@@ -28,6 +28,88 @@ namespace Cpp2IL.Core.Analysis;
 /// </summary>
 public partial class SsaForm
 {
+    /// <summary>
+    /// Which edge each phi copy was written for, so that a copy can be taken away when its edge is.
+    /// </summary>
+    /// <remarks>
+    /// Kept per method and per thread, filled while single assignment form is taken apart and read once the
+    /// branch folding has decided which edges survive. Nothing else can reconstruct it: out of single
+    /// assignment form a phi copy is an ordinary <c>Move</c> sitting in the predecessor, and which of that
+    /// block's out-edges it belonged to is not written anywhere.
+    /// </remarks>
+    [System.ThreadStatic] private static List<(Block From, Block To, Instruction Copy)>? edgeCopies;
+
+    /// <summary>Whose copies those are, so one method's are never read as another's.</summary>
+    [System.ThreadStatic] private static ISILControlFlowGraph? edgeCopiesOwner;
+
+    /// <summary>Notes that these copies belong to the edge from one block to another.</summary>
+    private static void RecordEdgeCopies(ISILControlFlowGraph graph, Block from, Block to, List<Instruction> moves)
+    {
+        if (!ReferenceEquals(edgeCopiesOwner, graph))
+        {
+            edgeCopiesOwner = graph;
+            edgeCopies = [];
+        }
+
+        if (moves.Count == 0)
+            return;
+
+        edgeCopies ??= [];
+
+        foreach (var move in moves)
+            edgeCopies.Add((from, to, move));
+    }
+
+    /// <summary>
+    /// Takes away the phi copies whose edge no longer exists.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A phi copy is written into the <b>predecessor</b>, before its terminator, so it runs whichever way the
+    /// branch goes. That is correct while both edges exist - the destination is a local only the join reads -
+    /// and stops being correct the moment one edge is taken away: <c>ConstantBranchFolding</c> decides a
+    /// branch, <c>UnreachableBlockRemover</c> drops the arm, and the copy for the arm stays in a block that
+    /// is still reached and still executes, overwriting what the surviving edge put there.
+    /// </para>
+    /// <para>
+    /// The join's local then has a definition the program never makes, which is what keeps a dereference from
+    /// being the only definition left: <c>IDictionaryExtension</c>'s two members stand behind
+    /// <c>-1 Move v659 @ X9_v23 (W), v76 @ X28_v1 (W)</c> on an edge that has been gone since the folding.
+    /// </para>
+    /// <para>
+    /// <b>Both removers had to be checked, and they differ.</b> <c>MetadataInitGuardRemover</c> folds its
+    /// guard <em>before</em> single assignment form is destroyed and drops the matching phi operand with the
+    /// edge, so it leaves nothing of this shape - which is why the same idea measured byte-identical when it
+    /// was tried inside <c>SsaForm.Remove</c> ([[il2cpp-the-branch-tested-it-nought]]).
+    /// <c>ConstantBranchFolding</c> and <c>UnreachableBlockRemover</c> run in
+    /// <c>AfterUnusedLocalsAreDropped</c>, long after, and there are no phis left for them to correct - only
+    /// copies, which nothing was tracking. That asymmetry is the defect.
+    /// </para>
+    /// </remarks>
+    public static bool DropCopiesOnDeadEdges(MethodAnalysisContext method)
+    {
+        if (edgeCopies is not { Count: > 0 } recorded || method.ControlFlowGraph is not { } graph
+            || !ReferenceEquals(edgeCopiesOwner, graph))
+        {
+            return false;
+        }
+
+        var dropped = false;
+
+        foreach (var (from, to, copy) in recorded)
+        {
+            //Still a live edge, or a block that has gone entirely and taken the copy with it.
+            if (from.Successors.Contains(to) || !graph.Blocks.Contains(from) || copy.OpCode == OpCode.Nop)
+                continue;
+
+            copy.OpCode = OpCode.Nop;
+            copy.Operands = [];
+            dropped = true;
+        }
+
+        return dropped;
+    }
+
     /// <summary>Every local a phi decides, so a consumer's type is not forced back on to one.</summary>
     internal static HashSet<LocalVariable> PhiDestinations(ISILControlFlowGraph cfg)
     {

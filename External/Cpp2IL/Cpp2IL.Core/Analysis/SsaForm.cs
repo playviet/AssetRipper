@@ -292,6 +292,7 @@ public partial class SsaForm
                     moves.Add(new Instruction(-1, OpCode.Move, destination, source));
                 }
 
+                RecordEdgeCopies(cfg, predecessor, block, moves); //So a copy can go when its edge does.
                 InsertBeforeTerminator(predecessor, moves);
             }
 

@@ -703,6 +703,15 @@ public static class ForkPipeline
         ConstantBranchFolding.Run(method);
         UnreachableBlockRemover.Run(method);
 
+        // Here because this is after the LAST of the three foldings, so every edge that is going to die has
+        // died. A phi copy is written into the predecessor, before its terminator, so it runs whichever way
+        // the branch goes - which is right while both edges exist and wrong the moment one is taken away: the
+        // copy for the dead arm sits in a block that is still reached and overwrites what the live edge put
+        // there. `MetadataInitGuardRemover` has no such problem because it folds *before* single assignment
+        // form is destroyed and drops the phi operand with the edge; these two run long after, when there are
+        // only copies left and nothing was tracking which edge each belonged to.
+        SsaForm.DropCopiesOnDeadEdges(method);
+
         // A field looked up through the runtime's own `FieldInfo` is still that field, and the step from
         // `klass->fields` says which one. Late, because the class pointer has to be named for the step to
         // mean anything - and after the folding above, which is what leaves the read and the step as one

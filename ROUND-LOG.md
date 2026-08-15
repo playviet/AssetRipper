@@ -657,4 +657,43 @@ parent)`. The `−4 branches` is `livecount` counting the `?` in `Vector3?` on t
 
 `standins.sh` and `paramcheck.py` are new and backed up, with `probe2 paramregs`.
 
+## 1.8.15 — export 506 — a phi copy whose edge has died — **KEPT**, and the best round of the run
+
+**Files changed: `Analysis/SsaForm.Fork.cs` (`RecordEdgeCopies`, `DropCopiesOnDeadEdges`), one line in
+`Analysis/SsaForm.cs`, one line in `Analysis/ForkPipeline.cs`.** This is the handed-off case, and it is the
+narrowing of my own reverted 1.8.11 rather than a contradiction of it.
+
+A phi copy is written into the **predecessor**, before its terminator, so it runs whichever way the branch
+goes. That is correct while both edges exist — the destination is a local only the join reads — and stops
+being correct the moment one edge is taken away: `ConstantBranchFolding` decides a branch,
+`UnreachableBlockRemover` drops the arm, and **the copy for the dead arm sits in a block that is still
+reached and overwrites what the live edge put there.**
+
+**Both removers had to be checked and they differ, which is the whole finding.**
+`MetadataInitGuardRemover` folds its guard *before* single assignment form is destroyed and drops the
+matching phi operand with the edge — which is exactly why the same idea measured byte-identical inside
+`SsaForm.Remove` at 1.8.11. `ConstantBranchFolding` and `UnreachableBlockRemover` run in
+`AfterUnusedLocalsAreDropped`, long after, when there are no phis left to correct and only copies, and
+**nothing was tracking which edge each copy belonged to**. So the fork records the association as the copies
+are written and drops the ones whose edge is gone after the last folding.
+
+| | 505 | 506 |
+|---|---|---|
+| `compare2` commented | 421 | **382** |
+| `compare2` unmanaged / notfound | 345 / 50 | **329** / **49** |
+| `default(...)` stand-ins | 923 | **888** |
+| full / partial / dead | 2560 / 149 / 106 | unchanged |
+| `decisions` | 1326 of 1382 | **1326 of 1382** |
+| roundtrip · allscore · cfscore · notes · genfail | | level |
+| execution oracle | 54 of 79, 49 of 65 | **unchanged** |
+| Unity gate | 12 CS7069 | **12 CS7069** |
+
+**`livecount` reads −170 live, +1 branch**, all of it in five generic-seam files, and the diff says what left:
+nine ILSpy notes, `_ = "Unmanaged memory load: [v244 @ X0_v18+8]"`, three commented statements, and five
+invented `long numN = default(long);` declarations collapsing to two. What arrived is *live* code —
+`if (((enumerator3.MoveNext() ? 1 : 0) & 1L) != 0)`. Nothing recovered was lost; invented definitions were.
+
+`decisions.py` unmoved at 1326 is again the instrument that settles a large negative `livecount`, and the
+oracle — which covers the generic shapes these files are — is unmoved too.
+
 
