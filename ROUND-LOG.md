@@ -513,4 +513,48 @@ Identical to 500 in every cell, which is the check that the revert restored 1.8.
 
 **My sixteen: 128 commented statements at 490 → 54, in nine methods.**
 
+## The re-census at 502/503 — picked by shape, not by what is nearest
+
+**Denominator note for the merge**: I quote `compare2` `full` on the **decompiled-only** denominator (2815
+bodies), which is 2553 → 2560. The same rounds read 3247 → 3254 on the all-bodies denominator (3511). Both
+are the same measurement; the decompiled-only one excludes the 696 bodies substituted from original source,
+which recovery never touched.
+
+`whycost.py` needs its own export because `REPAIR_WHY` is read while the export runs — `scratchpad-tools/why.sh <n>`
+does that with the build already in place (export **503**, same code as 502). `whyshapes.py` is new: it cuts
+one diagnostic code into the **shapes that actually cost a statement**, carrying the file so a family can be
+told from one method's cascade. Both backed up.
+
+**What costs a statement now, whole game (`whycost.py`, export 503):**
+
+| code | lost | |
+|---|---|---|
+| CS0103 | 196 | **cascade** — never target |
+| **CS0030** | **111** | the largest root |
+| **CS0019** | **75** | the second |
+| CS0165 | 18 | **cascade** |
+| CS1061 | 13 | |
+| CS0246 | 12 | |
+| CS8183 / CS0311 | 9 / 8 | |
+
+Against `il2cpp-the-cascade-collects-at-two-to-one` at 1.2.30 (CS0030 132, CS0019 104, CS1061 35) every root
+family is down, and the ranking is unchanged: **CS0030 then CS0019, by a wide margin.**
+
+**Inside them, excluding the seven generic-seam files** (`IDictionaryExtension`, `IEnumerableExtension`,
+`ArrayExtension`, `JsonExtension`, `Pool`, `BaseTrackingSaveData`, `IListExtension`):
+
+* **CS0030 → 64 lost in 43 shapes.** The one real family is *a number where a struct belongs* —
+  `float`→`Vector4` 5, `float`→`Vector3` 2, `double`→`Color32` 2, `Color`→`float` 2, `Color32`→`int` 2, and a
+  tail. Reading the statements says most of it is **the struct-return work already in flight**:
+  `PressedScale = (Vector3)num`, `startPos = (Vector3)num`, `transform.localPosition = (Vector3)num2`. Not
+  mine to take, and worth saying so rather than colliding.
+* **CS0019 → 31 lost in 17 shapes**, and **six of those 31 are `_ = <dead expression>;`** — a discarded value
+  whose statement costs nothing real when commented. The honest count is nearer 25.
+
+So neither top-level code yields a family of mine bigger than about ten. **The largest thing I own is a
+single body**: `Pool::Spawn`, 20 commented statements, third in the `Unknown` slice, and both CS0019 families
+point straight into it — `object obj10 = this + 88L;` through `+ 100L` (four consecutive primitive fields
+addressed one at a time) and `float num = (object?)localRot >> 32;` (a struct living in one general register,
+its members read by shifting). That is the next target.
+
 

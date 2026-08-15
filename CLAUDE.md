@@ -111,7 +111,11 @@ Run the **full** export and Unity verification once, before staging — not ever
   tokens and tells you less than the score does. Read one file only to find a root cause, and read the part
   you need — `grep -n` for the shape first, then `sed -n` the range.
 - **Read ISIL, not exported C#, when diagnosing a body** — `scratchpad/probe asm <addr>`. It is the level the
-  passes actually operate on.
+  passes actually operate on. **But a dump is the body as analysis *finished* with it, and a pass runs in the
+  middle of a hundred others** — the shape you are reading may not exist where your pass would run, in either
+  direction. Print the body at the pass's own position before writing it (`CHAIN_TRACE`, `WALK_TRACE`,
+  `IFACE_TRACE` all exist for this), and when a rule measures byte-identical ask whether the shape was there
+  at all before rebuilding it. Four rounds have gone this way. `il2cpp-the-dump-is-not-where-the-pass-runs`.
 - **Make independent tool calls in one message.** Two greps that do not depend on each other should not be two
   round trips.
 - Do not re-read a file just edited; do not re-derive a fact already established in the session.
