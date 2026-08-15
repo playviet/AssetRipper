@@ -1037,6 +1037,13 @@ public static partial class LocalVariables
         if (method.ControlFlowGraph is not { } graph || !HomogeneousFloatStruct.SpansSeveralRegisters(method.ReturnType))
             return false;
 
+        //The buffer <see cref="VectorReturnAssembly"/> gathers the lanes into carries nothing else by
+        //construction - it is a register of this fork's own naming that no instruction but the assembly ever
+        //mentions - and the stores that fill it are its only other uses. Without this the guard sees those
+        //stores, refuses the type stamp, and the buffer the whole assembly writes through stays untyped.
+        if (local.Register.Name == VectorReturnAssembly.BufferName)
+            return false;
+
         foreach (var instruction in graph.Instructions)
         {
             if (instruction.OpCode == OpCode.Return)
