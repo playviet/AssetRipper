@@ -490,4 +490,27 @@ The proven-win-with-a-proven-cost warning about impossible-edge copies (38 marke
 unreachable path) therefore does not apply to anything I have landed — I removed no copies. The one rule that
 *would* have has just measured inert and is reverted.
 
+## 1.8.12 — export 502 — the committed state, verified
+
+No code change; a clean build of exactly what is committed, so the reverted round leaves nothing behind.
+Package version `assetripper.cpp2il.core/1.8.12`, checked.
+
+| | 502 | vs their export 471 (HFA alone) |
+|---|---|---|
+| `compare2` full, decompiled-only of 2815 | **2560** (90.9%) | 2553 → **+7** |
+| commented / unmanaged / indirect | **421 / 345 / 19** | 508 / 403 / 21 → **−87 / −58 / −2** |
+| `cfscore` full | 609 | 609 |
+| `allscore` ALL full | 2120 | |
+| `roundtrip` whole | **1044** | 1043 → **+1** |
+| `decisions` | 1326 of 1382 | 1326 |
+| `notecensus` methods / losing | 287 / 72 | |
+| **`Unknown` slice** | **23 methods, 213 commented** | 29 / 286 at 490 |
+| execution oracle | **54 of 79; 49 of 65 `full` right** | unchanged since the merge |
+| Unity gate | **12 CS7069** (floor) | 12 |
+| generation failures | 0 | 0 |
+
+Identical to 500 in every cell, which is the check that the revert restored 1.8.10's behaviour exactly.
+
+**My sixteen: 128 commented statements at 490 → 54, in nine methods.**
+
 
