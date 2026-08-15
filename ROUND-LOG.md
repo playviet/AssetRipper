@@ -293,10 +293,16 @@ method's own range and a different family.
 rated `full` 65   of those right 49   whole and WRONG 16      (BASELINE.md: 65 / 46 / 19)
 ```
 
-**Three shapes stopped being whole-and-wrong**, against the corpus baseline and against my own reading at
-1.8.6, which was identical to it. The struct-return merge is in this reading too, so the three are not
-necessarily mine — but nothing of mine cost a correct body, which is the question the oracle is here to
-answer.
+**Those three shapes are NOT mine.** `dad92ee7e` measured exactly 54/79 and 49/65 when it landed on master,
+and my own reading at 1.8.6 — every one of my first six rounds, without the merge — was **51/79 and 46/65,
+identical to `corpus/BASELINE.md` in every cell**. So the correct statement of my result is:
+
+> **My changes moved the oracle not at all, and cost nothing.**
+
+That is the right outcome and not a disappointing one. The corpus has no shapes for the families I fixed
+(a float literal in a general register, a walk starting part-way along, an address chosen between, a widened
+stride), so it was never going to show a win; it is here to catch me breaking something, and across seven
+rounds it caught nothing.
 
 ## Where it ends — 1.8.8 / export 498
 
