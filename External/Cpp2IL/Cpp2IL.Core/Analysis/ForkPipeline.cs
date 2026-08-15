@@ -34,6 +34,13 @@ public static class ForkPipeline
         // before single assignment form is built is what lets the value be versioned and kept alive like any
         // other. After the two above, which are about slots this never looks at.
         StackedFloatArgument.Run(method);
+
+        // Same reason as the pass above, from the other end of the convention: a struct of floats is
+        // *returned* in v0..vn, the return is named x0, and so nothing reads those registers - the first
+        // `DeadCodeEliminator`, which is the next thing to happen after this hook, deletes the whole chain
+        // that computed the answer. This is the last place the evidence exists. Before single assignment
+        // form is built, so the lanes are versioned and reach their definitions like any other operand.
+        VectorReturnAssembly.Run(method);
     }
 
     /// <summary>Runs where locals have just been given their types and fields.</summary>
