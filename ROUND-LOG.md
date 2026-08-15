@@ -440,4 +440,54 @@ about a general SSA fact: it unblocks bodies no census could attribute to it. Th
 *shorter*, `BoardController` at −1, is an improvement too — two `Unmanaged memory load` markers became
 `CellData[] intermediateBoard = mergeResult3.intermediateBoard;`, four noise lines for three real ones.
 
+## 1.8.11 — export 501 — the constant-condition dead edge — **INERT, REVERTED**
+
+The other half of the pair: a phi copy written on an edge whose predecessor branches on a **constant**, which
+is the sibling of `NeverReachesItsSuccessors` (a block that throws takes no edge). `TakesThisEdge` in
+`SsaForm.Fork`, one condition added to the existing line in `SsaForm.Remove`.
+
+**Byte-identical to 500 on every scorer and on `livecount`** — full 2560, partial 149, commented 421,
+unmanaged 345, indirect 19, allscore 2120/113, decisions 1326, roundtrip 11194/1044, notes 287/72, live
+37804, branches 9629, files 533, and not one file moved a line.
+
+**Why, and it is decisive rather than a shrug.** `MetadataInitGuardRemover` — the pass that creates these
+constant conditions — does not leave a conditional jump on a constant at all: it rewrites the terminator to
+an unconditional `Jump`, removes the dead predecessor edge, **and removes the matching phi operand with it**
+(`MetadataInitGuardRemover.cs`, "Fold the guard so it goes straight to the merge"). So by the time
+`SsaForm.Remove` runs there is nothing of that shape left. The constant conditions visible in a finished ISIL
+dump — `Move v99 (Boolean), 0` in front of `ConditionalJump` — are `ConstantBranchFolding`'s, and that runs
+in `AfterUnusedLocalsAreDropped`, **long after single assignment form has been destroyed**.
+
+So the premise in my `Show` write-up was wrong: that constant arrives on an edge control **does** take, not on
+an impossible one. `Show`'s fifteen statements are still owed and now have one fewer explanation.
+
+Reverted; `git diff` on `SsaForm.cs` and `SsaForm.Fork.cs` is empty.
+
+## Boundary answer: what my work does and does not touch
+
+Asked at merge time, answered here because it will be asked again.
+
+**After the revert I have made no change whatsoever to `SsaForm`, `SsaForm.Fork` or edge-copy construction.**
+The one rule of mine in this area is `Analysis/ZeroOnATestedEdge.cs`, hooked from one line in
+`LocalVariables.cs`'s seed list, and it:
+
+* **rewrites a phi's operand, never a copy.** Both edge copies still exist afterwards and
+  `SsaForm.Remove` writes them exactly as before. Nothing is suppressed, removed or skipped.
+* **keys on which edge the branch selected**, i.e. on control flow. It reads *a* register only to know which
+  value the comparison tested; it does not ask what kind of register that is, and X0–X7 get no special
+  treatment either way.
+* **asserts a value, not an identity.** It says "on this edge that value is nought", which is neither of the
+  two justifications in question: not "control never gets here" and not "this copy says nothing about value
+  identity".
+
+It does in fact land on X0 in `ActiveHash`, which is an argument register — so the answer is *yes, it touches
+a phi over an argument register*, and *no, that is not what it keys on*. A rule that says a phi over an
+outgoing-argument register carries no value identity is orthogonal to one that says what the value is on one
+selected edge, and the two cannot contradict: mine adds information to a single operand, it does not draw a
+conclusion from the copy's existence.
+
+The proven-win-with-a-proven-cost warning about impossible-edge copies (38 markers taking their type from the
+unreachable path) therefore does not apply to anything I have landed — I removed no copies. The one rule that
+*would* have has just measured inert and is reverted.
+
 
