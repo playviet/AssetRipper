@@ -19,3 +19,6 @@ tools/origin-index.pickle
 scratchpad-tools/__pycache__/
 scratchpad-tools/origin-index.pickle
 scratchpad-tools/gate/
+
+# autodiff builds a throwaway console project beside itself to run both sides of the corpus.
+scratchpad-tools/autodiff/
