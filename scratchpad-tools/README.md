@@ -27,10 +27,13 @@ scores differently looks exactly like a code regression.
 | `roundtrip.py` | what the binary says the method does, no source needed |
 | `autodiff.py` | the ground-truth corpus, run without being told what to test |
 | `owedcensus*.py` | why each owed body is owed, and the shape of its first commented statement |
+| `notecensus.py` | the ILSpy `Expected X, but got Y` notes as a scorer: how well they predict a lost statement, by shape |
 | `unityverify.sh` | the gate: compile the exported project against the engine the editor has |
 
 `tools/` holds the ones the repository itself depends on (`inventory.py` and its `csharp.py`/`markers.py`),
-which are not duplicated here.
+which are not duplicated here. **Run `inventory.py` from `tools/`, never from a copy.** It reads
+`bare-returns.tsv` from beside itself, and a copy without it silently counts the 17 one-RET bodies as owed -
+137 becomes 154, which has already been misread once as a lost better version of the tool.
 
 ## The roundtrip dump
 
@@ -70,3 +73,7 @@ python3 autodiff.py <corpus>/Assets/.../Corpus.cs <export>/ExportedProject/.../C
 Until then the loop has four scorers, not five, and **nothing can tell a method that is right from one that
 only looks right**. Where a change is inert on the four, the check used instead has been diffing the exported
 C# of the affected bodies by hand - which works, and does not scale.
+
+`inventory.py` is NOT here. It lives in `tools/` and reads `bare-returns.tsv` from beside itself;
+a copy run from anywhere else loses the 17 one-RET bodies and reports the queue 17 too high. It now
+exits loudly instead, but the fix is to run `tools/inventory.py` in place.

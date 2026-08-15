@@ -56,6 +56,68 @@ def arity(text):
     return n
 
 
+PARAMETER_KEYWORD = re.compile(r'\b(?:this|ref|out|in|params|readonly|scoped)\b\s+')
+SAME_TYPE = {'int32': 'int', 'single': 'float', 'boolean': 'bool', 'int64': 'long', 'uint32': 'uint',
+             'uint64': 'ulong', 'int16': 'short', 'uint16': 'ushort', 'sbyte': 'sbyte',
+             'double': 'double', 'char': 'char', 'string': 'string', 'object': 'object'}
+
+
+def parameter_types(text):
+    """The parameter types of a declaration, normalised until the two sides agree on spelling.
+
+    Inlined rather than imported from `allscore.py`, deliberately: everything this script needs sits beside
+    it, and the one time that was not true - `bare-returns.tsv` read from a directory a copy had been run
+    from - the queue was silently 17 too high and the difference was misdiagnosed as a lost tool. `allscore`
+    carries the reference copy of this function; it is small and it does not change.
+
+    Used ONLY to tell two overloads of one arity apart, never to decide whether a body is owed.
+    """
+    head = without_attributes(text).split('{')[0]
+    arrow = head.find('=>')
+    if arrow >= 0:
+        head = head[:arrow]
+    start = head.find('(')
+    if start < 0:
+        return ()
+    depth, end = 0, None
+    for i in range(start, len(head)):
+        if head[i] == '(':
+            depth += 1
+        elif head[i] == ')':
+            depth -= 1
+            if depth == 0:
+                end = i
+                break
+    if end is None:
+        return ()
+    inner = head[start + 1:end].strip()
+    if not inner:
+        return ()
+    parts, angle, square, current = [], 0, 0, ''
+    for ch in inner:
+        if ch == '<':
+            angle += 1
+        elif ch == '>':
+            angle -= 1
+        elif ch == '[':
+            square += 1
+        elif ch == ']':
+            square -= 1
+        if ch == ',' and angle == 0 and square == 0:
+            parts.append(current)
+            current = ''
+        else:
+            current += ch
+    parts.append(current)
+    found = []
+    for part in parts:
+        part = PARAMETER_KEYWORD.sub('', part.split('=')[0].strip()).strip()
+        split = part.rsplit(None, 1)
+        name = (split[0] if len(split) == 2 else part).split('.')[-1]
+        found.append(SAME_TYPE.get(re.sub(r'\s+', '', name).lower(), re.sub(r'\s+', '', name).lower()))
+    return tuple(found)
+
+
 def bare_returns():
     """Every method the binary compiles to a single RET, by type, member and parameter count.
 
@@ -64,9 +126,17 @@ def bare_returns():
     those as owed counts a defect that is not there - five of them in `VectorExtensions` alone. Regenerate
     the file with probe2's `bare` mode; the header of it says how.
     """
+    #NOT a silent empty set. Returning one folds all 17 one-RET bodies back into `owed` and the queue reads
+    #17 too high with nothing to say it is wrong - which is exactly what happened to a copy of this script
+    #run from a directory the .tsv was not in, and the difference was then misdiagnosed as a lost better
+    #version of the tool. A missing input is a broken run, so say so.
     found = set()
     if not os.path.exists(BARE):
-        return found
+        raise SystemExit(
+            f'inventory.py: {BARE} is missing.\n'
+            '  It is read from beside this script, so run tools/inventory.py in place rather than a copy.\n'
+            '  Without it the 17 bodies the binary compiles to a single RET count as owed and the queue is\n'
+            '  17 too high. Regenerate the file with probe2\'s `bare` mode; its header says how.')
     for line in open(BARE, encoding='utf8'):
         if line.startswith('#'):
             continue
@@ -140,15 +210,24 @@ def main():
                     if kind == 'full':
                         whole += 1
                         continue
-                    want = arity(t)
+                    want, wanttypes = arity(t), parameter_types(t)
                     best = None
                     for o in originals.get(member, []):
                         if not has_body(o):
                             continue
-                        if arity(o) == want or best is None:
-                            if arity(o) == want:
+                        if arity(o) == want:
+                            #Two overloads of one arity both matched the FIRST original, so a body could be
+                            #judged against the wrong one and owe the wrong number of statements - which is
+                            #what orders this queue. The types separate them exactly; arity still decides,
+                            #and the types only choose among what arity already accepted, so a spelling this
+                            #misses falls back to exactly the old behaviour. AESUtils::EncryptAES owed 8 and
+                            #owes 9, GoogleDesignConfigSo::GetDataById owed 1 and owes 4,
+                            #JsonExtension::ToNewlineDelimitedJson owed 2 and owes 5.
+                            if best is None or parameter_types(o) == wanttypes:
                                 best = o
+                            if parameter_types(o) == wanttypes:
                                 break
+                        elif best is None:
                             best = o
                     if best is None:
                         notmine += 1
@@ -176,7 +255,9 @@ def main():
     lines = []
     lines.append('# Every exported file, and what it still owes')
     lines.append('')
-    lines.append('Generated by `scratchpad/inventory.py` from `%s`.' % os.path.basename(export.rstrip('/').rstrip('ExportedProject').rstrip('/')))
+    lines.append('Generated by `tools/inventory.py` from `%s`. It reads `bare-returns.tsv` from beside itself;'
+                 ' run it from `tools/`, or the 17 one-RET bodies count as owed.'
+                 % os.path.basename(export.rstrip('/').rstrip('ExportedProject').rstrip('/')))
     lines.append('')
     lines.append('A body counts as **owed** only where the original has statements for it. A method that is '
                  '`{ }` in the original, one behind a `#if` this build does not set, and anything with no '
