@@ -266,6 +266,9 @@ public static partial class LocalVariables
             changed |= MetadataResolver.ResolveAmbiguousCalls(method);
             changed |= PropagateFromCallParameters(method);
             changed |= VirtualCallRecovery.Run(method);
+            // Directly above, because it does nothing but name the `MethodInfo` half of a vtable entry and
+            // the pass below is what then reads it: a virtual call in a shared body goes through the invoker.
+            changed |= VirtualMethodInfoSlot.Run(method);
             changed |= RuntimeMethodCallRecovery.Run(method);
             changed |= GenericSharingRecovery.Run(method);
             changed |= ArrayTypeInference.Run(method);

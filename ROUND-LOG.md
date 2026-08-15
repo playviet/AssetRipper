@@ -485,3 +485,104 @@ does not diff 3248 against my old 3253 and conclude the opposite.
 One thing to note for whoever merges: `cfscore` "files with nothing left" is **91 of 96** on the new base,
 where this branch measured 92 on the old one. That single file is HFA's, not this branch's — `cfscore full`
 is 609 either way.
+
+---
+
+## Rounds 7 and 8 — 1.9.8 / export 530 and 1.9.9 / export 531 — the MethodInfo half of a vtable entry
+
+The #2 item on my own ranking: the `EqualityComparer<W>.Default.Equals` call that both
+`IDictionaryExtension` members are lost to, 63 of the family's 130 statements.
+
+### What it is
+
+`probe2 rawisil IDictionaryExtension TryGetKeyByValue`:
+
+```
+346 Move X10, [X20]           ; obj->klass, the object being EqualityComparer`1<W>
+350 Move X1,  [X10 + 0x1C0]   ; klass->vtable[8].method   - the MethodInfo
+352 Move X0,  [X1 + 8]        ; MethodInfo->virtualMethodPointer
+353 Move X8,  [X1 + 0x10]     ; MethodInfo->invoker_method
+358 IndirectCall X8, ...
+```
+
+A vtable entry is two pointers, the code at `+0` and the `Il2CppMethodInfo*` at `+8`. The fork reads only
+the first — `VirtualCallRecovery` calls through it, `VirtualMethodPointer` reads it as a value. **Nothing
+read the second**, and a virtual call inside a *shared generic* body is compiled entirely in terms of it,
+because it has to go through the invoker thunk rather than straight to the code.
+
+`RuntimeMethodCallRecovery` already finishes exactly this shape and already accepts an entry point at `0x10`,
+but gates on the holder being typed `RuntimeMethodInfoAnalysisContext` — which only `RgctxResolver` ever set,
+and only from a runtime generic context entry. New pass `Analysis/VirtualMethodInfoSlot.cs` does nothing but
+put that name on the local; one line in `LocalVariables.cs` between `VirtualCallRecovery` and
+`RuntimeMethodCallRecovery`, recorded in `FORK.md`.
+
+### Round 7 resolved the call to the WRONG METHOD, and that is the finding
+
+Export 530 read *better* on every marker — commented 493 → **486**, unmanaged 396 → 394, indirect 21 → 20 —
+and the recovered statement was
+
+```csharp
+//long num22 = num23.System_002EIConvertible_002EToSByte(provider);
+```
+
+`VMIS_TRACE=1`: `candidate slot 8 on System.Int64 -> System.Int64::System.IConvertible.ToSByte`.
+
+**A width is not a type, and this pass is where that costs most.** The pass runs inside the type fixpoint,
+and on its first turns `EqualityComparer<W>.Default` is still typed `System.Int64` — the width of the
+register a not-yet-resolved call answered in, exactly what `SharpenFromReturn` exists to correct later. Slot
+8 of `System.Int64` is `IConvertible.ToSByte`. **A type is never revised once set, so the early wrong answer
+is permanent.** Had I judged round 7 on its markers I would have kept a body that compiles, scores, and
+computes something the program never did.
+
+### Round 8 — the guard, and the right method
+
+Two conditions, both in the new pass:
+
+* the receiver must be a **declared reference type** (`!IsValueType`, and a definition or a generic
+  instance). A vtable is reached through an object header; a local wearing a primitive's name is a width
+  guess.
+* the header read is accepted in **either spelling** — `[obj + 0]` or `obj.<field at offset 0>`. While the
+  receiver is still mistyped the field resolver names offset 0 as `v100.m_value` (`System.Int64`'s own
+  field), and that stale `FieldReference` is what is there on the turn of the fixpoint where the receiver
+  finally has a type worth asking about.
+
+`VMIS_TRACE` then reads: five refusals `notADeclaredReference System.Int64`, then
+`candidate slot 8 on System.Collections.Generic.EqualityComparer\`1<W> -> EqualityComparer\`1<W>::Equals`.
+
+| | 528 | 530 (wrong) | **531 (kept)** |
+|---|---|---|---|
+| compare2 full / partial / dead | 3248 / 155 / 108 | same | **same** |
+| commented | 493 | 486 | **499** |
+| unmanaged | 396 | 394 | **394** |
+| **indirect** | 21 | 20 | **20** |
+| cfscore · decisions · roundtrip | 609 · 1326 · 11190/1043 | — | **all level** |
+| **oracle** run/same · full+right · full+WRONG | 79/54 · 49 · 16 | — | **79/54 · 49 · 16** |
+| generation failures | 0 | — | **0** |
+| livecount live / branches | 37906 / 9672 | — | **37900 / 9672** |
+
+**KEPT**, and the scorer I followed is not `commented`. `livecount` says −6 live statements, all in
+`IDictionaryExtension` (−5) and `BaseTrackingNetwork` (−1), and the diff says what those six were:
+
+```
+_ = "Unmanaged memory load: [v254 @ X1_v16 (W)+8]";
+_ = "Unmanaged memory load: [v254 @ X1_v16 (W)+10]";
+_ = "Indirect call: 358 IndirectCall … (should have been resolved before IL gen)";
+long num17 = 0L; long num18 = num7; if (num17 == 0) …
+```
+
+— three **markers** and the scaffolding around them, which `livecount` counts as live because they are not
+comments. What replaced them is the method's central comparison, named and correct:
+
+```csharp
+//long num21 = (equalityComparer.Equals((W)num17, y) ? 1 : 0);
+```
+
+`equalityComparer.Equals(pair.Value, value)` is what the source says. It is commented because its two
+operands are still alloca reads (`W val5 = (W)(obj - 40L)`), not because the call is wrong — and
+`current.Value` is already live one line above it, from rounds 2–4. So the remaining blocker is the alloca
+family, now localised to two operands of one statement.
+
+Judged on the markers (`indirect` −1, `unmanaged` −2) and on correctness (oracle, roundtrip, decisions,
+cfscore, branches all level), against `commented` +6 which CLAUDE.md designates the noisy one and which is
+here exactly the cascade of two operands. **An unresolved indirect call is a pipeline failure; a correct
+statement waiting on its operands is not.**
