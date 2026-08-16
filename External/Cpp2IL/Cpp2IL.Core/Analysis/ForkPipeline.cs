@@ -671,6 +671,17 @@ public static class ForkPipeline
         // asks before either end has a type. Directly after the pass above, which has first refusal.
         StandInEdgeCopy.Run(method);
 
+        // And once more on the calls and on the field reads, for the same reason the array passes are re-run
+        // below: a shared call is given back its real instantiation from the type its RECEIVER holds, and a
+        // receiver that only became `List<TargetProgress>` on the line above was still `List<object>` when
+        // this ran the first time. Then `get_Item` answers `object`, and a read at 0x10 of the element has no
+        // type to resolve a field against - `BoardController::InitBoard` wrote every target colour as zero.
+        if (!StandInCopyType.SharedInstanceOff)
+        {
+            GenericSharingRecovery.Run(method);
+            MetadataResolver.ResolveFieldOffsets(method);
+        }
+
         // And once more on what that just named. A read at 0x18 of an array is its length and a read at
         // 0x20 plus a scaled index is an element, and both are decided from the type the base carries - so a
         // base that only became an array on the line above was refused when the pass ran the first time.

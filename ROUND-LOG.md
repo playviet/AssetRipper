@@ -496,3 +496,76 @@ Unity gate **12 CS7069, its floor**, unchanged from master. Full export scores i
 Ten corpus shapes fixed — `DivMagic`, `Weight`, `SharedPick`, `ValuePick`, `NullableSum`, `NullableChain`,
 `Steps`, `SumSteps` by verdict, and `Reversed` half-recovered — for one compare2 body, two cfscore bodies and
 nine `unmanaged` markers, all of them from the stale-read guard and all of them the trade RECOVERY.md names.
+
+---
+
+## The cfscore check — reading the two bodies against their originals
+
+`cfscore` 609/6 → 607/8 at 1.12.9 was the first downward move of the run. `scratchpad/cfdiff.py` (new) names
+which **methods** changed verdict, which cfscore's per-file table cannot: `BoardController::InitBoard` and
+`PowerUpBuyPopup::Show`, both `full → partial`. Read against `game-hub/Assets/AAA/CF`:
+
+### `PowerUpBuyPopup::Show` — **not worse.** Every effect of the original is present and in order.
+
+`base.Show` · the `initParams != null && Length >= 3` guard · all three assignments · `definition` null check
+with icon / `SetNativeSize` / price / `interactable` / `OnCoinChanged` · `Time.timeScale = 0` · `GetScreen` ·
+`UpdateProperties` · `TrackUiInteraction` · `PauseBgm` · `DisableBoardAction`. All there, both before and
+after.
+
+What changed is *shape*, and in the right direction:
+
+```csharp
+_abilitySlotUI = (BaseAbilitySlotUI)initParams[0];   // 646: re-indexes the array
+_abilitySlotUI = baseAbilitySlotUI;                  // 651: the local the machine actually stores
+```
+
+The new markers are `Unmanaged memory load: [… Il2CppClass<BaseAbilitySlotUI>+130]` and `+C8` — the **runtime
+type-check machinery** of the `isinst`, which is dead either way and was previously folded into an expression
+that got eliminated. Marker count up; program unchanged.
+
+### `BoardController::InitBoard` — **genuinely worse, one statement.** And it is now fixed.
+
+Original: `for (int i = 0; i < _targets.Count; i++) _targetColors[i] = _targets[i].color;`
+
+```csharp
+targetColors3[num5] = targetProgress.color;                     // 646 — right
+_ = "Unmanaged memory load: [… (System.Object)+10]";            // 651 — every colour written as zero
+object obj = 0;  targetColors3[num5] = (ECellColor)obj;
+```
+
+**The cause was not the guard's logic; it was a type the guard stopped propagating by accident.** While copy
+propagation folded `_targets` into the call, the receiver carried the field's real type. Once the copy
+legitimately survives, the local keeps the **generic-sharing stand-in** `List<object>` — so `get_Item`
+answers `object` and a field at `+0x10` has nothing to resolve against.
+
+## 1.12.11 / 1.12.12 — exports 653–656: the three links that fix it
+
+| file | what |
+|---|---|
+| `Cpp2IL.Core/Analysis/StandInCopyType.cs` | new `SharperInstantiation` — a local whose every definition is a copy does not keep a stand-in **instantiation** when the copy says the real one |
+| `Cpp2IL.Core/Analysis/GenericSharingRecovery.cs` | also retypes the call's **result**, not only its receiver |
+| `Cpp2IL.Core/Analysis/ForkPipeline.cs` | `GenericSharingRecovery` and `MetadataResolver.ResolveFieldOffsets` re-run after `StandInEdgeCopy`, for the same reason the array passes already are |
+| `Cpp2IL.Core/Analysis/SharedBody.cs` | `IsAStandIn` made public and reused |
+
+Each link alone is inert — measured. `List<object>` → `List<TargetProgress>` alone still calls
+`List<object>.get_Item`; renaming the callee alone still answers `object`; retyping the result alone leaves
+`[v131 + 0x10]` raw. All three together give `Move v729, v131.color`.
+
+`SharperInstantiation` is exact, not a heuristic: same generic definition, argument for argument, differing
+only where the stand-in has a stand-in and the copy has something real — and `System.Object` standing where a
+**value type** is refused, since a value-type instantiation gets a body of its own and is never shared.
+
+| | 651 | 656 |
+|---|---|---|
+| oracle run / same · `full`+WRONG | 79 / 62 · 11 | 79 / 62 · 11 |
+| compare2 full | 2560 | **2561** — master's number |
+| allscore | 2120 | **2121** — master's number |
+| cfscore full / partial | 607 / 8 | **608 / 7** |
+| unmanaged | 324 | **323** |
+| commented · decisions · roundtrip · genfail | 371 · 1326 · 1044 · 0 | 371 · 1326 · 1044 · 0 |
+| livecount | — | live +1 |
+| verdicts changed | — | `InitBoard` **partial → full**, and nothing else |
+
+**Kept.** The whole `compare2`/`allscore` cost of the stale-read guard is repaid; what is left against master
+is `cfscore` 609→608 and one file off the clean list, both of them `PowerUpBuyPopup::Show`, which the reading
+above shows is not worse.

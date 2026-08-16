@@ -104,7 +104,7 @@ public static class SharedBody
     /// <c>JitHelpers::UnsafeEnumCastLong</c> a false positive - a correct shared body reported as
     /// mis-shared. Matched by prefix so that a sibling stand-in cannot be missed the same way.
     /// </remarks>
-    private static bool IsAStandIn(TypeAnalysisContext argument) => argument.FullName switch
+    public static bool IsAStandIn(TypeAnalysisContext argument) => argument.FullName switch
     {
         "System.Object" => true,
         "System.Int32Enum" or "System.Int16Enum" or "System.SByteEnum" or "System.Int64Enum" => true,

@@ -78,6 +78,16 @@ public static class GenericSharingRecovery
                 && sharedHolder.FullName != actual.FullName
                 && IsSharedFormOf(sharedHolder.GenericArguments, actual.GenericArguments))
                 holder.Type = actual;
+
+            //And what the call answers with. `List<object>.get_Item` returns `object`, and that type settled
+            //on the result the moment the shared call was resolved - so a field of the element has nothing to
+            //resolve against and reads back as unmanaged memory. Only where the result still says what the
+            //shared form said, so nothing better already worked out is overruled.
+            if (instruction.OpCode == OpCode.Call && instruction.Operands.Count > 1
+                && instruction.Operands[1] is LocalVariable answer
+                && callee.ReturnType is { } wasReturning && answer.Type?.FullName == wasReturning.FullName
+                && replacement.ReturnType is { } nowReturning && nowReturning.FullName != wasReturning.FullName)
+                answer.Type = nowReturning;
         }
 
         return changed;
