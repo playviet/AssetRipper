@@ -25,8 +25,14 @@ namespace Cpp2IL.Core.Analysis;
 /// </summary>
 public static class FieldReadSinking
 {
+    /// <summary>Set <c>FIELDSINK_OFF=1</c> to measure the same build without this - see ROUND-LOG.md.</summary>
+    private static readonly bool Off = System.Environment.GetEnvironmentVariable("FIELDSINK_OFF") == "1";
+
     public static void Run(MethodAnalysisContext method)
     {
+        if (Off)
+            return;
+
         var cfg = method.ControlFlowGraph!;
         var uses = UseCounts(cfg);
         var definitions = DefinitionCounts(cfg);

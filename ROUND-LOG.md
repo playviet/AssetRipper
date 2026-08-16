@@ -323,3 +323,44 @@ refusals in a row, each only visible once the one above it was lifted:
 | cfscore · allscore · decisions · roundtrip · genfail | 609/6 · 2121 · 1326 · 1044 · 0 | — | **all level** |
 
 Only `NullableSum` changes verdict. `commented` +1 on the game is the whole cost. **Kept.**
+
+---
+
+## 1.12.8 / exports 645, 646 — `NullableChain`: the other half of the packed pair
+
+`Cpp2IL.Core/Analysis/NullablePackedCompare.cs` — new `AskHasValue` and `HasValue`, called from `Run`.
+`Cpp2IL.Core/Analysis/FieldReadSinking.cs` — a `FIELDSINK_OFF=1` gate, added to falsify a wrong suspect
+(see the `Steps` note below); the pass itself is unchanged.
+
+The sibling of the shape `NullablePackedCompare` already handled. Where `T` is wider than a byte the compiler
+cannot ask both questions with one compare, so it loads the whole `Nullable` and masks the field it wants:
+
+```
+LDR  X8, [X31 + 0x8]     ; the whole eight bytes
+ANDS X31, X8, 0xFF       ; the low byte, result discarded
+B.EQ ...                 ; so: if (!maybe.HasValue)
+```
+
+`hasValue` is declared first and is one byte, so the low byte **is** `HasValue`. Written out as an `and` it
+was `((_003F?)num & 0xFFL) != 0`, which the language has no operator for, and `NullableChain` lost its whole
+`if` body and returned "none" for every input.
+
+| | 643 | 645 / 646 |
+|---|---|---|
+| oracle run / same | 79 / 59 | 79 / **60** |
+| `full` + WRONG | 12 | **12** |
+| `full` + right | 54 | **55** |
+| `partial` + WRONG | 8 | **7** |
+| `NullableChain` | none | **v160 — right** |
+| compare2 full / unmanaged | 2561 / 315 | **2561 / 315** |
+| commented | 364 | 369 (**+5**) |
+| cfscore · allscore · decisions · roundtrip · genfail | 609/6 · 2121 · 1326 · 1044 · 0 | **all level** |
+| **livecount** | — | **live +11, branches +6** |
+
+**The +5 commented is the cascade running the other way and `livecount` is what says so.** Two files move.
+`Pool.cs` had the whole `if (((_003F?)localPos & 0xFFL) != 0) { … } else { … }` commented out as one
+statement; it is now `if (localPos.HasValue)` with both arms live and two of its inner statements commented
+individually — the next defect down the same chain, a `>> 32` on the Nullable's value. More live code, more
+branches, more comments. Chasing `commented` alone would have reverted this.
+
+**Kept.**
