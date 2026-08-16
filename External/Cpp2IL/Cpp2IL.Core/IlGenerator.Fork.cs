@@ -597,23 +597,12 @@ public static partial class IlGenerator
         var handlers = new HashSet<Block>();
         var last = new List<Block>();
 
-        //And a try's blocks are one run for exactly the same reason: a protected region is a range of
-        //instructions, so the blocks it covers have to come out consecutively. The walk would otherwise
-        //interleave them with whatever else it reached, and the range could not be written at all.
-        var guarded = new List<List<Block>>();
-
         if (CurrentContext is { } owner && Analysis.CatchClauses.Of(owner) is { } clauses)
         {
             foreach (var block in clauses.SelectMany(clause => clause.Handler))
             {
                 if (handlers.Add(block))
                     last.Add(block);
-            }
-
-            foreach (var clause in clauses)
-            {
-                if (clause.Protected.Count > 1)
-                    guarded.Add(clause.Protected);
             }
         }
 
@@ -625,29 +614,6 @@ public static partial class IlGenerator
 
             if (!seen.Add(block))
                 continue;
-
-            //Reaching the first block of a try writes the whole of it out, there and then. Single-entry is
-            //checked when the range is chosen, so this is the only place the walk can arrive at one.
-            if (guarded.FirstOrDefault(run => run[0] == block) is { } run)
-            {
-                foreach (var inside in run)
-                {
-                    seen.Add(inside);
-
-                    if (!handlers.Contains(inside))
-                        order.Add(inside);
-                }
-
-                foreach (var inside in run)
-                {
-                    var out0 = SuccessorsInLayoutOrder(inside, graph).ToList();
-
-                    for (var i = out0.Count - 1; i >= 0; i--)
-                        pending.Push(out0[i]);
-                }
-
-                continue;
-            }
 
             if (!handlers.Contains(block))
                 order.Add(block);
@@ -2436,8 +2402,7 @@ public static partial class IlGenerator
         var body = definition.CilMethodBody!;
         var instructions = body.Instructions;
 
-        var (guardedFirst, _) = EmittedRange(clause.Protected[0], instructionMap);
-        var (_, guardedLast) = EmittedRange(clause.Protected[^1], instructionMap);
+        var (guardedFirst, guardedLast) = EmittedRange(clause.Guarded, instructionMap);
         var (handlerFirst, _) = EmittedRange(clause.Handler[0], instructionMap);
 
         if (guardedFirst is null || guardedLast is null || handlerFirst is null)
@@ -2478,65 +2443,7 @@ public static partial class IlGenerator
             body.LocalVariables.Add(answer);
         }
 
-        //Everything inside a try that leaves it, not only the instruction it ends on. A protected region may
-        //not be returned out of or branched out of any more than it may be fallen out of, and a try of
-        //several blocks has all three in the middle of it as well as at the end.
-        {
-            var from = At(instructions, guardedFirst);
-            var to = At(instructions, guardedLast);
-
-            for (var i = from; i < to; i++)
-            {
-                if (instructions[i].OpCode.Code == CilCode.Ret)
-                {
-                    instructions[i].OpCode = CilOpCodes.Leave;
-                    instructions[i].Operand = epilogueLabel;
-
-                    if (answer != null)
-                    {
-                        instructions.Insert(i, new CilInstruction(CilOpCodes.Stloc, answer));
-                        i++;
-                        to++;
-                    }
-
-                    continue;
-                }
-
-                var conditional = instructions[i].OpCode.Code is CilCode.Brtrue or CilCode.Brtrue_S
-                    or CilCode.Brfalse or CilCode.Brfalse_S;
-
-                if (!conditional && instructions[i].OpCode.Code is not (CilCode.Br or CilCode.Br_S))
-                    continue;
-
-                if (instructions[i].Operand is not CilInstructionLabel { Instruction: { } target })
-                    continue;
-
-                var at = At(instructions, target);
-
-                if (at >= from && at <= to)
-                    continue;
-
-                if (!conditional)
-                {
-                    instructions[i].OpCode = CilOpCodes.Leave;
-                    continue;
-                }
-
-                instructions.Insert(i + 1, new CilInstruction(CilOpCodes.Leave, new CilInstructionLabel(target)));
-
-                instructions[i].OpCode = instructions[i].OpCode.Code is CilCode.Brtrue or CilCode.Brtrue_S
-                    ? CilOpCodes.Brfalse
-                    : CilOpCodes.Brtrue;
-                instructions[i].Operand = new CilInstructionLabel(instructions[i + 2]);
-
-                i++;
-                to++;
-            }
-
-            tryLast = At(instructions, guardedLast);
-        }
-
-        //How the try is left at its end. A protected region may not be fallen out of, returned out of, or branched out
+        //How the try is left. A protected region may not be fallen out of, returned out of, or branched out
         //of - `leave` is the only way out, and it is what unwinds the region on the way. Where the try ends
         //in a throw there is nothing to do, which is every clause found by following a throw; where the
         //table named the range instead, the try ends in whatever the protected code ended in.

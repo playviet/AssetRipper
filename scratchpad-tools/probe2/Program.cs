@@ -1407,6 +1407,94 @@ if (args[3] == "hfa")
 }
 
 
+
+// trycheck [assemblySubstring] - can a multi-block `try` be written at all?
+//
+// The protected range is known exactly from .gcc_except_table. Turning it into a CIL try needs TWO things
+// that have nothing to do with knowing the range:
+//   * every exit written as `leave` - ret, br, brtrue/brfalse all have a spelling; a jump table does not;
+//   * and NOTHING MAY BRANCH INTO IT. ECMA-335 allows entering a protected region only at its first
+//     instruction, so the block set has to be single-entry. A pad's protection is a UNION of call-site rows
+//     and there is no reason a union of address ranges should be single-entry in the graph.
+// This counts how often each holds, so the layout is only built if the answer supports it.
+if (args[3] == "trycheck")
+{
+	int pads = 0, oneBlock = 0, multi = 0, singleEntry = 0, writableExits = 0, both = 0;
+	var sizes = new Dictionary<int, int>();
+	var examples = new List<string>();
+
+	foreach (TypeAnalysisContext type in app.AllTypes)
+	{
+		if (args.Length > 4 && !(type.DeclaringAssembly?.Name?.Contains(args[4]) ?? false)) continue;
+		foreach (MethodAnalysisContext m in type.Methods)
+		{
+			if (m.UnderlyingPointer == 0) continue;
+			var sites = Cpp2IL.Core.Analysis.ExceptionTable.For(app, m.UnderlyingPointer);
+			if (sites.Count == 0) continue;
+			try { m.Analyze(); } catch { continue; }
+			if (m.ControlFlowGraph is not { } g) continue;
+
+			var byPad = new Dictionary<ulong, List<(ulong Start, ulong End)>>();
+			foreach (var site in sites)
+			{
+				if (site.Pad == 0 || site.Action == 0 || site.End <= site.Start) continue;
+				if (!byPad.TryGetValue(site.Pad, out var rows)) byPad[site.Pad] = rows = new();
+				rows.Add((site.Start, site.End));
+			}
+
+			foreach (var (pad, rows) in byPad)
+			{
+				var inside = new HashSet<Block>();
+				foreach (Block b in g.Blocks)
+				{
+					if (b == g.EntryBlock || b == g.ExitBlock) continue;
+					foreach (Instruction i in b.Instructions)
+					{
+						ulong at = Cpp2IL.Core.Analysis.InstructionAddresses.Of(m, i);
+						if (at == 0) continue;
+						foreach (var r in rows) if (at >= r.Start && at < r.End) { inside.Add(b); break; }
+					}
+				}
+
+				if (inside.Count == 0) continue;
+				pads++;
+				sizes[inside.Count] = sizes.GetValueOrDefault(inside.Count) + 1;
+				if (inside.Count == 1) { oneBlock++; continue; }
+				multi++;
+
+				int entries = inside.Count(b => b.Predecessors.Count == 0
+					|| b.Predecessors.Any(pr => !inside.Contains(pr)));
+				bool one = entries <= 1;
+
+				bool writable = true;
+				foreach (Block b in inside)
+				{
+					if (!b.Successors.Any(sx => sx != g.ExitBlock && !inside.Contains(sx))) continue;
+					var term = b.Instructions.LastOrDefault(i => i.OpCode != OpCode.Nop);
+					if (term is { OpCode: OpCode.IndirectJump }) { writable = false; break; }
+				}
+
+				if (one) singleEntry++;
+				if (writable) writableExits++;
+				if (one && writable) { both++; if (examples.Count < 10) examples.Add($"{type.Name}::{m.Name} blocks={inside.Count}"); }
+				else if (examples.Count < 20 && !one) examples.Add($"REFUSED {type.Name}::{m.Name} blocks={inside.Count} entries={entries}");
+			}
+		}
+	}
+
+	Console.WriteLine($"pads with any protected block          {pads}");
+	Console.WriteLine($"  the try is ONE block (built today)   {oneBlock}");
+	Console.WriteLine($"  the try is several blocks            {multi}");
+	Console.WriteLine($"    of those, single-entry             {singleEntry}");
+	Console.WriteLine($"    of those, every exit writable      {writableExits}");
+	Console.WriteLine($"    BOTH - a try that could be written {both}");
+	Console.WriteLine("--- try sizes in blocks ---");
+	foreach (var kv in sizes.OrderBy(k => k.Key).Take(14)) Console.WriteLine($"  {kv.Key,4} blocks : {kv.Value}");
+	Console.WriteLine("--- examples ---");
+	foreach (string e in examples) Console.WriteLine("  " + e);
+	return;
+}
+
 // padcheck <type> [method] - why the exception table does or does not name a landing pad for each throw.
 if (args[3] == "padcheck")
 {
