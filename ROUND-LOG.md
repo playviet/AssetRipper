@@ -390,6 +390,12 @@ At 1.11.8 with both fixed: **0 generation failures, 77 clauses written.**
 | allscore | 2118/2326 | **2114**/2326 = 90.9% |
 | decisions | 1326 / 1382 | **same** |
 | roundtrip whole | 1044 | **same** |
+| **Unity gate** | 12 CS7069 (its floor) | **12 CS7069 — unchanged** |
+
+**The Unity gate was run on export 610**, which is the check `CLAUDE.md` reserves for before staging and the
+only one that says the export is a project someone can open: `unityverify.sh` over 285 assemblies reports
+**12 `error CS7069` and nothing else**, which is the floor stated in the baseline. **77 exception handlers,
+`leave` instructions, protected regions and all, and not one new compile error.**
 
 **Census:** recovered 22 → **80 recognised, 77 written**; *the handler is the rest of the method* 466
 remaining; *a conditional branch leaves the handler* 19; *more than one clause* 28; splits kept 96.
