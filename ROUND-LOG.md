@@ -471,3 +471,28 @@ not instructions, and a division has to be emitted — so it belongs in `ArrayAc
 subscript reconstructions. Not attempted here: the subscript path is the one that cost 12 game methods the
 last time it was widened (`il2cpp-a-slot-inside-a-struct-is-its-field`), and it wants its own round with its
 own before/after.
+
+---
+
+## 1.12.10 / export 652 — the full export and the Unity gate, again
+
+Unity gate **12 CS7069, its floor**, unchanged from master. Full export scores identically to the fast one.
+
+## Where it stands at 1.12.10
+
+| | master (630) | now (650/651/652) |
+|---|---|---|
+| **oracle run / same** | 79 / **54** | 79 / **62** |
+| **`full` + WRONG** | **16** | **11** |
+| `full` + right | 49 | 56 |
+| `partial` + WRONG | 9 | 6 |
+| compare2 full (decompiled only) | 2561 | 2560 |
+| commented / unmanaged | 363 / 315 | 371 / 324 |
+| cfscore full / partial · files | 609 / 6 · 91/96 | 607 / 8 · 90/96 |
+| allscore | 2121 (91.2%) | 2120 (91.1%) |
+| decisions · roundtrip whole · genfail | 1326 · 1044 · 0 | **1326 · 1044 · 0** |
+| Unity gate | 12 CS7069 | **12 CS7069** |
+
+Ten corpus shapes fixed — `DivMagic`, `Weight`, `SharedPick`, `ValuePick`, `NullableSum`, `NullableChain`,
+`Steps`, `SumSteps` by verdict, and `Reversed` half-recovered — for one compare2 body, two cfscore bodies and
+nine `unmanaged` markers, all of them from the stale-read guard and all of them the trade RECOVERY.md names.
