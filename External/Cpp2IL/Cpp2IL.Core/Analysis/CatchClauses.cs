@@ -21,6 +21,12 @@ public sealed class CatchClause
 
     /// <summary>The landing pad the clause was reached through.</summary>
     public required Block Pad { get; init; }
+
+    /// <summary>
+    /// The blocks the <c>try</c> covers, the one control enters at first. Just <see cref="Guarded"/> unless
+    /// the exception table's range could be taken whole - see <c>CatchClauses.TheWholeProtectedRange</c>.
+    /// </summary>
+    public List<Block> Protected { get; set; } = [];
 }
 
 /// <summary>
@@ -224,6 +230,17 @@ public static class CatchClauses
         graph.Blocks.AddRange(moving);
 
         DeclareTheHandlersLocals(method, only.Handler);
+
+        //And now the try itself, which until this point has been the single block the clause was found from.
+        //The exception table says exactly which addresses the clause protects; taking them whole is the
+        //difference between a `catch` that guards the call it was found at and one that guards what the
+        //program actually wrote.
+        if (TheWholeProtectedRange(method, only, graph) is { } wider)
+        {
+            Counted("the try is the whole protected range", wider.Count);
+            only.Protected = wider;
+        }
+
         LetGoOfTheUnusedPad(method, graph, [.. only.Handler, .. region, only.Guarded]);
 
         Recovered.AddOrUpdate(method, clauses);
@@ -388,7 +405,7 @@ public static class CatchClauses
                 continue;
             }
 
-            return new CatchClause { Guarded = guarded, Handler = handler, Caught = caught, Pad = pad };
+            return new CatchClause { Guarded = guarded, Handler = handler, Caught = caught, Pad = pad, Protected = [guarded] };
         }
 
         if (!found)
@@ -712,6 +729,104 @@ public static class CatchClauses
 
             Detach(block, graph);
         }
+    }
+
+
+    /// <summary>
+    /// Every block the exception table says this clause protects, the entry first - or nothing, where that
+    /// set is not something a CIL protected region is allowed to be.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Measured over <c>Assembly-CSharp</c> before this was written, because the answer decides whether it is
+    /// worth writing: <b>942</b> pads have a protected block set, <b>778 of them are a single block</b> - which
+    /// is what was already emitted - and <b>164</b> span several. Of those 164:
+    /// </para>
+    /// <list type="bullet">
+    /// <item><b>Every exit is writable, 164 of 164.</b> A <c>ret</c>, a <c>br</c> and a two-way branch all have
+    /// a <c>leave</c> spelling; a jump table does not, and not one protected range is left by one.</item>
+    /// <item><b>Only 75 are single-entry.</b> ECMA-335 allows entering a protected region only at its first
+    /// instruction, and a pad's protection is a <i>union</i> of call-site rows - there is no reason a union of
+    /// address ranges should be single-entry in the graph, and 89 times it is not.</item>
+    /// </list>
+    /// <para>
+    /// So the constraint that decides this is not the one about leaving, it is the one about entering, and it
+    /// is a hard test rather than a guess: count the blocks in the set that anything outside it reaches. More
+    /// than one and the range is refused whole, and the clause keeps the single block it already had.
+    /// </para>
+    /// </remarks>
+    /// <summary>Every call-site row the compiler wrote for this method.</summary>
+    private static List<ExceptionTable.CallSite> Sites(MethodAnalysisContext method)
+        => method.UnderlyingPointer == 0 ? [] : ExceptionTable.For(method.AppContext, method.UnderlyingPointer);
+
+    private static List<Block>? TheWholeProtectedRange(MethodAnalysisContext method, CatchClause clause, ISILControlFlowGraph graph)
+    {
+        var padAddress = InstructionAddresses.Of(method, clause.Pad);
+
+        if (padAddress == 0)
+            return null;
+
+        var rows = Sites(method).Where(s => s.Pad == padAddress && s.Action != 0 && s.End > s.Start).ToList();
+
+        if (rows.Count == 0)
+            return null;
+
+        var inside = new List<Block>();
+
+        foreach (var block in graph.Blocks)
+        {
+            if (block == graph.EntryBlock || block == graph.ExitBlock)
+                continue;
+
+            foreach (var instruction in block.Instructions)
+            {
+                var at = InstructionAddresses.Of(method, instruction);
+
+                if (at != 0 && rows.Any(r => at >= r.Start && at < r.End))
+                {
+                    inside.Add(block);
+                    break;
+                }
+            }
+        }
+
+        //The block the clause was already found from has to be in it, or this is a different clause's range.
+        if (inside.Count < 2 || inside.Count > 32 || !inside.Contains(clause.Guarded))
+            return null;
+
+        var set = new HashSet<Block>(inside);
+
+        //Nothing may branch into a protected region except at its first instruction. Anything else the
+        //decompiler would either refuse or, worse, accept and mean something else by.
+        var entries = inside.Where(b => b.Predecessors.Count == 0 || b.Predecessors.Any(p => !set.Contains(p))).ToList();
+
+        if (entries.Count != 1)
+        {
+            Counted("the protected range is branched into");
+            return null;
+        }
+
+        //And every way out has to have a `leave` to write. A jump table has none.
+        foreach (var block in inside)
+        {
+            if (!block.Successors.Any(s => s != graph.ExitBlock && !set.Contains(s)))
+                continue;
+
+            if (block.Instructions.LastOrDefault(i => i.OpCode != OpCode.Nop) is { OpCode: OpCode.IndirectJump })
+            {
+                Counted("the protected range is left by a jump table");
+                return null;
+            }
+        }
+
+        //A handler is not inside its own try, and the pad must not be either.
+        if (clause.Handler.Any(set.Contains) || set.Contains(clause.Pad))
+            return null;
+
+        inside.Remove(entries[0]);
+        inside.Insert(0, entries[0]);
+
+        return inside;
     }
 
     /// <summary>Takes a block out of the graph, leaving no edge pointing at it.</summary>
