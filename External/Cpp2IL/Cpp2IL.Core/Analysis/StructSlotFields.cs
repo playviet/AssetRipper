@@ -121,7 +121,9 @@ public static class StructSlotFields
         foreach (var instruction in graph.Instructions)
         {
             //Reads only. A write to the slot is the caller filling the field in, which is true as it stands,
-            //and turning it into a store needs the address of the struct rather than its value.
+            //and turning it into a store needs the address of the struct rather than its value. Building that
+            //was measured and reverted at 1.12.13: the stores are gone before this pass ever runs - dead code
+            //elimination takes them, because a slot is a local and nothing reads it. See ROUND-LOG.md.
             for (var operand = instruction.IsAssignment ? 1 : 0; operand < instruction.Operands.Count; operand++)
             {
                 //Read *through* the slot, at a distance: the field's own type says what is there, and the

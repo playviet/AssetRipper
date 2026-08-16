@@ -569,3 +569,96 @@ only where the stand-in has a stand-in and the copy has something real — and `
 **Kept.** The whole `compare2`/`allscore` cost of the stale-read guard is repaid; what is left against master
 is `cfscore` 609→608 and one file off the clean list, both of them `PowerUpBuyPopup::Show`, which the reading
 above shows is not worse.
+
+---
+
+## 1.12.13 — `ClearAndSet` and `Describe`: one root, diagnosed and **not** fixed
+
+Both are the same thing, and `PIPETRACE` (new, in `ForkPipeline`) found it in one run by printing the body at
+every hook:
+
+```
+PIPE AfterStackAnalysis          PIPE AfterTypesAndFieldsResolved
+  Move X0, stackaddr_-20           Nop
+  Move stack_-20, 0                Nop
+  Move stack_-14, V0               Move v2 (Quad), v3 @ stackaddr_-20 (Quad)
+  Call Quad::ToString, X0, X0      Call Quad::ToString, …, v2
+```
+
+**Every store into the slot is gone by the second hook.** `DeadCodeEliminator`'s own remark says "stores have
+a memory or field destination and are never dead" — true of every store *except* a stack slot's, which has a
+**local** destination, so nothing reads it and it is removed. `Corpus::ClearAndSet` loses `q.A = x` and
+`Corpus::Describe` loses both operands of `colour.ToString() + "=" + (int)colour`.
+
+**Two fixes were built and both reverted.**
+
+`StructSlotFields` rewriting the *write* as well as the read: **inert** — the stores are gone long before
+that pass runs. Its remark now says so, so nobody rebuilds it.
+
+`SlotWrittenThenAddressed` — rewriting `Move stack_A, v` to `Move stackaddr_A, v` at `AfterStackAnalysis`,
+the only hook before the first DCE, plus re-taking the address immediately before the call. This got
+`Describe` from a silently wrong body to a **commented** one (`full`+WRONG 11 → 10, `partial`+WRONG 6 → 7,
+`79 run / 62 same` unchanged) — the preferred direction, but no shape recovered, and it inserts instructions
+into every method with an addressed slot. Reverted.
+
+**Why the simple version cannot work, which is the finding worth keeping.** The compiler takes the address
+**before** it fills the slot:
+
+```
+ADD X0, X31, 0x0     ; &quad          -> Move X0, stackaddr_-20
+STR X31, [X31]       ; clear it       -> Move stackaddr_-20, 0
+STR S0, [X31 + 0xC]  ; q.A = x
+BL  Quad::ToString
+```
+
+A slot is modelled as a **variable**, not as memory (`il2cpp-the-slot-address-is-the-slot`, and the
+spill/reload that model exists to keep). So single assignment form gives the store a new version and leaves
+the call reading the version live where the address was taken — the empty one. Making the store survive is
+not enough; the call has to read the *latest* version, which is what a pointer means and what a variable
+cannot say.
+
+## 1.12.14 / exports 658, 659 — `AsOrNull`: link one of three
+
+`Cpp2IL.Core/Analysis/BoxedIsAnObject.cs` (**new**), one call beside `StandInCopyType` in `ForkPipeline`.
+
+`object o = flag ? (object)"text" : (object)7;` merges a string with a boxed `int` in one register. The
+string arm types it `System.String` first, that type reaches the box's result through the copies, and
+`SetTypeIfUnknown` will not revisit one — so the boxed seven is written `string text2 = (string)(object)7;`
+and throws on a cast the source never had. The `isinst` below it is recovered perfectly and never reached.
+
+The static type of a box is `object`. `BoxedIsAnObject` says so, and **only** where the result claims a
+reference type a boxed value can never be — `object`, `ValueType`, `Enum`, an interface and a generic
+parameter are all left alone, because `il2cpp-a-cast-that-is-read-through-is-an-unbox` depends on them.
+
+| | 655/656 | 658/659 |
+|---|---|---|
+| oracle · every game scorer | 62 same · 2561 · 371 · 323 · 608/7 · 2121 · 1326 · 1044 · 0 | **identical** |
+| game text | — | one line, `JsonExtension.cs`: `JsonSerializer value = (JsonSerializer)(object)(T)num2;` → `object value = (T)num2;` (commented either way) |
+
+**Kept, and it buys nothing measurable today.** The ISIL moves (`v41` `String` → `Object`) and the one line
+that changed is better. It is gated `BOXEDOBJECT_OFF=1`.
+
+### The other two links, named
+
+1. **The merge.** `v44` is still `System.String`, so `Move v44 (String), v41 (Object)` is emitted as a cast
+   and `(string)(object)7` survives. A local that receives a copy from an `object` cannot be a more derived
+   reference type; the merge has to widen. Broad rule, wants its own round.
+2. **The `isinst` result is not what the next statement reads.**
+   `Call is_inst, instance68 @ ISINST (String), v44, typeof(String)` then
+   `Call String.ToUpperInvariant, …, v44` — the receiver is the *pre-call* `x0`, not the answer. Harmless
+   while both are the same object; fatal once `v44` is widened to `object`. So links 1 and 2 must land
+   together.
+
+## Where it stands at 1.12.14
+
+| | master (630) | now |
+|---|---|---|
+| **oracle run / same** | 79 / **54** | 79 / **62** |
+| **`full` + WRONG** | **16** | **11** |
+| compare2 full · allscore | 2561 · 2121 | **2561 · 2121** |
+| cfscore full / partial · files | 609 / 6 · 91/96 | 608 / 7 · 90/96 |
+| commented · unmanaged | 363 · 315 | 371 · 323 |
+| decisions · roundtrip · genfail · Unity | 1326 · 1044 · 0 · 12 CS7069 | **1326 · 1044 · 0 · 12 CS7069** |
+
+The only body still behind master is `PowerUpBuyPopup::Show`, read against its original above and shown not
+to be worse.

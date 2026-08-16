@@ -15,8 +15,32 @@ namespace Cpp2IL.Core.Analysis;
 public static class ForkPipeline
 {
     /// <summary>Runs on the stack slots, before single assignment form is built over them.</summary>
+
+    /// <summary>
+    /// Prints the body at a named point in the pipeline, when <c>PIPETRACE</c> matches the method's name.
+    /// </summary>
+    /// <remarks>
+    /// The standing trap of this project is diagnosing a shape off a finished dump that does not exist where
+    /// the pass runs - see <c>il2cpp-the-dump-is-not-where-the-pass-runs</c>. Every hook calls this, so
+    /// "which pass removed it" is one run rather than a bisection.
+    /// </remarks>
+    public static void Trace(MethodAnalysisContext method, string where)
+    {
+        if (System.Environment.GetEnvironmentVariable("PIPETRACE") is not { } asked
+            || !method.Name.Contains(asked) || method.ControlFlowGraph is not { } graph)
+        {
+            return;
+        }
+
+        System.Console.WriteLine($"===== PIPE {where}");
+
+        foreach (var instruction in graph.Instructions)
+            System.Console.WriteLine($"  PIPE {instruction.OpCode} {string.Join(", ", instruction.Operands)}");
+    }
+
     public static void AfterStackAnalysis(MethodAnalysisContext method)
     {
+        Trace(method, "AfterStackAnalysis");
         // Before the pass below, which aliases an address register onto its slot and removes the move that
         // said so - after that there is nothing left to record which slot a libm out-pointer named.
         OutPointerSlotResult.Run(method);
@@ -46,6 +70,7 @@ public static class ForkPipeline
     /// <summary>Runs where locals have just been given their types and fields.</summary>
     public static void AfterTypesAndFieldsResolved(MethodAnalysisContext method)
     {
+        Trace(method, "AfterTypesAndFieldsResolved");
 
         // Again, now that locals are typed: a class-initialisation guard is recognised by the runtime
         // class pointer it reads out of, and that pointer is only typed by the pass above. On builds
@@ -78,6 +103,7 @@ public static class ForkPipeline
     /// <summary>Runs where a delegate's invoke has just been recognised as one.</summary>
     public static void AfterDelegateInvokeRecovery(MethodAnalysisContext method)
     {
+        Trace(method, "AfterDelegateInvokeRecovery");
         // A delegate invoke is only known to be one by the step above, so the arguments it does not take are
         // still on it until here - and one of them is the delegate's own method pointer, whose load would
         // otherwise be kept alive by that operand and written out as a placeholder.
@@ -91,6 +117,7 @@ public static class ForkPipeline
     /// </summary>
     public static void BeforeFloatLiteralsAreFixed(MethodAnalysisContext method)
     {
+        Trace(method, "BeforeFloatLiteralsAreFixed");
         // A constant too wide for one instruction arrives as a chain of masks and ors over immediates, which
         // the decompiler folds at the end - so the output never looked wrong, but no pass in between could
         // read the number. This is what lets the one below read it.
@@ -115,6 +142,7 @@ public static class ForkPipeline
 
     public static void BeforeUnusedLocalsAreDropped(MethodAnalysisContext method)
     {
+        Trace(method, "BeforeUnusedLocalsAreDropped");
         // An argument kept somewhere that survives a call is read back once per branch, and a local written in
         // several places is one the propagation in SSA leaves alone. First, so that everything below sees the
         // argument itself where the compiled code was passing a copy of it.
@@ -427,6 +455,7 @@ public static class ForkPipeline
     /// <summary>Runs last of all, on the copies the passes before it leave behind.</summary>
     public static void AfterUnusedLocalsAreDropped(MethodAnalysisContext method)
     {
+        Trace(method, "AfterUnusedLocalsAreDropped");
         // Answering the class-prepared bit leaves a branch on `1 != 0` whose other arm holds il2cpp's
         // initialisation call, and reachability alone cannot see that the arm is unreachable - a conditional
         // jump points at both of them. Directly above the collection, which is what then takes the arm away,
@@ -665,6 +694,12 @@ public static class ForkPipeline
         NullMergedLocal.Run(method);
 
         StandInCopyType.Run(method);
+
+        // Beside it, and the same kind of correction from the other direction: what a box answers with is an
+        // `object`, and a merge with a string arm had given it `System.String` - so the boxed value came out
+        // as `(string)(object)7` and threw on a cast the source never had. Here, so that everything which
+        // resolves against the type it displaces has already run.
+        BoxedIsAnObject.Run(method);
 
         // And where it declined, the copy itself is what is wrong. A register carrying a `MethodInfo*` on
         // one edge and an array on the next is two values, not one; `SsaForm` states that rule already but
