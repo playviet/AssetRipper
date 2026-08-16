@@ -364,3 +364,65 @@ individually — the next defect down the same chain, a `>> 32` on the Nullable'
 branches, more comments. Chasing `commented` alone would have reverted this.
 
 **Kept.**
+
+---
+
+## 1.12.9 / exports 647, 648, 649 — `Steps` and `SumSteps`: a read carried past its own store
+
+**Files and functions**
+
+| file | what |
+|---|---|
+| `Cpp2IL.Core/Analysis/StoreTarget.cs` | **new** — `Of`, `IsTheSameField` |
+| `Cpp2IL.Core/Analysis/Simplifier.Fork.cs` | `Invalidates` asks `StoreTarget.Of`, and a raw memory store now invalidates a field read |
+| `Cpp2IL.Core/Analysis/FieldReadSinking.cs` | `Harmless` asks `StoreTarget.Of`, and compares fields through `IsTheSameField` |
+
+**The bug is one line of upstream, and it disarmed two guards at once.**
+
+```csharp
+public static bool IsConstantValue(object operand) => operand switch
+{
+    Register or StackOffset or LocalVariable => false,
+    MemoryOperand memory => memory.IsConstant,
+    _ => true                       // <- a FieldReference lands here
+};
+// Instruction.Destination:  return IsConstantValue(Operands[0]) ? null : Operands[0];
+```
+
+So `Instruction.Destination` is **null** for `Move this.<>1__state, -1` and for every other store into a
+field. `Simplifier.Invalidates` and `FieldReadSinking.Harmless` both refuse to carry a field read past a
+write to that field, and **both asked `instruction.Destination`** — so neither had ever fired for the
+commonest shape either was written for. `IsConstantValue` itself is not touched: it drives `Sources`, dead
+code elimination and the stack analysis.
+
+`Corpus+<Steps>d__73::MoveNext` is the clean statement. The state machine loads `<>1__state` at entry, stores
+-1 over it, and then compares the loop counter — which the compiler keeps in the very register the load left
+it in, because at state 0 that register already holds 0. Carried past the store, the comparison read the
+field again and got -1, so the first element of every `yield` loop came out `(-1) * (-1)` rather than
+`0 * 0`.
+
+**Diagnosed in four probe rebuilds, no exports**: `FIELDSINK_OFF=1` inert (clears that pass of acting
+*first*), `SsaSimplifier.IsForwardable` already refuses a `FieldReference`, `FIELDFWD_OFF=1` on
+`Invalidates` made the body right (conviction), and a four-line `SIMPTRACE` print showed `written=null` at
+the store. Then with `Simplifier` fixed, `FIELDSINK_OFF` became decisive — the second carrier.
+
+| | 645 / 646 | 649 (`STALEREAD_OFF`) | 647 / 648 |
+|---|---|---|---|
+| oracle run / same | 79 / 60 | — | 79 / **62** |
+| `full` + WRONG | 12 | — | **11** |
+| `full` + right | 55 | — | **56** |
+| `partial` + WRONG | 7 | — | **6** |
+| compare2 full | 2561 | 2560 | **2560** |
+| commented | 369 | 370 | 371 |
+| unmanaged | 315 | 316 | 324 |
+| cfscore full / partial | 609 / 6 | 608 / 7 | 607 / 8 |
+| allscore · decisions · roundtrip · genfail | 2121 · 1326 · 1044 · 0 | 2120 · 1326 · 1044 · 0 | **2120 · 1326 · 1044 · 0** |
+| **livecount vs 649** | — | — | **live +7, branches +1** |
+
+`Steps` and `SumSteps` both go DIFFERS → agrees and nothing else moves.
+
+**Kept, following correctness over compilability and saying so.** compare2 `full`, `allscore`, `decisions`
+and `roundtrip` are level; `cfscore` loses one body and `unmanaged` gains eight — which is exactly the trade
+RECOVERY.md names: *a read that becomes a marker is better than a read that quietly returns the wrong value*,
+and here the old behaviour was reading a field **after it had been overwritten**. `livecount` says live code
+went up, and the live lines that did leave are `_ = list.Count;` discards, not statements.
