@@ -15,6 +15,22 @@ namespace Cpp2IL.Core.Analysis;
 public static class ForkPipeline
 {
     /// <summary>Runs on the stack slots, before single assignment form is built over them.</summary>
+    /// <summary>
+    /// The moment the control-flow graph exists, before stack analysis - which opens by deleting every block
+    /// nothing branches to, and a landing pad is reached by the unwinder and by nothing else.
+    /// </summary>
+    /// <remarks>
+    /// This is the earliest hook there is, and it has to be: measured on <c>CFramework.SaveIO::Load</c>, the
+    /// exception table names 22 catch pads, all 22 are in the raw lift, and by the time any other hook runs
+    /// <b>2</b> survive. See <see cref="ExceptionEdges"/>, which keeps exactly one of them - the one that
+    /// would otherwise die, covering the most code - because keeping all of them was measured and cost more
+    /// than it bought.
+    /// </remarks>
+    public static void AfterTheGraphIsBuilt(MethodAnalysisContext method)
+    {
+        ExceptionEdges.Run(method);
+    }
+
     public static void AfterStackAnalysis(MethodAnalysisContext method)
     {
         // Before the pass below, which aliases an address register onto its slot and removes the move that

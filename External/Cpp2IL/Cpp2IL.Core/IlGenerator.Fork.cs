@@ -2396,33 +2396,14 @@ public static partial class IlGenerator
             return;
         }
 
-        //The try is the throw and what builds what it throws. Anything else in the range would need a `leave`
-        //of its own, and the range would be a guess in the first place - see CatchClauses.
-        if (instructions[tryLast].OpCode.Code != CilCode.Throw)
-        {
-            Refused(context, $"the try does not end in a throw but in {instructions[tryLast].OpCode}");
-            return;
-        }
-
         if (clause.Caught.ToTypeSignature(module).ToTypeDefOrRef() is not { } caught)
         {
             Refused(context, $"no type reference for {clause.Caught.FullName}");
             return;
         }
 
-        //Nothing may fall into a handler. Where the run before it does, the branch to the epilogue says what
-        //running off the end of the body already said.
         var epilogue = new CilInstruction(CilOpCodes.Nop);
         var epilogueLabel = new CilInstructionLabel(epilogue);
-
-        if (instructions[handlerStart - 1].OpCode.FlowControl
-            is not (CilFlowControl.Return or CilFlowControl.Throw or CilFlowControl.Branch))
-        {
-            instructions.Insert(handlerStart, new CilInstruction(CilOpCodes.Br, epilogueLabel));
-            handlerStart++;
-        }
-
-        instructions.Insert(handlerStart, new CilInstruction(CilOpCodes.Pop));
 
         var returned = context.ReturnType is { } type && type.FullName != "System.Void"
             ? ContextToTypeSignature.LocalTypeSignature(type, context, module)
@@ -2434,6 +2415,68 @@ public static partial class IlGenerator
             answer = new CilLocalVariable(returned);
             body.LocalVariables.Add(answer);
         }
+
+        //How the try is left. A protected region may not be fallen out of, returned out of, or branched out
+        //of - `leave` is the only way out, and it is what unwinds the region on the way. Where the try ends
+        //in a throw there is nothing to do, which is every clause found by following a throw; where the
+        //table named the range instead, the try ends in whatever the protected code ended in.
+        switch (instructions[tryLast].OpCode.Code)
+        {
+            case CilCode.Throw or CilCode.Rethrow:
+                break;
+
+            case CilCode.Ret:
+                instructions[tryLast].OpCode = CilOpCodes.Leave;
+                instructions[tryLast].Operand = epilogueLabel;
+
+                if (answer != null)
+                {
+                    instructions.Insert(tryLast, new CilInstruction(CilOpCodes.Stloc, answer));
+                    tryLast++;
+                }
+
+                break;
+
+            case CilCode.Br or CilCode.Br_S:
+                instructions[tryLast].OpCode = CilOpCodes.Leave;
+                break;
+
+            //A `leave` is unconditional, so a two-way exit from a protected region has no CIL spelling.
+            case CilCode.Brtrue or CilCode.Brtrue_S or CilCode.Brfalse or CilCode.Brfalse_S or CilCode.Switch:
+                Refused(context, $"the try is left conditionally, by {instructions[tryLast].OpCode}");
+                return;
+
+            default:
+                //It falls out. `leave` to where it was going to fall says the same thing and is legal.
+                if (tryLast + 1 >= handlerStart)
+                {
+                    Refused(context, "the try would fall straight into its own handler");
+                    return;
+                }
+
+                instructions.Insert(tryLast + 1, new CilInstruction(CilOpCodes.Leave, new CilInstructionLabel(instructions[tryLast + 1])));
+                tryLast++;
+                break;
+        }
+
+        handlerStart = At(instructions, handlerFirst);
+
+        if (handlerStart <= tryLast)
+        {
+            Refused(context, "leaving the try moved the handler inside it");
+            return;
+        }
+
+        //Nothing may fall into a handler. Where the run before it does, the branch to the epilogue says what
+        //running off the end of the body already said.
+        if (instructions[handlerStart - 1].OpCode.FlowControl
+            is not (CilFlowControl.Return or CilFlowControl.Throw or CilFlowControl.Branch))
+        {
+            instructions.Insert(handlerStart, new CilInstruction(CilOpCodes.Br, epilogueLabel));
+            handlerStart++;
+        }
+
+        instructions.Insert(handlerStart, new CilInstruction(CilOpCodes.Pop));
 
         //Backwards, so that the insertions do not move the indices still to be visited.
         for (var i = instructions.Count - 1; i >= handlerStart; i--)
@@ -2481,7 +2524,7 @@ public static partial class IlGenerator
             HandlerType = CilExceptionHandlerType.Exception,
             ExceptionType = caught,
             TryStart = new CilInstructionLabel(instructions[At(instructions, guardedFirst)]),
-            TryEnd = new CilInstructionLabel(instructions[At(instructions, guardedLast) + 1]),
+            TryEnd = new CilInstructionLabel(instructions[tryLast + 1]),
             HandlerStart = new CilInstructionLabel(instructions[At(instructions, handlerFirst) - 1]),
             HandlerEnd = epilogueLabel,
         });

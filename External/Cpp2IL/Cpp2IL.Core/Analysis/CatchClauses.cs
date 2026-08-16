@@ -18,6 +18,9 @@ public sealed class CatchClause
 
     /// <summary>The managed type the landing pad tests the exception against.</summary>
     public required TypeAnalysisContext Caught { get; init; }
+
+    /// <summary>The landing pad the clause was reached through.</summary>
+    public required Block Pad { get; init; }
 }
 
 /// <summary>
@@ -122,6 +125,22 @@ public static class CatchClauses
             clauses.Add(clause);
         }
 
+        //Only where the shape of the graph found nothing. The throw-anchored recognition is what the 77
+        //clauses already rest on, and a second candidate beside it would make the count two and refuse both -
+        //so the table's answer is a fallback, never a rival.
+        if (clauses.Count == 0 && ExceptionEdges.AttachedTo(method) is { } attached)
+        {
+            if (RecogniseThrough(attached.From, attached.Pad, graph) is { } fromTheTable)
+            {
+                Counted("recovered from the protected range");
+                clauses.Add(fromTheTable);
+            }
+            else
+            {
+                Counted("the table named the range and the pad is still not a catch");
+            }
+        }
+
         if (clauses.Count != 1)
         {
             for (var i = splits.Count - 1; i >= 0; i--)
@@ -134,13 +153,15 @@ public static class CatchClauses
         {
             if (clauses.Count > 1)
                 Counted("more than one clause");
+
+            LetGoOfTheUnusedPad(method, graph, []);
             return;
         }
 
         Counted("recovered");
 
         var only = clauses[0];
-        var region = Region(only.Guarded, graph);
+        var region = Region(only.Guarded, only.Pad, graph);
 
         //Every other split bought nothing here, so it goes back - except one inside the clause's own blocks,
         //which is where the recognition was looking.
@@ -190,6 +211,7 @@ public static class CatchClauses
         graph.Blocks.AddRange(only.Handler);
 
         DeclareTheHandlersLocals(method, only.Handler);
+        LetGoOfTheUnusedPad(method, graph, [.. only.Handler, .. region, only.Guarded]);
 
         Recovered.AddOrUpdate(method, clauses);
     }
@@ -291,7 +313,16 @@ public static class CatchClauses
             return null;
         }
 
-        var region = Region(guarded, graph);
+        return RecogniseThrough(guarded, pads[0], graph);
+    }
+
+    /// <summary>
+    /// The clause reached from one guarded block through one landing pad, whether the pad was found by
+    /// falling into it or named by the exception table.
+    /// </summary>
+    private static CatchClause? RecogniseThrough(Block guarded, Block pad, ISILControlFlowGraph graph)
+    {
+        var region = Region(guarded, pad, graph);
 
         if (region.Count == 0)
         {
@@ -328,14 +359,15 @@ public static class CatchClauses
             }
 
             //And nothing outside the pad may reach into it, or severing the throw's edge would take a live
-            //path away with it.
-            if (handler.Any(b => b.Predecessors.Any(p => !handler.Contains(p) && !region.Contains(p))))
+            //path away with it. The guarded block itself does not count: where the table named the range,
+            //the edge from it to the pad is the unwinder's, and is the only reason the pad is still here.
+            if (handler.Any(b => b.Predecessors.Any(p => !handler.Contains(p) && !region.Contains(p) && p != guarded)))
             {
                 Counted("something outside the pad reaches into the handler");
                 continue;
             }
 
-            return new CatchClause { Guarded = guarded, Handler = handler, Caught = caught };
+            return new CatchClause { Guarded = guarded, Handler = handler, Caught = caught, Pad = pad };
         }
 
         if (!found)
@@ -432,11 +464,14 @@ public static class CatchClauses
     }
 
     /// <summary>Everything the landing pad reaches, bounded, so a runaway walk cannot swallow the method.</summary>
-    private static List<Block> Region(Block guarded, ISILControlFlowGraph graph)
+    private static List<Block> Region(Block guarded, Block pad, ISILControlFlowGraph graph)
     {
         var region = new List<Block>();
         var seen = new HashSet<Block> { guarded };
-        var pending = new Queue<Block>(guarded.Successors.Where(s => s != graph.ExitBlock && s != guarded));
+        var pending = new Queue<Block>();
+
+        if (pad != graph.ExitBlock && pad != guarded)
+            pending.Enqueue(pad);
 
         while (pending.Count > 0)
         {
@@ -589,6 +624,60 @@ public static class CatchClauses
         }
     }
 
+
+    /// <summary>
+    /// Takes back the edge <see cref="ExceptionEdges"/> added, and the pad it was holding on to, where no
+    /// <c>catch</c> came of it.
+    /// </summary>
+    /// <remarks>
+    /// Keeping a landing pad alive is what lets it be recognised, and it is not free: one that stays without
+    /// becoming a <c>catch</c> is C++ exception plumbing the generator then writes out. Symmetric with the
+    /// block splits - keep what paid, put back what did not.
+    /// </remarks>
+    private static void LetGoOfTheUnusedPad(MethodAnalysisContext method, ISILControlFlowGraph graph, HashSet<Block> keep)
+    {
+        if (ExceptionEdges.AttachedTo(method) is not { } attached || keep.Contains(attached.Pad))
+            return;
+
+        attached.From.Successors.Remove(attached.Pad);
+        attached.Pad.Predecessors.Remove(attached.From);
+
+        //Everything the pad reached and the method does not: the pad's successors are the rest of the
+        //plumbing, and leaving them would only move the problem one block along, where LayoutOrder writes
+        //out whatever it never reached.
+        var live = new HashSet<Block>();
+        var pending = new Queue<Block>();
+        pending.Enqueue(graph.EntryBlock);
+
+        while (pending.Count > 0)
+        {
+            var block = pending.Dequeue();
+
+            if (!live.Add(block))
+                continue;
+
+            foreach (var successor in block.Successors)
+                pending.Enqueue(successor);
+        }
+
+        var seen = new HashSet<Block>();
+        var walk = new Queue<Block>();
+        walk.Enqueue(attached.Pad);
+
+        while (walk.Count > 0)
+        {
+            var block = walk.Dequeue();
+
+            if (block == graph.ExitBlock || live.Contains(block) || keep.Contains(block) || !seen.Add(block))
+                continue;
+
+            foreach (var successor in block.Successors)
+                walk.Enqueue(successor);
+
+            Detach(block, graph);
+        }
+    }
+
     /// <summary>Takes a block out of the graph, leaving no edge pointing at it.</summary>
     private static void Detach(Block block, ISILControlFlowGraph graph)
     {
@@ -605,7 +694,15 @@ public static class CatchClauses
     }
 
     private static Instruction? DefinitionIn(List<Block> blocks, LocalVariable local)
+        => DefinitionIn(blocks, local, new HashSet<LocalVariable>());
+
+    private static Instruction? DefinitionIn(List<Block> blocks, LocalVariable local, HashSet<LocalVariable> seen)
     {
+        //`a = b; b = a` is a cycle of copies, and following it without saying so overflowed the stack and
+        //took the whole export down - it exits zero, writes DONE, and leaves an export with no scripts in it.
+        if (!seen.Add(local))
+            return null;
+
         Instruction? found = null;
 
         foreach (var block in blocks)
@@ -618,6 +715,12 @@ public static class CatchClauses
 
             found = here;
         }
+
+        //Through one copy. Where the pad has a predecessor it did not have before, destroying single
+        //assignment leaves the class pointer arriving by a `Move` from the value the metadata call answered
+        //with, and asking only for the one instruction that writes this local finds the copy and stops.
+        if (found is { OpCode: OpCode.Move, Operands: [_, LocalVariable copied] } && !ReferenceEquals(copied, local))
+            return DefinitionIn(blocks, copied, seen) ?? found;
 
         return found;
     }

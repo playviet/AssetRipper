@@ -369,6 +369,8 @@ public class MethodAnalysisContext : HasGenericParameters, IMethodInfoProvider
 
         ControlFlowGraph = new ISILControlFlowGraph(ConvertedIsil);
 
+        ForkPipeline.AfterTheGraphIsBuilt(this);
+
         // Indirect jumps/calls should probably be resolved here before stack analysis
 
         StackAnalyzer.Analyze(this);

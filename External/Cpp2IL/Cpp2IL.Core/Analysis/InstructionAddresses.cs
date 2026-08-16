@@ -34,13 +34,11 @@ public static class InstructionAddresses
     private static readonly ConditionalWeakTable<MethodAnalysisContext, ulong[]> Recorded = new();
 
     /// <summary>
-    /// Called once by the lifter, with the two lists it built side by side. Off unless <c>CATCH_ADDRESSES</c>
-    /// asks, because keeping an array per method costs real memory across three hundred thousand of them and
-    /// nothing in the recovery reads it - see the class comment.
+    /// Called once by the lifter, with the two lists it built side by side.
     /// </summary>
     public static void Record(MethodAnalysisContext method, List<Instruction> instructions, List<ulong> addresses)
     {
-        if (instructions.Count != addresses.Count || System.Environment.GetEnvironmentVariable("CATCH_ADDRESSES") != "1")
+        if (instructions.Count != addresses.Count)
             return;
 
         Recorded.AddOrUpdate(method, addresses.ToArray());
