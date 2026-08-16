@@ -1075,6 +1075,173 @@ public partial class NewArmV8InstructionSet
         emit(OpCode.Move, [new Register(null, CarryRight), 0x1_0000_0000L - instruction.Op2Imm]);
     }
 
+    /// <summary>
+    /// Marks a comparison the unsigned one where the condition it came from reads the carry.
+    /// </summary>
+    /// <remarks>
+    /// The whole of the reasoning is in <see cref="Analysis.UnsignedComparison"/>. This is only the place
+    /// that knows the condition: <see cref="ReadsCarry"/> already separates the four unsigned conditions
+    /// out to give them their own pair of pseudo-registers, and the same answer says which comparison to
+    /// emit. Set <c>UNSIGNEDCMP_OFF=1</c> to measure the same build without it - see ROUND-LOG.md.
+    /// </remarks>
+    private static void MarkUnsigned(Arm64ConditionCode condition, Instruction? comparison)
+    {
+        if (!UnsignedComparisonOff)
+            Analysis.UnsignedComparison.Mark(ReadsCarry(condition), comparison);
+    }
+
+    private static readonly bool UnsignedComparisonOff = Environment.GetEnvironmentVariable("UNSIGNEDCMP_OFF") == "1";
+
+    /// <summary>
+    /// The registers holding more of a value than a <c>w</c>-form instruction can read.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// On arm64 the <c>w</c> form of a data-processing instruction takes the low word of each source, works
+    /// in thirty-two bits, and zero-extends its result over the whole register. ISIL carries no width, so all
+    /// of that happens in <see cref="long"/> and the answer is silently wrong. It is only wrong when a source
+    /// really does hold more than thirty-two bits, and counted over the binary that has exactly one cause:
+    /// <b>370 sites in 191 methods, every one of them descended from a widening multiply</b>.
+    /// </para>
+    /// <para>
+    /// Which is to say: this is magic division. Clang does not divide by a constant, it multiplies by a magic
+    /// number and shifts - <c>smaddl x8, w0, w8, xzr</c> / <c>lsr x8, x8, #32</c> / <c>add w8, w8, w0</c> -
+    /// and that last <c>add</c> is the point where the high word becomes a signed thirty-two bit number
+    /// again. Without the truncation <c>Corpus::DivMagic</c> returned 1073741846 where the source says 22,
+    /// rated <c>full</c> by every scorer this project has.
+    /// </para>
+    /// <para>
+    /// Narrowing the first <c>w</c>-form read is enough for the whole chain: the result of that instruction
+    /// is a thirty-two bit value and everything below it inherits the type. Straight-line only, and every
+    /// branch clears the map - a linear scan is not a def-use analysis, and the earlier attempt at this
+    /// family ([[il2cpp-a-w-register-write-is-a-truncation]]) was inflated fifteenfold by ignoring exactly
+    /// that. Being conservative costs a site; being wrong costs a method.
+    /// </para>
+    /// </remarks>
+    internal static class WordWidth
+    {
+        [ThreadStatic] private static int[]? held;
+
+        /// <summary>Set <c>WORDWIDTH_OFF=1</c> to measure the same build without this - see ROUND-LOG.md.</summary>
+        private static readonly bool Off = Environment.GetEnvironmentVariable("WORDWIDTH_OFF") == "1";
+
+        internal static void Reset()
+        {
+            if (held is null)
+                held = new int[32];
+            else
+                Array.Clear(held);
+        }
+
+        /// <summary>What the instruction leaves behind, recorded after it has been lifted.</summary>
+        internal static void Note(Arm64Instruction instruction)
+        {
+            if (held is null)
+                return;
+
+            //A branch either way, and the map is worthless: the register could have been written on a path
+            //this walk did not take.
+            if (instruction.Mnemonic is Arm64Mnemonic.B or Arm64Mnemonic.BL or Arm64Mnemonic.BR
+                or Arm64Mnemonic.BLR or Arm64Mnemonic.CBZ or Arm64Mnemonic.CBNZ
+                or Arm64Mnemonic.TBZ or Arm64Mnemonic.TBNZ or Arm64Mnemonic.RET)
+            {
+                Array.Clear(held);
+                return;
+            }
+
+            var destination = Index(instruction.Op0Reg);
+
+            if (destination < 0 || destination == 31)
+                return;
+
+            if (IsWidening(instruction.Mnemonic))
+            {
+                held[destination] = 1;
+                return;
+            }
+
+            //A w write zeroes bits 32..63, so whatever was up there is gone.
+            if (instruction.Op0Reg is >= Arm64Register.W0 and <= Arm64Register.W31)
+            {
+                held[destination] = 0;
+                return;
+            }
+
+            if (instruction.Op0Reg is not (>= Arm64Register.X0 and <= Arm64Register.X31))
+                return;
+
+            //An x-form shift or arithmetic carries the width of what it read. Anything else - a load, a
+            //move, an address - assigns a whole value of its own, and ISIL holds values rather than
+            //registers with a stale half.
+            held[destination] = Truncates(instruction.Mnemonic) && Widest(instruction) > 0 ? 1 : 0;
+        }
+
+        /// <summary>The source of a <c>w</c>-form instruction, truncated where it holds more than a word.</summary>
+        internal static object Narrowed(MethodAnalysisContext context, Arm64Instruction instruction, object value,
+            int operand, Action<OpCode, object[]> emit)
+        {
+            if (Off || held is null || operand == 0 || value is not Register
+                || instruction.Op0Reg is not (>= Arm64Register.W0 and <= Arm64Register.W31)
+                || !Truncates(instruction.Mnemonic))
+            {
+                return value;
+            }
+
+            var index = Index(RegisterOf(instruction, operand));
+
+            if (index < 0 || index == 31 || held[index] == 0)
+                return value;
+
+            //A name per operand. `add w9, w9, w11` narrows two sources, and one shared name makes them two
+            //definitions in a row - single assignment form then resolves both reads to the second, so the
+            //addition came out as `x + x`. The same reason WidenedSource numbers its NARROW registers.
+            var narrowed = new Register(null, "TRUNC" + operand);
+            emit(OpCode.Move, [narrowed, value, new ConversionTarget(context.AppContext.SystemTypes.SystemInt32Type)]);
+            return narrowed;
+        }
+
+        private static int Widest(Arm64Instruction instruction)
+        {
+            var worst = 0;
+
+            for (var operand = 1; operand <= 3; operand++)
+            {
+                var index = Index(RegisterOf(instruction, operand));
+
+                if (index >= 0 && index != 31 && held![index] > worst)
+                    worst = held[index];
+            }
+
+            return worst;
+        }
+
+        private static Arm64Register RegisterOf(Arm64Instruction instruction, int operand) => operand switch
+        {
+            1 => instruction.Op1Kind == Arm64OperandKind.Register ? instruction.Op1Reg : Arm64Register.INVALID,
+            2 => instruction.Op2Kind == Arm64OperandKind.Register ? instruction.Op2Reg : Arm64Register.INVALID,
+            3 => instruction.Op3Kind == Arm64OperandKind.Register ? instruction.Op3Reg : Arm64Register.INVALID,
+            _ => Arm64Register.INVALID,
+        };
+
+        private static int Index(Arm64Register register) =>
+            register is >= Arm64Register.W0 and <= Arm64Register.W31 ? register - Arm64Register.W0
+            : register is >= Arm64Register.X0 and <= Arm64Register.X31 ? register - Arm64Register.X0
+            : -1;
+
+        private static bool IsWidening(Arm64Mnemonic mnemonic) => mnemonic is Arm64Mnemonic.SMADDL
+            or Arm64Mnemonic.UMADDL or Arm64Mnemonic.SMULL or Arm64Mnemonic.UMULL
+            or Arm64Mnemonic.SMSUBL or Arm64Mnemonic.UMSUBL
+            or Arm64Mnemonic.SMULH or Arm64Mnemonic.UMULH;
+
+        /// <summary>The instructions whose <c>w</c> form really does work in thirty-two bits.</summary>
+        private static bool Truncates(Arm64Mnemonic mnemonic) => mnemonic is Arm64Mnemonic.ADD
+            or Arm64Mnemonic.SUB or Arm64Mnemonic.ADDS or Arm64Mnemonic.SUBS or Arm64Mnemonic.MUL
+            or Arm64Mnemonic.MADD or Arm64Mnemonic.MSUB or Arm64Mnemonic.NEG
+            or Arm64Mnemonic.AND or Arm64Mnemonic.ORR or Arm64Mnemonic.EOR or Arm64Mnemonic.ANDS
+            or Arm64Mnemonic.UBFM or Arm64Mnemonic.SBFM or Arm64Mnemonic.BFM
+            or Arm64Mnemonic.LSLV or Arm64Mnemonic.LSRV or Arm64Mnemonic.ASRV or Arm64Mnemonic.RORV;
+    }
+
     internal static bool TryGetRelationalOpCode(Arm64ConditionCode condition, out OpCode opCode)
     {
         opCode = condition switch

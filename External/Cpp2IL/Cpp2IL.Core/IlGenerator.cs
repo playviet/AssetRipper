@@ -618,11 +618,15 @@ public static partial class IlGenerator
                 if (widenToInt64)
                     instructions.Add(CilOpCodes.Conv_I8);
 
+                //arm64's carry conditions are unsigned questions the lifter states by converting both sides
+                //to uint, and the IL stack carries no unsignedness - the instruction does. See ComparesUnsigned.
+                var unsignedOrder = ordered && AsksUnsigned(instruction);
+
                 switch (instruction.OpCode)
                 {
                     case OpCode.CheckEqual: instructions.Add(CilOpCodes.Ceq); break;
-                    case OpCode.CheckGreater: instructions.Add(CilOpCodes.Cgt); break;
-                    case OpCode.CheckLess: instructions.Add(CilOpCodes.Clt); break;
+                    case OpCode.CheckGreater: instructions.Add(unsignedOrder ? CilOpCodes.Cgt_Un : CilOpCodes.Cgt); break;
+                    case OpCode.CheckLess: instructions.Add(unsignedOrder ? CilOpCodes.Clt_Un : CilOpCodes.Clt); break;
 
                     // a != b  ==  (a == b) == 0
                     case OpCode.CheckNotEqual:
@@ -632,13 +636,13 @@ public static partial class IlGenerator
                         break;
                     // a >= b  ==  !(a < b)
                     case OpCode.CheckGreaterOrEqual:
-                        instructions.Add(CilOpCodes.Clt);
+                        instructions.Add(unsignedOrder ? CilOpCodes.Clt_Un : CilOpCodes.Clt);
                         instructions.Add(CilOpCodes.Ldc_I4_0);
                         instructions.Add(CilOpCodes.Ceq);
                         break;
                     // a <= b  ==  !(a > b)
                     case OpCode.CheckLessOrEqual:
-                        instructions.Add(CilOpCodes.Cgt);
+                        instructions.Add(unsignedOrder ? CilOpCodes.Cgt_Un : CilOpCodes.Cgt);
                         instructions.Add(CilOpCodes.Ldc_I4_0);
                         instructions.Add(CilOpCodes.Ceq);
                         break;
