@@ -587,6 +587,25 @@ public static partial class IlGenerator
         var seen = new HashSet<Block>();
         var pending = new Stack<Block>();
 
+        //A recovered handler is written out last, whatever the walk would have done with it. This used to
+        //happen by itself - the analysis severs the edge into the pad, so nothing reached the handler and the
+        //"never reached" sweep below put it at the end - and relying on that was fragile: as soon as a
+        //handler's blocks were more than the pad itself, one of them could still be reachable, the walk put
+        //it in the middle of the body, and the range came out as `try 240..241, handler 174` and was refused
+        //at the last step. A CIL handler range has to be one contiguous run and it has to be outside its own
+        //try, so saying so here is worth more than arranging for it to be true by accident.
+        var handlers = new HashSet<Block>();
+        var last = new List<Block>();
+
+        if (CurrentContext is { } owner && Analysis.CatchClauses.Of(owner) is { } clauses)
+        {
+            foreach (var block in clauses.SelectMany(clause => clause.Handler))
+            {
+                if (handlers.Add(block))
+                    last.Add(block);
+            }
+        }
+
         pending.Push(graph.EntryBlock);
 
         while (pending.Count > 0)
@@ -596,7 +615,8 @@ public static partial class IlGenerator
             if (!seen.Add(block))
                 continue;
 
-            order.Add(block);
+            if (!handlers.Contains(block))
+                order.Add(block);
 
             //Pushed in reverse so that the first successor is the one taken off next, and so ends up adjacent.
             var successors = SuccessorsInLayoutOrder(block, graph).ToList();
@@ -608,7 +628,14 @@ public static partial class IlGenerator
         //A block the walk never reached is still written out, so that nothing is silently dropped.
         foreach (var block in graph.Blocks)
         {
-            if (seen.Add(block))
+            if (seen.Add(block) && !handlers.Contains(block))
+                order.Add(block);
+        }
+
+        //And the handlers after all of it, in the order the clauses were recovered in.
+        foreach (var block in last)
+        {
+            if (graph.Blocks.Contains(block))
                 order.Add(block);
         }
 

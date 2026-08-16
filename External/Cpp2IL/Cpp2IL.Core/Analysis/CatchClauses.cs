@@ -215,9 +215,13 @@ public static class CatchClauses
         //reached one, in `graph.Blocks` order. Putting the handler at the end of that list, entry first, is
         //therefore the whole of the layout this needs: one contiguous run, last, which is what a CIL handler
         //range has to be.
-        foreach (var block in only.Handler)
+        //Only blocks the graph still has, and each exactly once: re-adding one that was merged away or
+        //detached would put its instructions in the body twice.
+        var moving = only.Handler.Distinct().Where(graph.Blocks.Contains).ToList();
+
+        foreach (var block in moving)
             graph.Blocks.Remove(block);
-        graph.Blocks.AddRange(only.Handler);
+        graph.Blocks.AddRange(moving);
 
         DeclareTheHandlersLocals(method, only.Handler);
         LetGoOfTheUnusedPad(method, graph, [.. only.Handler, .. region, only.Guarded]);
@@ -279,9 +283,17 @@ public static class CatchClauses
     }
 
     /// <summary>Puts a split back, exactly, where it bought nothing.</summary>
+    /// <remarks>
+    /// The tail gives its instructions up as well as handing them over. It is removed from the graph here, so
+    /// keeping them looked harmless - until a later pass put the tail back (a handler's blocks are taken out
+    /// of <c>graph.Blocks</c> and re-added at the end), and then the same ISIL instruction was in two blocks
+    /// that both got emitted. The generator keys a dictionary on the instruction, so that is
+    /// <c>An item with the same key has already been added</c> and the whole body is lost.
+    /// </remarks>
     private static void Unsplit(Block head, Block tail, ISILControlFlowGraph graph)
     {
         head.Instructions.AddRange(tail.Instructions);
+        tail.Instructions.Clear();
         head.Successors.Clear();
         head.Successors.AddRange(tail.Successors);
 
