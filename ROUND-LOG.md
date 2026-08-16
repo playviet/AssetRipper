@@ -247,6 +247,89 @@ need only two things this round did not build: a `try` range wider than one bloc
 
 ---
 
+## Round 4 — 1.11.6 / exports 607 (game) + 608 (corpus) — split at the throw. **KEPT: 2 clauses → 22**
+
+**File and function:** `Cpp2IL.Core/Analysis/CatchClauses.cs` — new `SplitAtTheThrow` and `Unsplit`, called
+from `Run` before recognition. Nothing else changed.
+
+**Why.** `MergeCallBlocks` runs *after* `MetadataResolver` rewrites a raise into a `Throw`, so the throw can
+end up mid-block with the landing pad's own first instructions behind it in the same list — and then nothing
+about the block says where one ends and the other begins. The round-3 census counted **680** throwing blocks
+in that shape against 2 clauses recovered, making it the largest thing the recognition was blind to for a
+reason that has nothing to do with exceptions.
+
+**Why it is safe.** The split is a straight-line cut of a single-entry, single-exit run — the one graph edit
+that cannot change what anything means. And it is **undone wherever it bought nothing**: if the method ends
+up with no clause, every split is put back exactly, so a method that gains no handler is left with the graph
+it had. Only 35 splits survive across the whole game, all inside the 22 methods that gained a clause.
+
+**The case named as must-not-move, before measuring.** `Corpus::Using` is *exactly* this shape — a mid-block
+`Throw` with a landing pad behind it — and it must **not** be recognised, because a `using` compiles to
+`try`/`finally` and its pad is a cleanup pad with no `class_is_assignable_from` dispatch at all. If the split
+were kept there it would perturb a body round 1 had just got right. Checked in `probe2` before the export:
+**byte-identical**, `b16` still `[Throw, CheckNotEqual, ConditionalJump]`. The split was made and undone.
+
+### The census moved as predicted
+
+| | 606 | **607** |
+|---|---|---|
+| **recovered** | **2** | **22** |
+| the throw does not end the block | 680 | **0** — the bucket is gone |
+| no dispatch in the region (correctly refused) | 3033 | 4143 |
+| a dispatch found, handler not closed | 464 | **631** (+167 newly visible) |
+| the throw has no successor (needs the LSDA) | 2372 | 2390 |
+| splits kept | — | 35 |
+
+Most of the 680 turn out to be cleanup pads with no `catch` — `Using`'s shape — and are correctly refused.
+But **167 more real clauses** became visible and now sit in the open-handler pool, which is the next item.
+
+### Numbers
+
+| | 605 | **607 / 608** |
+|---|---|---|
+| oracle: run / same | 79 / 56 | 79 / **56** |
+| oracle: full + WRONG | 14 | **14** |
+| **catch clauses written game-wide** | **2** | **22** |
+| compare2 full | 3255 | **3251** (−4) |
+| compare2 partial / dead | 148 / 108 | **152** / 108 |
+| compare2 commented / notfound | 363 / 38 | **same** |
+| compare2 unmanaged | 317 | **323** (+6) |
+| compare2 indirect | 19 | **22** (+3) |
+| cfscore full / partial / files clean | 609 / 6 / 91 | **same** |
+| allscore | 2121/2326 = 91.2% | **2118**/2326 = 91.1% (−3) |
+| decisions | 1326 / 1382 | **same** |
+| roundtrip whole | 1044 | **same** |
+| gen failures | 0 | **0** |
+
+### Where the cost landed — checked, not asserted
+
+`scratchpad/mdiff.py` diffs marker counts file by file between the two exports. **Five files moved, and
+that is all:**
+
+```
+  -3      3 ->   0   CFramework/AudienceSegmentConfig.cs
+  +3      0 ->   3   CFramework/ThinkingDataTracking.cs
+  +3      0 ->   3   CFramework/FirebaseTracking.cs
+  +3      4 ->   7   CFramework/UserSegmentationManager.cs
+  +3      0 ->   3   CFramework/FacebookTracking.cs
+```
+
+All four that gained markers are on the list of methods that gained a clause —
+`ThinkingDataTracking::SyncUmpConsent`, `FirebaseTracking::ApplyConsent`,
+`FacebookTracking::SyncUmpConsent`, `UserSegmentationManager::TryGetDeviceCountry` — and they are the four
+bodies that went `full` → `partial`. **There is no collateral: every marker and every lost `full` is inside
+a handler that did not exist in the export before.** `AudienceSegmentConfig::OnParse`, the one clause round 2
+already recovered, *lost* three markers because the split gives it a better one.
+
+**Keep, and this is the one place correctness and compilability disagree.** `full` fell by 4 and I followed
+correctness: those four bodies were scoring as whole **only because their handler was missing**, which is
+`il2cpp-a-thrown-body-scores-as-a-whole-one` seen from the other side — a body with nothing in it has
+nothing to mark. Every correctness measure is level (decisions 1326, roundtrip whole 1044, cfscore 609,
+corpus oracle 56 same / 14 wrong, 0 generation failures) while eleven times as many methods now carry the
+handler the program wrote. A marker on a recovered `catch` beats a `catch` that was silently deleted.
+
+---
+
 ## Specified but unbuilt
 
 Written down so the next session starts where this one stopped rather than re-deriving it.
