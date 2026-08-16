@@ -670,3 +670,44 @@ compare2 full 2561, commented 371, unmanaged 323, cfscore 608/7, allscore 2121, 
 roundtrip whole 1044, genfail 0.
 
 Export numbers 630–659 are now all used.
+
+---
+---
+
+# Ranges 1.13.0–1.13.29, exports 660–689
+
+## 1.13.0 / exports 660, 661 — `AsOrNull`: links two and three, landed together
+
+| file | what |
+|---|---|
+| `Cpp2IL.Core/Analysis/BoxedIsAnObject.cs` | new `WidenWhatCarriesIt` — link two |
+| `Cpp2IL.Core/Analysis/TypeTestNarrowing.cs` | **new** — link three; `Run`, `SuccessOf` |
+| `Cpp2IL.Core/Analysis/ExactTypeTestRecovery.cs`, `InlinedTypeTestRecovery.cs` | one call each, where the `isinst` is emitted |
+
+**Link two — the merge.** Retyping the box alone changed nothing the output could show: the phi it feeds still
+said `System.String`, so the copy into it was written as a cast and `(string)(object)7` survived exactly as it
+was. A phi handed a boxed value cannot be a type that value can never have. Bounded to the **copy closure of
+the boxes this pass just retyped**, not stated over every phi that sees an `object`: widening is safe for the
+language and expensive for the recovery — a read through an `object` has no field to resolve against — so it
+is only done where the type that is there is known to be wrong.
+
+**Link three — the test's answer is what the next statement reads.** Both type-test passes put back the
+`isinst` and give its answer a local; neither said what that answer is *for*. The machine keeps the object in
+the same register either way, so `String.ToUpperInvariant` was called on the **object**. Invisible while the
+tested value happened to be typed as the target; fatal the moment link two types it honestly — which is why
+they had to land together.
+
+`TypeTestNarrowing` replaces reads of the tested value with the narrowed one only in a region **entered
+nowhere else**: the success successor, then any block every one of whose predecessors is already in the
+region. That is dominance computed as it is needed rather than out of `DominatorInfo`, which was built before
+the guard remover changed the edges.
+
+| | 658/659 | 660/661 |
+|---|---|---|
+| oracle run / same | 79 / 62 | 79 / **63** |
+| `full` + WRONG | 11 | **10** |
+| `full` + right | 56 | **57** |
+| `AsOrNull` | !InvalidCastException | **notstring — right** |
+| every game scorer | 2561 · 371 · 323 · 608/7 · 90/96 · 2121 · 1326 · 1044 · 0 | **identical** |
+
+`AsOrNull` is the only verdict that moves. **Kept.**

@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using Cpp2IL.Core.ISIL;
 using Cpp2IL.Core.Model.Contexts;
 
@@ -35,6 +36,8 @@ public static class BoxedIsAnObject
         if (Off || method.ControlFlowGraph is not { } graph)
             return;
 
+        var boxed = new HashSet<LocalVariable>();
+
         foreach (var instruction in graph.Instructions)
         {
             if (instruction is not { OpCode: OpCode.Call, Operands: [string named, LocalVariable answer, ..] }
@@ -46,6 +49,61 @@ public static class BoxedIsAnObject
             }
 
             answer.Type = method.AppContext.SystemTypes.SystemObjectType;
+            boxed.Add(answer);
+        }
+
+        WidenWhatCarriesIt(graph, boxed, method.AppContext.SystemTypes.SystemObjectType);
+    }
+
+    /// <summary>
+    /// Widens whatever a boxed value is merged into, which is the other half of the same correction.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Retyping the box alone changes nothing the output can show: the merge it feeds still says
+    /// <c>System.String</c>, so the copy into it is written as a cast and <c>(string)(object)7</c> survives
+    /// exactly as it was. A phi handed a boxed value cannot be a type that value can never have, and
+    /// <c>object</c> is the only answer that is true on every edge.
+    /// </para>
+    /// <para>
+    /// Bounded to the copy closure of the boxes this pass just retyped, rather than stated over every phi
+    /// that sees an <c>object</c>: widening is safe for the language and expensive for the recovery - a read
+    /// through a value typed <c>object</c> has no field to resolve against - so it is only done where the
+    /// type that is there is known to be wrong.
+    /// </para>
+    /// </remarks>
+    private static void WidenWhatCarriesIt(Graphs.ISILControlFlowGraph graph, HashSet<LocalVariable> boxed,
+        TypeAnalysisContext asObject)
+    {
+        if (boxed.Count == 0)
+            return;
+
+        for (var settling = true; settling;)
+        {
+            settling = false;
+
+            foreach (var instruction in graph.Instructions)
+            {
+                if (instruction.OpCode is not (OpCode.Move or OpCode.Phi)
+                    || instruction.Destination is not LocalVariable carried
+                    || boxed.Contains(carried)
+                    || carried.Type is not { IsValueType: false } claimed
+                    || !CannotBeABox(claimed))
+                {
+                    continue;
+                }
+
+                for (var operand = 1; operand < instruction.Operands.Count; operand++)
+                {
+                    if (instruction.Operands[operand] is not LocalVariable source || !boxed.Contains(source))
+                        continue;
+
+                    carried.Type = asObject;
+                    boxed.Add(carried);
+                    settling = true;
+                    break;
+                }
+            }
         }
     }
 
