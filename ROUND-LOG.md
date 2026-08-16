@@ -592,6 +592,80 @@ this loop has produced a plausible-looking zero.
 
 ---
 
+## Round 8 — 1.11.17, 1.11.18 / exports 625–628 — the two bounded limits
+
+Two changes were asked for. **One measured inert and was reverted; the other landed.** Taken in that order
+because the first was the bigger structural change.
+
+### 8a — more than one clause per method. **INERT, REVERTED**
+
+`CatchClauses.Run` was rewritten to keep every clause that does not want a block another has already claimed,
+and `AddCatchClauses` to place N clauses — each with its own try exit, its own `pop`, and a
+`CilExceptionHandler` ending where the next one begins, all boundaries resolved by identity before anything
+moved.
+
+It works, and it buys nothing. **Not one `.cs` file in the export differs** between 1.11.16 and 1.11.17 —
+`diff -rq` over `Assets/Scripts` reports only `.meta` GUID churn — and the census counter *methods with more
+than one clause* **never fired once** in the whole game.
+
+**Why, and this is the finding:** `two clauses want the same blocks` fires **185** times. In il2cpp output a
+method's landing pads **funnel into a shared tail** — `__cxa_end_catch` and the common continuation — so
+`HandlerRegion`, which takes everything the handler entry reaches that the body does not, hands clause A a
+region that *contains* clause B's entry. They are not independent handlers, and the disjointness test
+correctly rejects every second candidate.
+
+**So the one-clause cap was never the binding constraint.** The binding constraint is that the handlers
+overlap, which is the same root as the 466 handlers over their 64-block bound: *the handler's end is
+unknown*. Two open items, one cause. Reverted per "revert what is inert"; recorded so nobody rebuilds it
+before the handler's extent is solved.
+
+*(A caution on the counters: `recovered` briefly read 122 and `wrote catch` 114, against 80/77 at 1.11.13 —
+but most of those are in assemblies AssetRipper never exports as C# at all. `GlobalExceptionHandler`,
+`Dispatcher`, `JNIHelpers` have no file in the export. **The honest number is the `catch` count in the
+exported tree**, and it did not move.)*
+
+### 8b — conditional exits from a `try` and a handler. **KEPT**
+
+`leave` is unconditional, so a two-way exit was refused. It has a spelling, and it is two instructions:
+
+```
+brtrue X            ->    brfalse L
+                          leave   X
+                      L:  ...the handler continues...
+```
+
+On the **try** side both arms leave the region, so it is a `leave` each with the inverted test choosing
+between them. A `switch` still has no `leave` of its own and is still refused. `Recognise` stops refusing
+`a conditional branch leaves the handler` and only counts it.
+
+**Files:** `IlGenerator.Fork.cs` (`AddCatchClauses` — the try-exit switch and the branch sweep),
+`Analysis/CatchClauses.cs` (one refusal becomes a counter).
+
+| | 623 | **628** |
+|---|---|---|
+| **catch clauses visible in the export** | 21 | **27** |
+| **corpus oracle: run / same / whole-and-wrong** | 79 / 56 / 14 | **identical** |
+| cfscore full / partial / clean / markers | 609 / 6 / 91 / 19,4 | **identical** |
+| decisions | 1326 / 1382 | **identical** |
+| roundtrip whole | 1044 | **identical** |
+| notfound / dead | 38 / 108 | **identical** |
+| gen failures | 0 | **0** |
+| **Unity gate** | 12 CS7069 | **12 CS7069 — its floor** |
+| compare2 full | 3244 | 3240 (−4) |
+| commented / unmanaged / indirect | 367 / 350 / 28 | 377 / 365 / 33 |
+
+The gate is the number that matters here: `brfalse`/`leave` pairs are a shape this generator had never
+emitted, and the export still compiles to its floor.
+
+**Where the cost landed — zero collateral, the cleanest round yet.** `mdiff.py` says five files move;
+`catchdiff.sh` says **all five gained a `catch`**: `GoogleDesignConfigSo` 0→1, `SlicedFilledImage` 0→1,
+`AdjustTracking` 1→2, `SaveIO` 4→5, `RemoteConfigManager` 1→3 — exactly the +6. Every one of the 21 new
+markers is inside a handler that was not in the export before.
+
+**Keep.** Every correctness measure identical, six more handlers, and not a single marker outside them.
+
+---
+
 ## Specified but unbuilt
 
 Written down so the next session starts where this one stopped rather than re-deriving it.
@@ -601,13 +675,16 @@ Written down so the next session starts where this one stopped rather than re-de
    selection rules that made it safe are also what make it small — one pad per method, only where the pad
    would otherwise die, and only in methods that have no working clause already. Every one of those is a
    deliberate under-reach, and each is where the next gain is:
-   * **More than one clause per method.** `CatchClauses` refuses at two, so `ExceptionEdges` attaches one.
-     Lifting the emitter's limit is the precondition for lifting the attacher's.
+   * ~~More than one clause per method.~~ **Built in round 8 and it is inert** — the cap was never binding.
+     A method's landing pads funnel into a shared tail, so one clause's handler region contains the next
+     one's entry and they are not independent. **Same root as the 466 over-bound handlers: the handler's end
+     is unknown.** Solve that and both open at once; until then, do not rebuild this.
    * **A `try` of more than one block.** The range is known exactly; the try emitted from it is still the
      single block holding the last protected instruction, because a multi-block try must be contiguous in
      the CIL and that needs `LayoutOrder` partitioned into before-try / try / rest / handler.
-   * **A conditional exit from a `try`.** Refused, because `leave` is unconditional. `brtrue X` where `X` is
-     outside could become `brfalse next; leave X` — untried, and it is a real population.
+   * ~~A conditional exit from a `try`.~~ **Done in round 8**, on both the try and the handler side: invert
+     the test and jump over a `leave`. +6 clauses, no collateral. A `switch` out of a region is still
+     refused and is the remainder.
    * **The 466 handlers still bigger than their 64-block bound.** The LSDA gives the pad's *start*, not the
      handler's end, so this is still structural. Do not widen the bound.
 
