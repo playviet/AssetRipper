@@ -430,18 +430,105 @@ Trimming the re-raise is listed below.
 
 ---
 
+## Round 6 — 1.11.9 to 1.11.13 / exports 612–617 — `.gcc_except_table`. **BUILT, MEASURED, REVERTED**
+
+**What was kept:** `Cpp2IL.Core/Analysis/ExceptionTable.cs` and `Analysis/InstructionAddresses.cs` (new), and
+**one line** in `InstructionSets/NewArmV8InstructionSet.cs`, gated off unless `CATCH_ADDRESSES=1`. They are
+an **instrument**, not a pass — nothing in the recovery reads them. `scratchpad-tools/lsda.py` is the same
+reader in Python, and `probe2 padcheck` is the diagnostic.
+
+**What was reverted:** `Analysis/ExceptionEdges.cs`, the `AfterTheGraphIsBuilt` hook, the one line in
+`MethodAnalysisContext.Analyze`, and every change to `CatchClauses`. Export 617 is **byte-identical to 610**
+on every scorer — 77 clauses, full 3247, commented 367, unmanaged 346, notfound 38, indirect 27, cfscore
+609 / 19 / 4, decisions 1326, roundtrip whole 1044, 0 generation failures — so the revert is exact.
+
+### The tables are there, and they say what they should
+
+`.gcc_except_table` 714 KB, `.eh_frame_hdr` 2.4 MB, `.eh_frame` 10.3 MB — **not stripped**. The reader was
+written in Python first, on purpose, and worked on the first method it was pointed at. For `Corpus::Thrown`:
+
+```
+try [7231CC, 723214)  ->  pad 723214  action 3   catch
+```
+
+and `objdump` at those addresses shows the range ending exactly after the raise, the pad being the
+`cmp w1, #1` selector test, and `bl __cxa_begin_catch@plt` four instructions later — which independently
+confirms the `D5E510` this fork had already identified structurally. **The LSDA call-site table IS the `try`
+range**, as predicted.
+
+Game-wide: 297,836 functions have an FDE, **9,634 have an LSDA, 8,632 have at least one catch call site**,
+81,436 catch call sites in all.
+
+### The finding that matters, and it is not what I went looking for
+
+`CFramework.SaveIO::Load` is the shape the whole exercise was aimed at — 22 distinct catch pads, laid as
+twenty four-byte stubs *after* the body, with no edge to any of them. Pointing the reader at it:
+
+```
+distinct catch pads=22   in RAW lift=22   present after passes=2   start a block=0
+```
+
+**The handler is not missing from the binary and it is not missing from the lift. It is deleted in the first
+few instructions of the analysis.** A landing pad is entered by the unwinder and by nothing else, so nothing
+branches to it, and `StackAnalyzer.Analyze` opens with `graph.RemoveUnreachableBlocks()` — whose comment
+reads *"Without this indirect jumps (in try catch i think) cause some weird stuff"*. It is right about where
+the weird stuff comes from and wrong about what to do with it: what it deletes is every `catch` body in the
+program. **The 77 clauses recovered in rounds 4 and 5 are exactly the ones whose pad clang happened to lay
+where a fall-through edge reached it anyway.**
+
+### What was built on that, and what it measured
+
+`ExceptionEdges`, at the earliest hook there is — the moment the graph exists, before stack analysis: split
+a block at each pad the table names, and add the edge the unwinder represents. It **works as a mechanism**:
+`SaveIO::Load` goes from 2 surviving pads to **18 of 22, all beginning a block**.
+
+And it costs more than it buys. Four rounds of it, each fixing a real bug found by measurement:
+
+| | clauses | what was wrong |
+|---|---|---|
+| 1.11.9 — table lookup, no edges | 77 | inert: the pads are gone by then, so the table names blocks that do not exist |
+| 1.11.10 — edges, table pad **overrides** the fall-through | **9** | where ranges nest, the tightest row covering a throw names an **outer** clause's pad, and following it walks away from the handler that was right there |
+| 1.11.11 — try each candidate pad in turn; detach pads nothing came of | 11 | `Body` followed the attached edge, so the handler looked like ordinary code the method reaches anyway |
+| 1.11.12 — `Body` skips unwind edges; the predecessor check allows them | **30** | still less than half of 77 |
+
+At 1.11.12, against 1.11.8: clauses **77 → 30**, `full` 3247 → **3244**, `commented` 367 → **434**,
+`unmanaged` 346 → **381**, `notfound` 38 → **47**, and the 96 reference files — which contain **no `catch`
+at all**, so every marker there is pure loss — went `unmanaged` 19 → 23 and `commented` 4 → 6. The corpus
+oracle went 56 → **55** the same, `TotalSides` flipping from `partial right` to `partial WRONG`.
+
+**Worse on every axis, so it goes.** The cause of the residual 77 → 30 is legible in the census and I am
+recording it rather than guessing at it: attaching pads globally adds blocks and joins to *every* method
+with a catch site, and the recognition's remaining refusals move accordingly — *no dispatch in the region*
+4143 → 5587, *region not pad-sized* 1190 → 3119. A method with ten pads gets all ten attached when one
+matters. The next step is not another knob on the bound; it is to attach **selectively**, and nothing yet
+says which pad to pick before the analysis that needs it has run.
+
+### What must not move, named before measuring, and what happened
+
+`Corpus::Thrown` had to stay recovered — it did, at every version. `Corpus::Using` I named as
+**byte-identical**, and that was the wrong control: attaching pads legitimately splits its block at the pad,
+and the split is an improvement (`115 CheckNotEqual v92, v82 @ X1_v3, 1` reads a real register where it had
+read a bogus constant). The control that was actually load-bearing — *does `Using` still compute the right
+answer* — held at every version. Naming the observable rather than the byte is the lesson.
+
+
+---
+
 ## Specified but unbuilt
 
 Written down so the next session starts where this one stopped rather than re-deriving it.
 
-1. **The `try` range needs `.gcc_except_table`.** Everything this pass guesses at, the binary states. The
-   LSDA's call-site table maps a PC range to a landing pad and an action record; that *is* the `try`, exactly,
-   including every call inside it that can throw. Reaching it means walking `.eh_frame_hdr` to the FDE for the
-   function, then its LSDA pointer, then decoding the call-site and action tables. It closes the 2372 blocks
-   whose pad clang laid elsewhere, and it turns the 464 open handlers from a guess into a fact. Note the
-   LSDA's *type* filters are useless here — il2cpp throws one C++ type, `Il2CppExceptionWrapper`, and does the
-   managed dispatch itself in the pad — so the caught type still has to come from the `Il2CppClass<T>`
-   operand, which this pass already reads correctly.
+1. **`.gcc_except_table` is read and the reader is right** — see round 6. What is *not* solved is making the
+   handler survive to be recognised without perturbing every other method. Three things the next attempt
+   should have that this one did not:
+   * **Attach selectively.** Attaching all of a method's pads to recover one is what cost 47 clauses.
+     Something has to choose, and nothing before the analysis knows which.
+   * **A `try` anchored on the protected range, not on a `throw`.** `SaveIO::Load`'s clauses protect ordinary
+     *calls*; there is no `Throw` in the try at all, and a recogniser that starts from a throwing block can
+     never see them. This is the bigger half and it needs the try block's exit written as `leave`.
+   * **Follow a copy in `DefinitionIn`.** With a pad attached, the class pointer feeding the dispatch gains a
+     second definition and the single-definition requirement refuses it. Untested, but it is what the
+     *no dispatch in the region* count going 4143 → 5587 looks like.
 
 2. ~~A handler that is not closed (464).~~ **Done in round 5** — and the diagnosis was wrong: the handler
    set was closed by construction, and the real problem was that a `catch` which does not return reaches the

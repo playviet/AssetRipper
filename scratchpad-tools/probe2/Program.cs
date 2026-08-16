@@ -1406,6 +1406,68 @@ if (args[3] == "hfa")
 	return;
 }
 
+
+// padcheck <type> [method] - why the exception table does or does not name a landing pad for each throw.
+if (args[3] == "padcheck")
+{
+	foreach (TypeAnalysisContext type in app.AllTypes)
+	{
+		if (!type.Name.Contains(args[4])) continue;
+		foreach (MethodAnalysisContext m in type.Methods)
+		{
+			if (args.Length > 5 && !m.Name.Contains(args[5])) continue;
+			if (m.UnderlyingPointer == 0) continue;
+			try { m.Analyze(); } catch (Exception e) { Console.WriteLine($"{m.Name} threw {e.Message}"); continue; }
+			if (m.ControlFlowGraph is null) continue;
+
+			var sites = Cpp2IL.Core.Analysis.ExceptionTable.For(app, m.UnderlyingPointer);
+			var throwing = m.ControlFlowGraph.Blocks
+				.Where(b => b.Instructions.Any(i => i.OpCode == OpCode.Throw)).ToList();
+
+			if (throwing.Count == 0 && sites.Count == 0) continue;
+
+			Console.WriteLine($"===== {type.Name}::{m.Name} @ {m.UnderlyingPointer:X}  sites={sites.Count} throwingBlocks={throwing.Count}");
+
+			var addressed = new HashSet<ulong>();
+			foreach (Block bb in m.ControlFlowGraph.Blocks)
+				foreach (Instruction ii in bb.Instructions)
+					if (Cpp2IL.Core.Analysis.InstructionAddresses.Of(m, ii) is var a && a != 0) addressed.Add(a);
+			var firsts = new HashSet<ulong>();
+			foreach (Block bb in m.ControlFlowGraph.Blocks)
+				if (Cpp2IL.Core.Analysis.InstructionAddresses.Of(m, bb) is var a2 && a2 != 0) firsts.Add(a2);
+
+			var pads = sites.Where(s => s.Pad != 0 && s.Action != 0).Select(s => s.Pad).Distinct().ToList();
+
+			// The same question of the RAW lift, before a single pass has run: if the addresses are there and
+			// then gone, a pass removed them and recording early would work; if they were never there, the
+			// disassembler is the blocker and nothing downstream can help.
+			var raw = new HashSet<ulong>();
+			try
+			{
+				var lifted = app.InstructionSet.GetIsilFromMethod(m);
+				foreach (Instruction ii in lifted)
+					if (Cpp2IL.Core.Analysis.InstructionAddresses.Of(m, ii) is var a3 && a3 != 0) raw.Add(a3);
+			}
+			catch { }
+
+			Console.WriteLine($"    distinct catch pads={pads.Count}  in RAW lift={pads.Count(x => raw.Contains(x))}  present after passes={pads.Count(x => addressed.Contains(x))}  start a block={pads.Count(x => firsts.Contains(x))}");
+			foreach (var site in sites.Where(s => s.Pad != 0 && s.Action != 0).Take(4))
+				Console.WriteLine($"    site [{site.Start:X},{site.End:X}) pad {site.Pad:X} action {site.Action} padInIsil={addressed.Contains(site.Pad)}");
+
+			foreach (Block b in throwing)
+			{
+				var t = b.Instructions.LastOrDefault(i => i.OpCode == OpCode.Throw);
+				ulong at = t == null ? 0 : Cpp2IL.Core.Analysis.InstructionAddresses.Of(m, t);
+				var covering = sites.Where(s => s.Pad != 0 && s.Action != 0 && at >= s.Start && at < s.End).ToList();
+				var padBlock = covering.Count == 0 ? null : m.ControlFlowGraph.Blocks
+					.FirstOrDefault(x => Cpp2IL.Core.Analysis.InstructionAddresses.Of(m, x) == covering[0].Pad);
+				Console.WriteLine($"    b{b.ID} throwIdx={t?.Index} addr={at:X} succs={b.Successors.Count} covering={covering.Count} padBlock={(padBlock == null ? "none" : "b" + padBlock.ID)}");
+			}
+		}
+	}
+	return;
+}
+
 // landing [assemblySubstring] - how much of the game is a C++ landing pad, i.e. a managed catch clause.
 //
 // il2cpp compiles `catch (T)` into: raise, then a landing pad that asks

@@ -109,6 +109,7 @@ public partial class NewArmV8InstructionSet : Cpp2IlInstructionSet
         }
 
         adrpOffsets.Clear();
+        Cpp2IL.Core.Analysis.InstructionAddresses.Record(context, instructions, addresses);
         return instructions;
     }
 
