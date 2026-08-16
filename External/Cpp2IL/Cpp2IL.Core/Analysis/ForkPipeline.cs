@@ -143,6 +143,13 @@ public static class ForkPipeline
     public static void BeforeUnusedLocalsAreDropped(MethodAnalysisContext method)
     {
         Trace(method, "BeforeUnusedLocalsAreDropped");
+
+        // The first static field is at distance nought, so there is no addition for FieldAddressRecovery to
+        // read and a type's static storage goes straight into `Interlocked.CompareExchange(ref SomeEvent,…)`
+        // as a bare local - which the generator then writes as a throwaway, so every event accessor swapped
+        // nothing. Here rather than in the last hook: by then the callee's signature has retyped the local
+        // `System.Object&` and it no longer says whose storage it is.
+        StaticStorageIsTheFirstField.Run(method);
         // An argument kept somewhere that survives a call is read back once per branch, and a local written in
         // several places is one the propagation in SSA leaves alone. First, so that everything below sees the
         // argument itself where the compiled code was passing a copy of it.

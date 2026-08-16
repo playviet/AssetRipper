@@ -711,3 +711,53 @@ the guard remover changed the edges.
 | every game scorer | 2561 · 371 · 323 · 608/7 · 90/96 · 2121 · 1326 · 1044 · 0 | **identical** |
 
 `AsOrNull` is the only verdict that moves. **Kept.**
+
+## 1.13.1 / exports 662, 663 — every event accessor was swapping a throwaway
+
+`Cpp2IL.Core/Analysis/StaticStorageIsTheFirstField.cs` (**new**), one call in `BeforeUnusedLocalsAreDropped`.
+
+`FieldAddressRecovery` already reads `Add v121, [klass + 0xB8], 8` as `&Type.someStatic` and writes
+`ldsflda`, and its own remark names the caller it exists for: *"which is where
+`Interlocked.CompareExchange(ref SomeEvent, ...)` gets the place it swaps. Every event accessor in the game is
+that call."* **The first static field is at distance nought, so there is no addition at all** and that pass
+never sees it. The storage local went straight into the call, the callee's signature retyped it
+`System.Object&`, and the generator wrote:
+
+```csharp
+object location = default(object);                                    // this is `ref Corpus.m_Adjust`
+object obj4 = Interlocked.CompareExchange(ref location, value2, obj);
+```
+
+The whole compare-exchange loop is recovered perfectly around it — the combine, the type test, the retry —
+and the event is never written. Runs in `BeforeUnusedLocalsAreDropped`, found by `PIPETRACE`: at the last
+hook the local has already been retyped `System.Object&` from the callee's signature and no longer says whose
+storage it is.
+
+**The observable, since no scorer can see this:**
+
+| | 661 | 663 |
+|---|---|---|
+| `CompareExchange(ref location …)` — a throwaway | **10** | **0** |
+| `CompareExchange(ref …Unsafe.As<…>(ref TheField) …)` | 50 | **60** |
+| `Corpus::EventRoundTrip` | !NullReferenceException | **105** (original 1105) |
+| oracle · every game scorer | 63 same · 2561 · 371 · 323 · 608/7 · 2121 · 1326 · 1044 · 0 | **identical** |
+
+Ten event accessors in `Assembly-CSharp` were adding and removing handlers from a local nobody reads. **Kept**
+— the corpus verdict does not move because a second, independent defect in `EventRoundTrip` remains, below.
+
+### What is left in `EventRoundTrip`, and it is a rendering asymmetry
+
+The ISIL is right: both `add_Adjust` and `remove_Adjust` are handed `<>c.<>9__86_0`, and the `+=` path stores
+the new delegate into that cache before using it. But ILSpy folds the cache pattern back into a lambda only
+where it sees the whole shape:
+
+```csharp
+Adjust += (int v) => v + 5;                    // folded - the recompiled assembly makes its OWN cache field
+Adjust -= _003C_003Ec._003C_003E9__86_0;       // not folded - reads the ORIGINAL field, which is now null
+```
+
+So `Delegate.Remove(list, null)` removes nothing, `Adjust` stays non-null and the method answers 105 instead
+of 1105. It is a real defect in the exported source, not a harness artefact: the two sites reference two
+different fields once recompiled. The fix is to make the two sites render **the same way** — either fold both
+or fold neither — and the checkable condition is "this cache field is also read in this method without the
+pattern around it". Left specified; `CachedDelegateRecovery` is the owner.
