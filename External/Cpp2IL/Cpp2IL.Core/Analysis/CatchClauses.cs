@@ -155,70 +155,31 @@ public static class CatchClauses
         //refuse both, on the grounds that they would have to agree about which blocks belong to which - and
         //now they do not have to: dominance makes their extents disjoint or nested, so the first is safe to
         //take on its own. Emitting both is a separate question and was measured to buy nothing.
-        //Every clause whose blocks no other has already claimed. This was capped at one for as long as a
-        //handler had no known end: two clauses would have had to agree about which blocks belong to which,
-        //and they overlapped 185 times because il2cpp funnels a method's pads into a shared tail. Dominance
-        //ended that - extents of distinct entries nest or do not meet - so the cap is no longer buying
-        //anything and the disjointness it was standing in for can be asked for directly.
         if (clauses.Count > 1)
         {
             Counted("more than one clause");
-
-            var kept = new List<CatchClause>();
-            var claimed = new HashSet<Block>();
-
-            foreach (var clause in clauses)
-            {
-                if (kept.Any(other => other.Guarded == clause.Guarded)
-                    || claimed.Contains(clause.Guarded)
-                    || clause.Handler.Any(claimed.Contains))
-                {
-                    Counted("two clauses want the same blocks");
-                    continue;
-                }
-
-                kept.Add(clause);
-
-                foreach (var block in clause.Handler)
-                    claimed.Add(block);
-            }
-
-            clauses = kept;
+            clauses.RemoveRange(1, clauses.Count - 1);
         }
 
-        if (clauses.Count == 0)
+        if (clauses.Count != 1)
         {
-            for (var i = splits.Count - 1; i >= 0; i--)
-                Unsplit(splits[i].Head, splits[i].Tail, graph);
-
             LetGoOfTheUnusedPad(method, graph, []);
             return;
         }
 
-        Counted("recovered", clauses.Count);
+        Counted("recovered");
 
-        var regions = clauses.ToDictionary(c => c, c => Region(c.Guarded, c.Pad, graph));
+        var only = clauses[0];
+        var region = Region(only.Guarded, only.Pad, graph);
 
-        //Everything the clauses touch. A split inside any of it is what the recognition was looking through
-        //and stays; every other split bought nothing and goes back.
-        var touched = new HashSet<Block>();
-
-        foreach (var clause in clauses)
-        {
-            touched.Add(clause.Guarded);
-
-            foreach (var block in clause.Handler)
-                touched.Add(block);
-
-            foreach (var block in regions[clause])
-                touched.Add(block);
-        }
-
+        //Every other split bought nothing here, so it goes back - except one inside the clause's own blocks,
+        //which is where the recognition was looking.
         for (var i = splits.Count - 1; i >= 0; i--)
         {
             var (head, tail) = splits[i];
 
-            if (touched.Contains(head) || touched.Contains(tail))
+            if (head == only.Guarded || region.Contains(tail) || only.Handler.Contains(tail)
+                || region.Contains(head) || only.Handler.Contains(head))
                 continue;
 
             Unsplit(head, tail, graph);
@@ -226,59 +187,44 @@ public static class CatchClauses
 
         Counted("split at a mid-block throw", splits.Count);
 
-        //Everything a pad region holds that no handler does is C++ plumbing: the selector test, the
+        //Everything the pad region holds that the handler does not is C++ plumbing: the selector test, the
         //begin/end-catch pair, the re-raise. It has no managed meaning and would export as calls to raw
-        //addresses. The union of the handlers, because one clause's plumbing can be another's handler.
-        var keep = new HashSet<Block>(clauses.SelectMany(c => c.Handler));
+        //addresses.
+        var keep = new HashSet<Block>(only.Handler);
+        var body = Body(only.Guarded, graph);
 
-        foreach (var clause in clauses)
+        foreach (var block in region)
         {
-            var body = Body(clause.Guarded, graph);
+            //Never a block the method still reaches without the throw: the pad can fall back into ordinary
+            //code, and deleting that would delete a live path.
+            if (keep.Contains(block) || body.Contains(block))
+                continue;
 
-            foreach (var block in regions[clause])
-            {
-                //Never a block the method still reaches without the throw: the pad can fall back into
-                //ordinary code, and deleting that would delete a live path.
-                if (keep.Contains(block) || body.Contains(block) || block == clause.Guarded)
-                    continue;
-
-                Detach(block, graph);
-            }
+            Detach(block, graph);
         }
 
         //A throw takes no ordinary edge - see SsaForm.Fork.NeverReachesItsSuccessors, which already refuses
         //to write phi copies on this one. Now that the pad it led to is a handler, the edge itself can go.
-        foreach (var clause in clauses)
-        {
-            foreach (var successor in clause.Guarded.Successors.ToList())
-                successor.Predecessors.Remove(clause.Guarded);
+        foreach (var successor in only.Guarded.Successors.ToList())
+            successor.Predecessors.Remove(only.Guarded);
+        only.Guarded.Successors.Clear();
 
-            clause.Guarded.Successors.Clear();
-            DropThePlumbing(clause.Handler, graph);
-        }
+        DropThePlumbing(only.Handler, graph);
 
-        //LayoutOrder writes a recovered handler out last, in this order, so each comes out as its own
-        //contiguous run and the runs are consecutive - which is what a CIL handler range has to be. Only
-        //blocks the graph still has and each exactly once: re-adding one that was merged away or detached
-        //would put its instructions in the body twice, and the generator keys a dictionary on them.
-        foreach (var clause in clauses)
-        {
-            var moving = clause.Handler.Distinct().Where(graph.Blocks.Contains).ToList();
-            clause.Handler.Clear();
-            clause.Handler.AddRange(moving);
+        //The handler is now reachable from nothing, and LayoutOrder writes an unreached block out after every
+        //reached one, in `graph.Blocks` order. Putting the handler at the end of that list, entry first, is
+        //therefore the whole of the layout this needs: one contiguous run, last, which is what a CIL handler
+        //range has to be.
+        //Only blocks the graph still has, and each exactly once: re-adding one that was merged away or
+        //detached would put its instructions in the body twice.
+        var moving = only.Handler.Distinct().Where(graph.Blocks.Contains).ToList();
 
-            DeclareTheHandlersLocals(method, clause.Handler);
-        }
+        foreach (var block in moving)
+            graph.Blocks.Remove(block);
+        graph.Blocks.AddRange(moving);
 
-        clauses.RemoveAll(c => c.Handler.Count == 0);
-
-        if (clauses.Count == 0)
-        {
-            LetGoOfTheUnusedPad(method, graph, touched);
-            return;
-        }
-
-        LetGoOfTheUnusedPad(method, graph, touched);
+        DeclareTheHandlersLocals(method, only.Handler);
+        LetGoOfTheUnusedPad(method, graph, [.. only.Handler, .. region, only.Guarded]);
 
         Recovered.AddOrUpdate(method, clauses);
     }

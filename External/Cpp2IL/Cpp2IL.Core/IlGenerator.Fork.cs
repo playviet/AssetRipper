@@ -2392,75 +2392,41 @@ public static partial class IlGenerator
     /// guessed offset.
     /// </para>
     /// </remarks>
-    /// <summary>
-    /// Writes the <c>catch</c> clauses <see cref="Analysis.CatchClauses"/> recovered as real CIL exception
-    /// handlers, so that their bodies are reachable and the decompiler writes them out.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// The layout is already true when this runs: <see cref="LayoutOrder"/> puts every recovered handler last,
-    /// in clause order, so each is one contiguous run and the runs are consecutive. A clause's <c>try</c> is
-    /// the guarded block's own run, which need not be adjacent to its handler.
-    /// </para>
-    /// <para>
-    /// Three things CIL asks for that the ISIL does not know about. A handler is entered with the exception on
-    /// the stack, so each opens with a <c>pop</c> - none of these names it, because a C++ landing pad reads it
-    /// out of the runtime rather than off the stack. Control may not <b>fall</b> into a handler. And a
-    /// protected region may not be fallen out of, returned out of or branched out of: <c>leave</c> is the only
-    /// way, so a <c>ret</c> becomes a store to one local and a <c>leave</c> to the one epilogue, a <c>br</c>
-    /// becomes a <c>leave</c>, and a two-way exit becomes an inverted test jumping over one.
-    /// </para>
-    /// <para>
-    /// Every boundary is looked up by identity, and if any one clause cannot be placed the method keeps none -
-    /// a half-written set of ranges is worse than no ranges at all.
-    /// </para>
-    /// </remarks>
     private static void AddCatchClauses(MethodAnalysisContext context, MethodDefinition definition,
         ModuleDefinition module, ReferenceImporter importer,
         Dictionary<Instruction, List<CilInstruction>> instructionMap)
     {
-        if (Analysis.CatchClauses.Of(context) is not { Count: > 0 } clauses)
+        if (Analysis.CatchClauses.Of(context) is not [{ } clause])
             return;
 
         var body = definition.CilMethodBody!;
         var instructions = body.Instructions;
-        var placed = new List<Placement>();
 
-        foreach (var clause in clauses)
+        var (guardedFirst, guardedLast) = EmittedRange(clause.Guarded, instructionMap);
+        var (handlerFirst, _) = EmittedRange(clause.Handler[0], instructionMap);
+
+        if (guardedFirst is null || guardedLast is null || handlerFirst is null)
         {
-            var (guardedFirst, guardedLast) = EmittedRange(clause.Guarded, instructionMap);
-            var (handlerFirst, _) = EmittedRange(clause.Handler[0], instructionMap);
-
-            if (guardedFirst is null || guardedLast is null || handlerFirst is null)
-            {
-                Refused(context, "a clause's own blocks emitted nothing");
-                return;
-            }
-
-            if (clause.Caught.ToTypeSignature(module).ToTypeDefOrRef() is not { } caught)
-            {
-                Refused(context, $"no type reference for {clause.Caught.FullName}");
-                return;
-            }
-
-            placed.Add(new Placement(clause, guardedFirst, guardedLast, handlerFirst, caught));
+            Refused(context, "the clause's own blocks emitted nothing");
+            return;
         }
 
-        //In the order the handlers were laid out, which is the order their ranges have to be built in.
-        placed.Sort((a, b) => At(instructions, a.HandlerFirst).CompareTo(At(instructions, b.HandlerFirst)));
+        var tryStart = At(instructions, guardedFirst);
+        var tryLast = At(instructions, guardedLast);
+        var handlerStart = At(instructions, handlerFirst);
 
-        var firstHandler = At(instructions, placed[0].HandlerFirst);
-
-        foreach (var placement in placed)
+        //The handler may begin at the instruction directly after the try - that is the ordinary shape, and
+        //demanding a gap refused every clause the analysis recovered.
+        if (tryStart < 0 || tryLast < tryStart || handlerStart <= tryLast)
         {
-            var tryStart = At(instructions, placement.GuardedFirst);
-            var tryLast = At(instructions, placement.GuardedLast);
+            Refused(context, $"the ranges do not hold: try {tryStart}..{tryLast}, handler {handlerStart}");
+            return;
+        }
 
-            if (tryStart < 0 || tryLast < tryStart || tryLast >= firstHandler)
-            {
-                Refused(context, $"the ranges do not hold: try {tryStart}..{tryLast}, first handler {firstHandler}");
-                return;
-            }
+        if (clause.Caught.ToTypeSignature(module).ToTypeDefOrRef() is not { } caught)
+        {
+            Refused(context, $"no type reference for {clause.Caught.FullName}");
+            return;
         }
 
         var epilogue = new CilInstruction(CilOpCodes.Nop);
@@ -2477,96 +2443,97 @@ public static partial class IlGenerator
             body.LocalVariables.Add(answer);
         }
 
-        //How each try is left.
-        foreach (var placement in placed)
+        //How the try is left. A protected region may not be fallen out of, returned out of, or branched out
+        //of - `leave` is the only way out, and it is what unwinds the region on the way. Where the try ends
+        //in a throw there is nothing to do, which is every clause found by following a throw; where the
+        //table named the range instead, the try ends in whatever the protected code ended in.
+        switch (instructions[tryLast].OpCode.Code)
         {
-            var tryLast = At(instructions, placement.GuardedLast);
-            var last = instructions[tryLast];
+            case CilCode.Throw or CilCode.Rethrow:
+                break;
 
-            switch (last.OpCode.Code)
-            {
-                case CilCode.Throw or CilCode.Rethrow:
-                    placement.TryLast = last;
-                    break;
+            case CilCode.Ret:
+                instructions[tryLast].OpCode = CilOpCodes.Leave;
+                instructions[tryLast].Operand = epilogueLabel;
 
-                case CilCode.Ret:
-                    last.OpCode = CilOpCodes.Leave;
-                    last.Operand = epilogueLabel;
+                if (answer != null)
+                {
+                    instructions.Insert(tryLast, new CilInstruction(CilOpCodes.Stloc, answer));
+                    tryLast++;
+                }
 
-                    if (answer != null)
-                        instructions.Insert(tryLast, new CilInstruction(CilOpCodes.Stloc, answer));
+                break;
 
-                    placement.TryLast = last;
-                    break;
+            case CilCode.Br or CilCode.Br_S:
+                instructions[tryLast].OpCode = CilOpCodes.Leave;
+                break;
 
-                case CilCode.Br or CilCode.Br_S:
-                    last.OpCode = CilOpCodes.Leave;
-                    placement.TryLast = last;
-                    break;
-
-                //Both arms leave, so it is a `leave` each and the inverted test choosing between them:
-                //
-                //    brtrue X            ->    brfalse L
-                //                              leave   X
-                //                          L:  leave   N     (where it used to fall)
-                case CilCode.Brtrue or CilCode.Brtrue_S or CilCode.Brfalse or CilCode.Brfalse_S:
-                    if (last.Operand is not CilInstructionLabel { Instruction: { } named }
-                        || tryLast + 1 >= At(instructions, placed[0].HandlerFirst))
-                    {
-                        Refused(context, "the try is left conditionally and the arms cannot be told apart");
-                        return;
-                    }
-
-                    var otherwise = new CilInstruction(CilOpCodes.Leave, new CilInstructionLabel(instructions[tryLast + 1]));
-                    instructions.Insert(tryLast + 1, new CilInstruction(CilOpCodes.Leave, new CilInstructionLabel(named)));
-                    instructions.Insert(tryLast + 2, otherwise);
-
-                    last.OpCode = last.OpCode.Code is CilCode.Brtrue or CilCode.Brtrue_S
-                        ? CilOpCodes.Brfalse
-                        : CilOpCodes.Brtrue;
-                    last.Operand = new CilInstructionLabel(otherwise);
-
-                    placement.TryLast = otherwise;
-                    break;
-
-                case CilCode.Switch:
-                    Refused(context, "the try is left by a switch, which has no leave of its own");
+            //A `leave` is unconditional, and a two-way exit needs two of them. The test is inverted so that
+            //it chooses between them rather than leaving directly:
+            //
+            //    brtrue X            ->    brfalse L        (the arm that was the fall-through)
+            //                              leave   X        (the arm the test named)
+            //                          L:  leave   N        (where it used to fall)
+            //
+            //which says exactly what the two-way branch said and leaves the region on both arms.
+            case CilCode.Brtrue or CilCode.Brtrue_S or CilCode.Brfalse or CilCode.Brfalse_S:
+                if (instructions[tryLast].Operand is not CilInstructionLabel { Instruction: { } named }
+                    || tryLast + 1 >= handlerStart)
+                {
+                    Refused(context, "the try is left conditionally and the arms cannot be told apart");
                     return;
+                }
 
-                default:
-                    //It falls out. `leave` to where it was going to fall says the same thing and is legal.
-                    if (tryLast + 1 >= At(instructions, placed[0].HandlerFirst))
-                    {
-                        Refused(context, "the try would fall straight into a handler");
-                        return;
-                    }
+                var otherwise = new CilInstruction(CilOpCodes.Leave, new CilInstructionLabel(instructions[tryLast + 1]));
+                instructions.Insert(tryLast + 1, new CilInstruction(CilOpCodes.Leave, new CilInstructionLabel(named)));
+                instructions.Insert(tryLast + 2, otherwise);
 
-                    var fallout = new CilInstruction(CilOpCodes.Leave, new CilInstructionLabel(instructions[tryLast + 1]));
-                    instructions.Insert(tryLast + 1, fallout);
-                    placement.TryLast = fallout;
-                    break;
-            }
+                instructions[tryLast].OpCode = instructions[tryLast].OpCode.Code is CilCode.Brtrue or CilCode.Brtrue_S
+                    ? CilOpCodes.Brfalse
+                    : CilOpCodes.Brtrue;
+                instructions[tryLast].Operand = new CilInstructionLabel(otherwise);
+
+                tryLast += 2;
+                break;
+
+            case CilCode.Switch:
+                Refused(context, "the try is left by a switch, which has no leave of its own");
+                return;
+
+            default:
+                //It falls out. `leave` to where it was going to fall says the same thing and is legal.
+                if (tryLast + 1 >= handlerStart)
+                {
+                    Refused(context, "the try would fall straight into its own handler");
+                    return;
+                }
+
+                instructions.Insert(tryLast + 1, new CilInstruction(CilOpCodes.Leave, new CilInstructionLabel(instructions[tryLast + 1])));
+                tryLast++;
+                break;
         }
 
-        foreach (var placement in placed)
+        handlerStart = At(instructions, handlerFirst);
+
+        if (handlerStart <= tryLast)
         {
-            var pop = new CilInstruction(CilOpCodes.Pop);
-            instructions.Insert(At(instructions, placement.HandlerFirst), pop);
-            placement.Pop = pop;
+            Refused(context, "leaving the try moved the handler inside it");
+            return;
         }
 
-        instructions.Add(epilogue);
+        //Nothing may fall into a handler. Where the run before it does, the branch to the epilogue says what
+        //running off the end of the body already said.
+        if (instructions[handlerStart - 1].OpCode.FlowControl
+            is not (CilFlowControl.Return or CilFlowControl.Throw or CilFlowControl.Branch))
+        {
+            instructions.Insert(handlerStart, new CilInstruction(CilOpCodes.Br, epilogueLabel));
+            handlerStart++;
+        }
 
-        if (answer != null)
-            instructions.Add(CilOpCodes.Ldloc, answer);
+        instructions.Insert(handlerStart, new CilInstruction(CilOpCodes.Pop));
 
-        instructions.Add(CilOpCodes.Ret);
-
-        var territory = At(instructions, placed[0].Pop!);
-        var beyond = At(instructions, epilogue);
-
-        //Backwards, so the insertions do not move the indices still to be visited.
-        for (var i = beyond - 1; i >= territory; i--)
+        //Backwards, so that the insertions do not move the indices still to be visited.
+        for (var i = instructions.Count - 1; i >= handlerStart; i--)
         {
             if (instructions[i].OpCode.Code != CilCode.Ret)
                 continue;
@@ -2578,27 +2545,19 @@ public static partial class IlGenerator
                 instructions.Insert(i, new CilInstruction(CilOpCodes.Stloc, answer));
         }
 
-        //Nothing may fall into a handler. Backwards again, so an insertion before one cannot move another
-        //that has already been settled.
-        for (var i = placed.Count - 1; i >= 0; i--)
-        {
-            var at = At(instructions, placed[i].Pop!);
+        var handlerEnd = instructions.Count;
+        instructions.Add(epilogue);
 
-            if (at <= 0 || instructions[at - 1].OpCode.FlowControl
-                is CilFlowControl.Return or CilFlowControl.Throw or CilFlowControl.Branch)
-                continue;
+        if (answer != null)
+            instructions.Add(CilOpCodes.Ldloc, answer);
 
-            instructions.Insert(at, new CilInstruction(CilOpCodes.Br, epilogueLabel));
-        }
+        instructions.Add(CilOpCodes.Ret);
 
         //A handler that does not return runs back into the method, and a plain branch may not leave a
-        //protected region. Only branches out of the handlers' own territory: one inside is an ordinary jump,
-        //and the two are told apart by position, which is exact because each handler is a contiguous run and
-        //the runs are consecutive.
-        territory = At(instructions, placed[0].Pop!);
-        beyond = At(instructions, epilogue);
-
-        for (var i = territory; i < beyond; i++)
+        //protected region - `leave` is how CIL says the same thing, and it is what unwinds the handler on the
+        //way out. Only branches to somewhere before the handler: one inside it is an ordinary jump, and the
+        //two are told apart by position, which is exact because the handler is one contiguous run.
+        for (var i = handlerStart; i < handlerEnd; i++)
         {
             var conditional = instructions[i].OpCode.Code is CilCode.Brtrue or CilCode.Brtrue_S
                 or CilCode.Brfalse or CilCode.Brfalse_S;
@@ -2611,7 +2570,7 @@ public static partial class IlGenerator
 
             var to = At(instructions, target);
 
-            if (to >= territory && to < beyond)
+            if (to >= handlerStart && to < handlerEnd)
                 continue;
 
             if (!conditional)
@@ -2620,7 +2579,12 @@ public static partial class IlGenerator
                 continue;
             }
 
-            //Only the named arm leaves; the fall-through stays inside and carries on.
+            //Only the named arm leaves; the fall-through stays inside and carries on. Inverting the test and
+            //jumping over one `leave` says that in the two instructions CIL allows.
+            //
+            //    brtrue X            ->    brfalse L
+            //                              leave   X
+            //                          L:  ...the handler continues...
             instructions.Insert(i + 1, new CilInstruction(CilOpCodes.Leave, new CilInstructionLabel(target)));
 
             instructions[i].OpCode = instructions[i].OpCode.Code is CilCode.Brtrue or CilCode.Brtrue_S
@@ -2629,45 +2593,20 @@ public static partial class IlGenerator
             instructions[i].Operand = new CilInstructionLabel(instructions[i + 2]);
 
             i++;
-            beyond++;
+            handlerEnd++;
         }
 
-        //And the ranges last, when nothing else is going to move. A handler ends where the next begins, and
-        //the final one at the epilogue.
-        for (var i = 0; i < placed.Count; i++)
+        body.ExceptionHandlers.Add(new CilExceptionHandler
         {
-            var placement = placed[i];
-            var handlerEnd = i + 1 < placed.Count ? placed[i + 1].Pop! : epilogue;
+            HandlerType = CilExceptionHandlerType.Exception,
+            ExceptionType = caught,
+            TryStart = new CilInstructionLabel(instructions[At(instructions, guardedFirst)]),
+            TryEnd = new CilInstructionLabel(instructions[tryLast + 1]),
+            HandlerStart = new CilInstructionLabel(instructions[At(instructions, handlerFirst) - 1]),
+            HandlerEnd = epilogueLabel,
+        });
 
-            body.ExceptionHandlers.Add(new CilExceptionHandler
-            {
-                HandlerType = CilExceptionHandlerType.Exception,
-                ExceptionType = placement.Caught,
-                TryStart = new CilInstructionLabel(placement.GuardedFirst),
-                TryEnd = new CilInstructionLabel(instructions[At(instructions, placement.TryLast!) + 1]),
-                HandlerStart = new CilInstructionLabel(placement.Pop!),
-                HandlerEnd = new CilInstructionLabel(handlerEnd),
-            });
-
-            Refused(context, $"wrote catch ({placement.Clause.Caught.FullName})");
-        }
-    }
-
-    /// <summary>One clause on its way from blocks to a CIL range, as each boundary is settled.</summary>
-    private sealed class Placement(Analysis.CatchClause clause, CilInstruction guardedFirst, CilInstruction guardedLast,
-        CilInstruction handlerFirst, ITypeDefOrRef caught)
-    {
-        public readonly Analysis.CatchClause Clause = clause;
-        public readonly CilInstruction GuardedFirst = guardedFirst;
-        public readonly CilInstruction GuardedLast = guardedLast;
-        public readonly CilInstruction HandlerFirst = handlerFirst;
-        public readonly ITypeDefOrRef Caught = caught;
-
-        /// <summary>What the try really ends on, once leaving it has been written.</summary>
-        public CilInstruction? TryLast;
-
-        /// <summary>The <c>pop</c> that opens the handler, which is where its range starts.</summary>
-        public CilInstruction? Pop;
+        Refused(context, $"wrote catch ({clause.Caught.FullName})");
     }
 
     /// <summary>
