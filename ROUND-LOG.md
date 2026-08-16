@@ -666,6 +666,85 @@ markers is inside a handler that was not in the export before.
 
 ---
 
+## Round 9 — 1.14.0 to 1.14.2 / exports 690–695 — **the handler's end**. **KEPT**
+
+**Files and functions:** `Analysis/CatchClauses.cs` — `HandlerRegion` rewritten on dominance, `Unsplit`
+clears the tail, the handler move is filtered, `Run` threads a `DominatorInfo`. `IlGenerator.Fork.cs` —
+`LayoutOrder` places recovered handlers last explicitly.
+
+### The rule
+
+> **A handler is what its entry dominates.**
+
+Three open items were one item — *the handler's end was unknown* — and dominance answers all three at once,
+because it is the same reasoning that worked in round 5 (*where two walks meet is where control is handed
+back*) stated properly instead of approximated:
+
+* a block reached from a **second** landing pad is dominated by neither, so the shared tail il2cpp funnels
+  every pad into belongs to no handler and drops out;
+* a block on the normal path after the region is reachable **without** entering the handler, so it is not
+  dominated — and that is exactly where the handler `leave`s to;
+* two handlers' extents are disjoint by construction, since dominance regions of distinct blocks nest or do
+  not meet.
+
+The census bucket **"the handler is the rest of the method" goes 473 → 0.** The 64 bound stays exactly where
+it is and is now a **check** rather than a guess: with a real extent, a handler that is half the method means
+the recognition is wrong, so it is refused and counted (`the handler dominates more than a handler can be`),
+never widened.
+
+### Two bugs, both caught by the number to look at first
+
+Export 691 came back with **8 generation failures**, all `An item with the same key has already been added`:
+
+* **`Unsplit` handed a tail's instructions to the head and left the tail holding them too.** Harmless while
+  the tail was also out of the graph — until a handler's blocks were taken out of `graph.Blocks` and re-added
+  at the end, and the same ISIL instruction was then in two emitted blocks. The generator keys a dictionary on
+  the instruction, so the whole body is lost.
+* and the same move could **re-add a handler block the graph no longer had**. Only blocks still present, each
+  exactly once.
+
+### A fragility removed rather than patched
+
+The handler used to be laid out last *because nothing reached it*. That stopped being true the moment a
+handler was more than the pad itself: the walk put it mid-body and the range came out as
+`try 240..241, handler 174`, refused at the last step. **`LayoutOrder` now places a recovered handler last
+because it is one**, not because of where the walk happened to go.
+
+### Numbers, against 628
+
+| | 628 | **693** |
+|---|---|---|
+| **catch clauses visible in the export** | 27 | **32** |
+| CIL handlers written | 104 | **174** |
+| census: *the handler is the rest of the method* | 473 | **0** |
+| **corpus oracle: run / same / whole-and-wrong** | 79 / 56 / 14 | **identical** |
+| cfscore full / partial / clean / markers | 609 / 6 / 91 / 19,4 | **identical** |
+| decisions / roundtrip whole / dead | 1326 / 1044 / 108 | **identical** |
+| gen failures | 0 | **0** |
+| **Unity gate** | 12 CS7069 | **12 CS7069 — its floor** |
+| compare2 full | 3240 | 3238 (−2) |
+| commented / unmanaged / notfound / indirect | 377 / 365 / 38 / 33 | 383 / 369 / 39 / 35 |
+
+**Where the cost landed:** `mdiff.py` says **two** files move, `catchdiff.sh` says **both gained a `catch`**
+(`FirebaseTracking` 1→2, `TargetedMatrixConfig` 0→1). The other three of the five new clauses arrived with
+**no markers at all**. Zero collateral.
+
+### 9b — and the multi-clause cap, a second time. **INERT, REVERTED AGAIN**
+
+With extents now disjoint, the cap should have paid — so it was re-lifted, N handlers and all. **Byte-identical
+again**: not one `.cs` file differs, every counter the same.
+
+`two clauses want the same blocks` fires **617** times, and what it rejects is **not a second clause — it is
+the first one found again.** `Recognise` runs per block, so several throwing blocks unwinding to one landing
+pad each produce a candidate for it, and the fall-through pad and the table-named pad are usually the same
+handler too. They are correctly rejected for claiming blocks the kept clause already has.
+
+**So the cap was never about the emitter, and after round 9 it is not about the extent either.** A method with
+two *independent* `catch` clauses that this recogniser can both see is essentially absent from this binary.
+**Do not build this a third time without first showing such a method exists.**
+
+---
+
 ## Specified but unbuilt
 
 Written down so the next session starts where this one stopped rather than re-deriving it.
@@ -675,18 +754,19 @@ Written down so the next session starts where this one stopped rather than re-de
    selection rules that made it safe are also what make it small — one pad per method, only where the pad
    would otherwise die, and only in methods that have no working clause already. Every one of those is a
    deliberate under-reach, and each is where the next gain is:
-   * ~~More than one clause per method.~~ **Built in round 8 and it is inert** — the cap was never binding.
-     A method's landing pads funnel into a shared tail, so one clause's handler region contains the next
-     one's entry and they are not independent. **Same root as the 466 over-bound handlers: the handler's end
-     is unknown.** Solve that and both open at once; until then, do not rebuild this.
-   * **A `try` of more than one block.** The range is known exactly; the try emitted from it is still the
-     single block holding the last protected instruction, because a multi-block try must be contiguous in
-     the CIL and that needs `LayoutOrder` partitioned into before-try / try / rest / handler.
+   * ~~More than one clause per method.~~ **Built twice, inert twice** — rounds 8 and 9b. First because
+     handlers overlapped through the shared tail; then, once dominance made them disjoint, because the extra
+     candidates are **the same clause found again** (several throwing blocks unwinding to one pad). Do not
+     build it a third time without first showing a method with two independent clauses exists.
+   * **A `try` of more than one block** — now the only one of the three left. The range is known exactly and
+     the try emitted from it is still the single block holding the last protected instruction. `LayoutOrder`
+     already places handlers last on purpose (round 9), so the same mechanism would place a try's blocks as
+     one run; what is untried is whether every exit from a multi-block try can be written as `leave`.
    * ~~A conditional exit from a `try`.~~ **Done in round 8**, on both the try and the handler side: invert
      the test and jump over a `leave`. +6 clauses, no collateral. A `switch` out of a region is still
      refused and is the remainder.
-   * **The 466 handlers still bigger than their 64-block bound.** The LSDA gives the pad's *start*, not the
-     handler's end, so this is still structural. Do not widen the bound.
+   * ~~The 466 handlers bigger than their 64-block bound.~~ **Closed in round 9**: a handler is what its
+     entry dominates, and that bucket is now **0**. The bound was never widened; it is a check now.
 
 2. ~~A handler that is not closed (464).~~ **Done in round 5** — and the diagnosis was wrong: the handler
    set was closed by construction, and the real problem was that a `catch` which does not return reaches the
