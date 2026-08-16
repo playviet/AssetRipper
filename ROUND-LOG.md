@@ -514,21 +514,102 @@ answer* — held at every version. Naming the observable rather than the byte is
 
 ---
 
+## Round 7 — 1.11.14 to 1.11.16 / exports 618–624 — anchor the `try` on the protected range. **KEPT**
+
+**Files and functions:** `Analysis/ExceptionEdges.cs` (rewritten from round 6's reverted version) — `Run`,
+`Reachable`, `BlockAt`, `BlockCovering`, `BlockStartingAt`. `Analysis/CatchClauses.cs` — `RecogniseThrough`
+split out and reused, `LetGoOfTheUnusedPad`, `DefinitionIn` follows one copy, `Region` takes the pad.
+`IlGenerator.Fork.cs` — `AddCatchClauses` writes the try's exit as `leave`.
+`Analysis/ForkPipeline.cs` — the `AfterTheGraphIsBuilt` hook. **One line** in
+`MethodAnalysisContext.Analyze`. `InstructionAddresses.Record` ungated, since the recovery now reads it.
+
+**What it recovers that nothing before could.** `CFramework.SegmentRuleEvaluator::Evaluate`:
+
+```csharp
+try { _tokens = GetTokens(rule); }
+catch (Exception) { … Logger.LogError(message); num = 0L; goto IL_001e; }
+```
+
+**There is no `throw` in that `try`** — it is an ordinary call, and only the LSDA can say it was protected —
+**and the handler does not return**, it logs and falls out. Both halves were out of reach one round ago.
+
+### The three selection rules, each of which cost a measurement
+
+Round 6 attached every pad in every method and lost 47 of the 77 clauses it meant to grow. What replaces it:
+
+1. **Attach only what would otherwise die.** A pad clang laid where ordinary control falls into it is already
+   reachable and needs no help — and those are exactly the clauses the throw-anchored recognition already
+   finds. Reachability at graph-build time is the exact test for *"`RemoveUnreachableBlocks` is about to
+   delete this"*, so it is the test.
+2. **And not at all in a method that already has one.** If any of a method's catch pads is reachable, this
+   pass adds nothing — not even for the method's *other* pads. Attaching one pad to a method whose clause
+   already worked is what took the export from **17 catch clauses to 9**: the help went to methods that
+   needed none, and the join it costs was paid by the clause that was already there.
+3. **One pad per method, the one covering the most bytes.** `CatchClauses` emits at most one clause per
+   method, so a second attachment can never pay for its join. *Covered* is the **sum** of the pad's ranges,
+   not the span between first and last — a pad often appears in rows far apart, and measuring the span
+   ranked eight bytes in two places above forty-four in a row.
+
+### The emission half
+
+A protected region may not be fallen out of, returned out of, or branched out of. The try's exit is now
+written as `leave`: `Ret` → `stloc` + `leave` to the epilogue, `Br` → `Leave`, a fall-out gets an explicit
+`leave` to where it was going to fall, and a **conditional** exit is refused because `leave` is
+unconditional. Where the try ends in a `throw` — every clause found by following a throw — none of this
+fires, so those bodies are untouched by construction.
+
+### A failure mode worth more than the fix
+
+`DefinitionIn` following a copy had no visited set, and a cycle of copies overflowed the stack. The symptom
+is the thing to remember: **the export exited `0`, wrote `DONE`, produced no scripts, and every scorer read
+it as zeroes.** The stack trace went to stderr, which `census.sh` was filtering with `grep -E "^CATCH"`.
+*Never filter the stream you are also using to tell whether the run finished.* This is the third distinct way
+this loop has produced a plausible-looking zero.
+
+### Numbers, against 617
+
+| | 617 | **623 / 624** |
+|---|---|---|
+| **catch clauses in the export** | 17 | **21** |
+| **corpus oracle: run / same / whole-and-wrong** | 79 / 56 / 14 | **identical** |
+| `Thrown`, `Using`, `TotalSides` | right, right, partial-right | **identical** |
+| cfscore full / partial / files clean / markers | 609 / 6 / 91 / 19,4 | **identical** |
+| decisions | 1326 / 1382 | **identical** |
+| roundtrip whole | 1044 | **identical** |
+| commented / notfound / dead | 367 / 38 / 108 | **identical** |
+| gen failures | 0 | **0** |
+| **Unity gate** | 12 CS7069 | **12 CS7069 — its floor** |
+| compare2 full | 3247 | 3244 (−3) |
+| compare2 unmanaged / indirect | 346 / 27 | 350 (+4) / 28 (+1) |
+
+**Where the cost landed:** `mdiff.py` says three files move. `SegmentRuleEvaluator` +3 and `StateMachine` +1
+**both gained a `catch` that was not there before**; `GoogleDesignConfigSo` +1 gained nothing and is the
+**one marker of genuine collateral** in the whole change. The 96 reference files are untouched.
+
+**Keep.** Every correctness measure identical, four more handlers, and the cost is the same shape as rounds
+4 and 5 — markers on newly visible code — with a single marker of collateral.
+
+
+---
+
 ## Specified but unbuilt
 
 Written down so the next session starts where this one stopped rather than re-deriving it.
 
-1. **`.gcc_except_table` is read and the reader is right** — see round 6. What is *not* solved is making the
-   handler survive to be recognised without perturbing every other method. Three things the next attempt
-   should have that this one did not:
-   * **Attach selectively.** Attaching all of a method's pads to recover one is what cost 47 clauses.
-     Something has to choose, and nothing before the analysis knows which.
-   * **A `try` anchored on the protected range, not on a `throw`.** `SaveIO::Load`'s clauses protect ordinary
-     *calls*; there is no `Throw` in the try at all, and a recogniser that starts from a throwing block can
-     never see them. This is the bigger half and it needs the try block's exit written as `leave`.
-   * **Follow a copy in `DefinitionIn`.** With a pad attached, the class pointer feeding the dispatch gains a
-     second definition and the single-definition requirement refuses it. Untested, but it is what the
-     *no dispatch in the region* count going 4143 → 5587 looks like.
+1. ~~`.gcc_except_table`.~~ **Done in round 7**: read, anchored on, and kept. What is left of it is the
+   *scale*: 8,632 functions in the binary have a catch call site and this recovers **21** clauses. The three
+   selection rules that made it safe are also what make it small — one pad per method, only where the pad
+   would otherwise die, and only in methods that have no working clause already. Every one of those is a
+   deliberate under-reach, and each is where the next gain is:
+   * **More than one clause per method.** `CatchClauses` refuses at two, so `ExceptionEdges` attaches one.
+     Lifting the emitter's limit is the precondition for lifting the attacher's.
+   * **A `try` of more than one block.** The range is known exactly; the try emitted from it is still the
+     single block holding the last protected instruction, because a multi-block try must be contiguous in
+     the CIL and that needs `LayoutOrder` partitioned into before-try / try / rest / handler.
+   * **A conditional exit from a `try`.** Refused, because `leave` is unconditional. `brtrue X` where `X` is
+     outside could become `brfalse next; leave X` — untried, and it is a real population.
+   * **The 466 handlers still bigger than their 64-block bound.** The LSDA gives the pad's *start*, not the
+     handler's end, so this is still structural. Do not widen the bound.
 
 2. ~~A handler that is not closed (464).~~ **Done in round 5** — and the diagnosis was wrong: the handler
    set was closed by construction, and the real problem was that a `catch` which does not return reaches the
@@ -541,7 +622,10 @@ Written down so the next session starts where this one stopped rather than re-de
    wherever it bought nothing. Most of the 680 turned out to be cleanup pads with no `catch`, correctly
    refused; 167 were real clauses.
 
-3b. **Trim the re-raise tail from a recovered handler.** A handler currently ends with the C++
+3b. **Trim the re-raise tail from a recovered handler.** *(Checked in round 7 and it does **not** close as a
+   by-product: the LSDA gives the landing pad's start, not the handler's extent, so a genuine rethrow and a
+   fall-out still look alike. `SegmentRuleEvaluator::Evaluate` falls out and shows it — `num = 0L; goto`
+   rather than a throw — but that is the graph saying so, not the table.)* Original note: A handler currently ends with the C++
    `__cxa_end_catch` + re-raise, which exports as `throw new OutOfMemoryException();` after the program's own
    statements — see the caveat at the end of round 5. It is the same shape `Corpus::Using` has, where it is
    guarded by the cleared exception slot, so it may already be answered by `OnlyAskedIfItIsNull` where the
