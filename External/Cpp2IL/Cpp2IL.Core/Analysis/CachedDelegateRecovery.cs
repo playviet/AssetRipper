@@ -37,11 +37,62 @@ public static class CachedDelegateRecovery
             if (Mirrored(method, writes) is not { } field)
                 continue;
 
+            //And only where the fold it exists to enable can actually happen - see ReadElsewhere.
+            if (!Off && ReadElsewhere(method, writes, field))
+                continue;
+
             Replace(method, local, field);
 
             foreach (var (block, instruction) in writes)
                 block.Instructions.Remove(instruction);
         }
+    }
+
+    /// <summary>Set <c>CACHEDLAMBDA_OFF=1</c> to measure the same build without the asymmetry guard.</summary>
+    private static readonly bool Off = System.Environment.GetEnvironmentVariable("CACHEDLAMBDA_OFF") == "1";
+
+    /// <summary>
+    /// Whether the cache field is read somewhere this pass is not about to fold, which makes the fold worse
+    /// than no fold at all.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The decompiler puts the lambda back only when it sees the whole shape - test the field, build it,
+    /// store it, use it. A <b>second</b> read of the same field elsewhere in the method is not part of that
+    /// shape and is left as a bare field read, so the two sites stop meaning the same thing once the export
+    /// is recompiled: the folded one gets a fresh cache field of the new assembly's own, and the bare one
+    /// still names the original, which nothing now writes.
+    /// </para>
+    /// <code>
+    /// Adjust += (int v) =&gt; v + 5;                 // folded: a NEW cache field
+    /// Adjust -= _003C_003Ec._003C_003E9__86_0;     // not folded: the ORIGINAL field, now null
+    /// </code>
+    /// <para>
+    /// So <c>Delegate.Remove(list, null)</c> removes nothing and the event stays subscribed -
+    /// <c>Corpus::EventRoundTrip</c> answers 105 where the source says 1105. Declining leaves the local in
+    /// place, which the decompiler writes as an ordinary variable read from the field: uglier than a lambda,
+    /// and both sites name the one field again.
+    /// </para>
+    /// <para>
+    /// One read is the pattern's own test. Anything beyond that is a use the fold cannot reach.
+    /// </para>
+    /// </remarks>
+    private static bool ReadElsewhere(MethodAnalysisContext method,
+        List<(Block Block, Instruction Instruction)> writes, FieldReference field)
+    {
+        var reads = 0;
+
+        foreach (var instruction in method.ControlFlowGraph!.Instructions)
+        {
+            if (writes.Any(w => ReferenceEquals(w.Instruction, instruction)))
+                continue;
+
+            for (var i = instruction.Destination is null ? 0 : 1; i < instruction.Operands.Count; i++)
+                if (instruction.Operands[i] is FieldReference read && SameStaticField(read, field))
+                    reads++;
+        }
+
+        return reads > 1;
     }
 
     /// <summary>

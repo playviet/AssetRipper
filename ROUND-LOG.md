@@ -761,3 +761,38 @@ of 1105. It is a real defect in the exported source, not a harness artefact: the
 different fields once recompiled. The fix is to make the two sites render **the same way** — either fold both
 or fold neither — and the checkable condition is "this cache field is also read in this method without the
 pattern around it". Left specified; `CachedDelegateRecovery` is the owner.
+
+## 1.13.2 / exports 664, 665 — `EventRoundTrip`: the fold that made two sites mean two fields
+
+`Cpp2IL.Core/Analysis/CachedDelegateRecovery.cs` — new `ReadElsewhere`, one guard before `Replace`.
+
+The pass makes a cached lambda's *use* name the field so the decompiler folds the whole shape back into a
+lambda literal. The decompiler folds only what it can see - test, build, store, use - so a **second** read of
+the same field elsewhere is left bare, and once the export is recompiled the two sites name two different
+fields:
+
+```csharp
+Adjust += (int v) => v + 5;                    // folded: the new assembly makes its OWN cache field
+Adjust -= _003C_003Ec._003C_003E9__86_0;       // not folded: the ORIGINAL field, which nothing now writes
+```
+
+`Delegate.Remove(list, null)` removes nothing. Declining the fold where the field is read more than once
+leaves the local in place — an ordinary variable read from the field — and both sites name the one field
+again. One read is the pattern's own test; anything beyond it is a use the fold cannot reach.
+
+| | 663 | 665 |
+|---|---|---|
+| oracle run / same | 79 / 63 | 79 / **64** |
+| `full` + WRONG | 10 | **9** |
+| `full` + right | 57 | **58** |
+| `EventRoundTrip` | 105 | **1105 — right** |
+| **decisions** | 1326 | **1328** |
+| **livecount** | — | **live +49, branches +15** |
+| compare2 full | 2561 of 3255 | 2568 of **3262** |
+| cfscore · allscore · commented · unmanaged · roundtrip · genfail | 608/7 · 2121 · 371 · 323 · 1044 · 0 | **all level** |
+| `<>c.<>9__N` references in the export | 17 | 67 |
+
+**Kept.** `decisions` and `livecount` both up, everything else level. The cost is legibility: 50 more places
+show the compiler's cache instead of a lambda literal — about 25 methods where a cached lambda is used twice,
+every one of which had the same latent two-fields bug. `compare2`'s denominator grows by the same 7 as its
+`full`, so the percentage reads 91.0% → 90.9% while nothing got worse.
