@@ -745,7 +745,114 @@ two *independent* `catch` clauses that this recogniser can both see is essential
 
 ---
 
-## Specified but unbuilt
+## Round 10 — 1.14.3, 1.14.4 / exports 696–699 — the multi-block `try`. **BUILT, MEASURED, REVERTED**
+
+The exit question was answered **from the binary before the layout was written**, which is the order that
+produced the extent rule. `probe2 trycheck`, over `Assembly-CSharp`:
+
+```
+pads with any protected block          942
+  the try is ONE block (built today)   778
+  the try is several blocks            164
+    of those, single-entry             75
+    of those, every exit writable      164
+    BOTH - a try that could be written 75
+```
+
+**Every exit is writable, 164 of 164.** A `ret`, a `br` and a two-way branch all have a `leave` spelling; a
+jump table does not, and **not one protected range in this assembly is left by one.** So the question asked
+was a clean *yes* — and it is not the constraint that decides this.
+
+**The constraint is its twin.** ECMA-335 allows entering a protected region **only at its first instruction**,
+and a pad's protection is a *union* of call-site rows — there is no reason a union of address ranges should be
+single-entry in the graph, and **89 of 164 times it is not.**
+
+Both are hard checkable tests rather than guesses, so it was built: the range taken whole from the table and
+refused outright if anything branches into it or a jump table leaves it; `LayoutOrder` writing a try's blocks
+as one run the same way it already writes a handler's; and every `ret`, `br` and two-way branch **in the
+middle** of the run written as `leave`, not only the one it ends on.
+
+**It fires once in the whole game, and the export is byte-identical** — not one `.cs` file differs from
+1.14.1, 0 generation failures, 174 handlers, 32 catch clauses, every scorer unchanged. Which is exactly what
+rule 5 says to do about it: *if a counter moves and the export does not, the change is inert whatever the
+counter says.* Reverted.
+
+**The reason is the first line of the census, and it means the item was mis-specified from the start — by me
+as much as anyone. 778 of 942 protected ranges are already ONE BLOCK.** il2cpp records a `catch` as many
+small per-call-site ranges, so the block holding the last protected instruction is almost always the whole of
+it. Widening only matters where a clause was *also* recovered for that pad, and that intersection is one
+method.
+
+**Kept:** `probe2 trycheck`, which produced the numbers above and is how anyone should check this before
+building it again.
+
+---
+
+## Where this lane ends
+
+### Session total — baseline export 600 → 693 (1.14.1)
+
+| | 600 | **693** |
+|---|---|---|
+| **`catch` clauses recovered in the exported C#** | **0** | **31** |
+| CIL exception handlers written | 0 | 174 |
+| corpus oracle: run / same / whole-and-wrong | 79 / 54 / **16** | 79 / 56 / **14** |
+| cfscore full / partial / files clean | 609 / 6 / 91 | **unchanged** |
+| decisions | 1326 / 1382 | **unchanged** |
+| roundtrip whole | 1044 | **unchanged** |
+| dead bodies | 108 | **unchanged** |
+| generation failures | 0 | **0** |
+| Unity gate | 12 CS7069 | **12 CS7069 — its floor** |
+| compare2 full | 3255 | 3238 |
+| commented / unmanaged / notfound / indirect | 363 / 315 / 38 / 18 | 383 / 369 / 39 / 35 |
+
+`compare2 full` is down 17 and every one of those bodies **lost it by gaining the handler the program wrote**
+— checked file by file with `mdiff.py` and `catchdiff.sh` in every round. `Divide` and `Guarded` account for
+2 of the 14 remaining whole-and-wrong and are unrecoverable in principle.
+
+### File and function index
+
+| file | what |
+|---|---|
+| `Cpp2IL.Core/Analysis/CatchClauses.cs` | **new.** `Run`, `Recognise`, `RecogniseThrough`, `Dispatch`, `NamedClass`, `PadFromTheTable`, `Region`, `Body`, `HandlerRegion` (dominance), `SplitAtTheThrow`, `SplitAt`, `Unsplit`, `SplitAtTheAddress`, `DropThePlumbing`, `DeclareTheHandlersLocals`, `LetGoOfTheUnusedPad`, `Detach`, `DefinitionIn`, `Counted` |
+| `Cpp2IL.Core/Analysis/ExceptionEdges.cs` | **new.** `Run`, `Reachable`, `BlockAt`, `BlockCovering`, `BlockStartingAt` |
+| `Cpp2IL.Core/Analysis/ExceptionTable.cs` | **new.** `.eh_frame_hdr` → FDE → LSDA reader: `For`, `Build`, `Sections`, `Read`, `CommonInformation`, `CallSites`, `Reader` |
+| `Cpp2IL.Core/Analysis/InstructionAddresses.cs` | **new.** `Record`, `Of` |
+| `Cpp2IL.Core/IlGenerator.Fork.cs` | **new:** `AddCatchClauses`, `EmittedRange`, `At`, `Refused`; **changed:** `LayoutOrder` (handlers last), `OnlyAskedIfItIsNull` (follows a copy) |
+| `Cpp2IL.Core/Analysis/ForkPipeline.cs` | the `AfterTheGraphIsBuilt` hook; `CatchClauses.Run` last in `AfterUnusedLocalsAreDropped` |
+| `Cpp2IL.Core/IlGenerator.cs` | **1 line** — `AddCatchClauses` |
+| `Cpp2IL.Core/Model/Contexts/MethodAnalysisContext.cs` | **1 line** — `ForkPipeline.AfterTheGraphIsBuilt` |
+| `Cpp2IL.Core/InstructionSets/NewArmV8InstructionSet.cs` | **1 line** — `InstructionAddresses.Record` |
+| `scratchpad-tools/` | `lsda.py`, `mdiff.py`, `catchdiff.sh`, `oraclescore.sh`, hardened `census.sh`, `probe2` modes `landing` / `padcheck` / `trycheck` |
+
+**Three upstream files, four lines.** All recorded in `External/Cpp2IL/FORK.md`.
+
+### The work that is left, stated as work
+
+1. **The 2380 throws whose pad the table names but whose method has no reachable pad to anchor on.**
+   `ExceptionEdges` attaches one pad per method, only where it would otherwise die and only where the method
+   has no working clause already — every one of those three rules was bought with a measurement, and each is
+   a deliberate under-reach. Lifting any of them needs a way to choose *which* pad matters before the analysis
+   that would tell you has run.
+2. **`switch` out of a protected region.** No `leave` spelling; refused. Never observed leaving a protected
+   range in `Assembly-CSharp` (0 of 164), so this is a correctness guard rather than a lost population.
+3. **`finally`.** Untouched, and **the corpus cannot judge it** — `Guarded`'s was deleted by clang. The shape
+   to add is specified with code in `corpus/README.md`, along with a `try`/`finally` with no `catch` and a
+   `catch` that falls out instead of returning.
+4. **A recovered handler gives back its statements, not its exit.** It still ends on the C++ re-raise tail as
+   `throw new OutOfMemoryException();`. Telling a genuine rethrow from a fall-out needs the handler's *end*,
+   and the LSDA gives only the pad's start — dominance answers it for the graph, not for the C# `throw;`.
+
+### Three things not to build again without new evidence
+
+* **More than one clause per method** — inert twice, for two different reasons. The second is the real one:
+  the extra candidates are *the same clause found again*. Show a method with two independent clauses exists.
+* **The multi-block `try`** — built, correct, fires once. 778 of 942 ranges are already one block.
+* **Attaching every landing pad** — costs 47 of the clauses it means to grow.
+
+---
+
+## Specified but unbuilt (as of round 7; superseded above where they differ)
 
 Written down so the next session starts where this one stopped rather than re-deriving it.
 
