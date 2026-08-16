@@ -2448,12 +2448,33 @@ public static partial class IlGenerator
                 instructions.Insert(i, new CilInstruction(CilOpCodes.Stloc, answer));
         }
 
+        var handlerEnd = instructions.Count;
         instructions.Add(epilogue);
 
         if (answer != null)
             instructions.Add(CilOpCodes.Ldloc, answer);
 
         instructions.Add(CilOpCodes.Ret);
+
+        //A handler that does not return runs back into the method, and a plain branch may not leave a
+        //protected region - `leave` is how CIL says the same thing, and it is what unwinds the handler on the
+        //way out. Only branches to somewhere before the handler: one inside it is an ordinary jump, and the
+        //two are told apart by position, which is exact because the handler is one contiguous run.
+        for (var i = handlerStart; i < handlerEnd; i++)
+        {
+            if (instructions[i].OpCode.Code is not (CilCode.Br or CilCode.Br_S))
+                continue;
+
+            if (instructions[i].Operand is not CilInstructionLabel { Instruction: { } target })
+                continue;
+
+            var to = At(instructions, target);
+
+            if (to >= handlerStart && to < handlerEnd)
+                continue;
+
+            instructions[i].OpCode = CilOpCodes.Leave;
+        }
 
         body.ExceptionHandlers.Add(new CilExceptionHandler
         {

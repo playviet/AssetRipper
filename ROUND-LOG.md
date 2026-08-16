@@ -330,6 +330,100 @@ handler the program wrote. A marker on a recovered `catch` beats a `catch` that 
 
 ---
 
+## Round 5 — 1.11.7 then 1.11.8 / exports 609, 610 (game) + 611 (corpus) — the handler that does not return. **KEPT: 22 → 77**
+
+**Files and functions:** `Analysis/CatchClauses.cs` — `Reachable` replaced by `Body` + `HandlerRegion`, new
+`DeclareTheHandlersLocals`, `DropThePlumbing` fixed, two new census buckets. `IlGenerator.Fork.cs` —
+`AddCatchClauses` gains the branch-out-of-the-handler sweep and a `handlerEnd` bound.
+
+**The diagnosis was wrong in the round-3 census, and the fix is what that revealed.** The bucket was named
+*"a dispatch was found but its handler is not closed"* — but the handler set was built by `Reachable`, which
+is transitively closed **by construction**. What was actually happening is that a `catch` which does not
+return runs back into the method, so "what the handler entry reaches" is the whole method and the walk ran
+off its 32-block bound. Where the two walks meet is not a failure: **it is the point the handler hands
+control back, which CIL spells `leave`.**
+
+So the handler is now *what its entry reaches and the method does not* — `HandlerRegion(entry, Body(...))`,
+where `Body` is reachability from the graph entry with the throw's edge into the pad cut. Subtracting the
+body is the whole difference. On the emission side, every `br` inside the handler range whose target lies
+outside it becomes `leave`; a **conditional** branch out of a handler has no CIL spelling and is refused
+(19 methods).
+
+### The generation failure, and what it taught
+
+Export 609 came back with **1 generation failure** where every previous export had 0 — the number
+`RECOVERY.md` says to check before believing any other. `TDCommonUtils::FormatDate`:
+
+```
+KeyNotFoundException: The given key 'v5 @ X22' was not present in the dictionary
+```
+
+**`ISILControlFlowGraph.Instructions` is a breadth-first walk from the entry block.** It yields only what is
+*reachable* — and this pass makes the handler unreachable on purpose, because that is exactly what lays it
+out last. So:
+
+* the generator builds its local map by sweeping that property, and a local named **only** inside a handler
+  was never declared. `DeclareTheHandlersLocals` now adds them (in the fork's file, not upstream's).
+* and `DropThePlumbing` computed "is this call's answer read by anything?" from the same property, so it was
+  really asking whether anything *outside* the handler reads it. Fixed to walk `graph.Blocks`.
+
+Both were latent from round 2 and only fired once the handler population grew. A generation failure costs
+the whole body and leaves **no marker**, so it scores as a whole method everywhere else — this is
+`il2cpp-a-thrown-body-scores-as-a-whole-one`, and it is why that count is looked at first.
+
+At 1.11.8 with both fixed: **0 generation failures, 77 clauses written.**
+
+### Numbers
+
+| | 607 | **610 / 611** |
+|---|---|---|
+| **catch clauses written game-wide** | 22 | **77** |
+| **gen failures** | 0 | 1 at 1.11.7 → **0** at 1.11.8 |
+| oracle: run / same | 79 / 56 | 79 / **56** |
+| oracle: full + WRONG | 14 | **14** |
+| compare2 full | 3251 | **3247** (−4) |
+| compare2 partial / dead | 152 / 108 | **156** / 108 |
+| compare2 commented | 363 | **367** (+4) |
+| compare2 unmanaged / indirect | 323 / 22 | **346** (+23) / **27** (+5) |
+| compare2 notfound | 38 | **same** |
+| cfscore full / partial / files clean | 609 / 6 / 91 | **same** |
+| allscore | 2118/2326 | **2114**/2326 = 90.9% |
+| decisions | 1326 / 1382 | **same** |
+| roundtrip whole | 1044 | **same** |
+
+**Census:** recovered 22 → **80 recognised, 77 written**; *the handler is the rest of the method* 466
+remaining; *a conditional branch leaves the handler* 19; *more than one clause* 28; splits kept 96.
+
+### Where the cost landed — checked again, file by file
+
+`mdiff.py` says **seven files move and that is all**: `AssetLoader` +8, `AESUtils` +6, `AdjustTracking` +4,
+`RemoteConfigManager` +4, `AudienceSegmentConfig` +3, `SaveIO` +2, `GoogleSheetHelper` +1. Every one gained
+a clause. `AssetLoader` looked like collateral until checked — its three clauses are in nested display
+classes, so the census printed the display class's name and not the file's.
+
+**Keep**, on the same reasoning as round 4 and now at three and a half times the scale: every correctness
+measure level (oracle 56/14 with `Thrown` and `Using` both right, decisions 1326, roundtrip whole 1044,
+cfscore 609, 0 generation failures), −4 `full` and +32 markers **entirely inside handlers that did not exist
+in the export before**. Correctness followed over compilability, and named as such.
+
+### The honest caveat on what a recovered handler contains
+
+`AESUtils::DecryptAES` is the fair example. The clause is right — `catch (FormatException)` is the type the
+original wrote — and the body is the program's own `Debug.LogError(...)`. But it ends:
+
+```csharp
+catch (FormatException) { ...; Debug.LogError(string.Concat(null, text)); throw new OutOfMemoryException(); }
+```
+
+That trailing throw is the C++ **re-raise tail**, swallowed into the handler region — the same shape
+`Corpus::Using` had before round 1, where it is guarded by the cleared exception slot. So a recovered handler
+today gives back the *statements the program wrote*, and does not yet give back the handler's **exit**.
+Before this work the whole handler was absent, so this is strictly more of the program than there was; it is
+not a claim that the handlers are right end to end, and no scorer in this project can currently tell.
+Trimming the re-raise is listed below.
+
+---
+
 ## Specified but unbuilt
 
 Written down so the next session starts where this one stopped rather than re-deriving it.
@@ -343,19 +437,31 @@ Written down so the next session starts where this one stopped rather than re-de
    managed dispatch itself in the pad — so the caught type still has to come from the `Il2CppClass<T>`
    operand, which this pass already reads correctly.
 
-2. **A handler that is not closed (464).** Needs `ret` and `br` **out of the try** rewritten to `leave`, not
-   just those in the handler, plus a layout that keeps a multi-block try contiguous. `AddCatchClauses`
-   already does the handler half and the other half is the same shape.
+2. ~~A handler that is not closed (464).~~ **Done in round 5** — and the diagnosis was wrong: the handler
+   set was closed by construction, and the real problem was that a `catch` which does not return reaches the
+   whole method. What is left of that bucket is **466 methods where the handler region still exceeds its
+   64-block bound**, plus **19 where a conditional branch leaves the handler** and has no `leave` spelling.
+   The 466 want a proper end-of-handler, which is again the `.gcc_except_table` answer: the handler's extent
+   is in the LSDA too.
 
-3. **The throw that does not end its block (680).** `MergeCallBlocks` runs after the throw rewrite and leaves
-   the `Throw` mid-block, so the pad's instructions and the guarded block's are in one list and position
-   cannot tell them apart. Splitting the block at the `Throw` before `CatchClauses` runs would hand all 680
-   to the recognition that already exists. `Corpus::Using` is this shape.
+3. ~~The throw that does not end its block (680).~~ **Done in round 4** — `SplitAtTheThrow`, undone
+   wherever it bought nothing. Most of the 680 turned out to be cleanup pads with no `catch`, correctly
+   refused; 167 were real clauses.
 
-4. **`finally` is not attempted at all.** `Corpus::Guarded`'s would have been the test and clang deleted it,
-   so there is currently **no ground truth for `finally` anywhere in the corpus**. Adding a shape whose
-   `finally` has a side effect the optimiser cannot delete — appending to a list, not multiplying a local —
-   is the cheapest useful thing anyone could do to this corpus.
+3b. **Trim the re-raise tail from a recovered handler.** A handler currently ends with the C++
+   `__cxa_end_catch` + re-raise, which exports as `throw new OutOfMemoryException();` after the program's own
+   statements — see the caveat at the end of round 5. It is the same shape `Corpus::Using` has, where it is
+   guarded by the cleared exception slot, so it may already be answered by `OnlyAskedIfItIsNull` where the
+   guard survives and needs trimming where it does not. **Do not guess at this**: C#'s bare `throw;` is the
+   correct recovery of a genuine rethrow, and telling a rethrow from a fall-out needs the handler's real
+   extent, which is item 1. Deleting it blind would turn a rethrowing handler into a swallowing one.
+
+4. **`finally` is not attempted at all**, and there is **no ground truth for it anywhere in the corpus**
+   because `Corpus::Guarded`'s was deleted by clang. Written into `corpus/README.md` as the specified next
+   shape, with the code: a `finally` that appends to a list the method then reads, so the optimiser must
+   keep it and the oracle can see whether it ran. Two more shapes are specified there beside it — a
+   `try`/`finally` with no `catch`, and **a `catch` that falls out instead of returning**, which is the
+   single largest population in the game (466) and which the corpus contains no instance of.
 
 5. **`Divide` and `Guarded` can never be closed.** See `corpus/BASELINE.md`, corrected this session, and
    `il2cpp-the-oracles-denominator-has-a-floor`. `full + WRONG` bottoms out at **2**, so from 14 there are

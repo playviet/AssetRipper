@@ -161,9 +161,13 @@ public static class CatchClauses
         //begin/end-catch pair, the re-raise. It has no managed meaning and would export as calls to raw
         //addresses.
         var keep = new HashSet<Block>(only.Handler);
+        var body = Body(only.Guarded, graph);
+
         foreach (var block in region)
         {
-            if (keep.Contains(block))
+            //Never a block the method still reaches without the throw: the pad can fall back into ordinary
+            //code, and deleting that would delete a live path.
+            if (keep.Contains(block) || body.Contains(block))
                 continue;
 
             Detach(block, graph);
@@ -184,6 +188,8 @@ public static class CatchClauses
         foreach (var block in only.Handler)
             graph.Blocks.Remove(block);
         graph.Blocks.AddRange(only.Handler);
+
+        DeclareTheHandlersLocals(method, only.Handler);
 
         Recovered.AddOrUpdate(method, clauses);
     }
@@ -304,22 +310,37 @@ public static class CatchClauses
 
             found = true;
 
-            var handler = Reachable(handlerEntry, graph);
+            var handler = HandlerRegion(handlerEntry, Body(guarded, graph), graph);
 
-            //A handler that runs back into the method needs to know where the try ended, and this does not.
-            //Requiring it to leave only through the method's own exit is what keeps the recovery honest.
-            if (handler.Count == 0 || handler.Any(b => b.Successors.Any(s => s != graph.ExitBlock && !handler.Contains(s))))
+            if (handler.Count == 0)
+            {
+                Counted("the handler is the rest of the method");
                 continue;
+            }
+
+            //A `leave` is unconditional, so a two-way branch out of the handler has no CIL spelling. Rare,
+            //and refusing it costs one clause where writing it wrong would cost a whole body.
+            if (handler.Any(b => b.Instructions.LastOrDefault(i => i.OpCode != OpCode.Nop) is { OpCode: OpCode.ConditionalJump }
+                    && b.Successors.Any(s => s != graph.ExitBlock && !handler.Contains(s))))
+            {
+                Counted("a conditional branch leaves the handler");
+                continue;
+            }
 
             //And nothing outside the pad may reach into it, or severing the throw's edge would take a live
             //path away with it.
             if (handler.Any(b => b.Predecessors.Any(p => !handler.Contains(p) && !region.Contains(p))))
+            {
+                Counted("something outside the pad reaches into the handler");
                 continue;
+            }
 
             return new CatchClause { Guarded = guarded, Handler = handler, Caught = caught };
         }
 
-        Counted(found ? "a dispatch was found but its handler is not closed" : "no class_is_assignable_from dispatch in the region");
+        if (!found)
+            Counted("no class_is_assignable_from dispatch in the region");
+
         return null;
     }
 
@@ -436,8 +457,49 @@ public static class CatchClauses
         return region;
     }
 
-    private static List<Block> Reachable(Block entry, ISILControlFlowGraph graph)
+    /// <summary>
+    /// What the method still reaches once the throw's edge into the landing pad is gone - everything that is
+    /// ordinary control flow rather than a handler.
+    /// </summary>
+    private static HashSet<Block> Body(Block guarded, ISILControlFlowGraph graph)
     {
+        var live = new HashSet<Block>();
+        var pending = new Queue<Block>();
+        pending.Enqueue(graph.EntryBlock);
+
+        while (pending.Count > 0)
+        {
+            var block = pending.Dequeue();
+
+            if (!live.Add(block))
+                continue;
+
+            //A throw takes no ordinary edge, so nothing past it is reached this way.
+            if (block == guarded)
+                continue;
+
+            foreach (var successor in block.Successors)
+                pending.Enqueue(successor);
+        }
+
+        return live;
+    }
+
+    /// <summary>
+    /// The handler's own blocks: what its entry reaches and the method does not.
+    /// </summary>
+    /// <remarks>
+    /// The first version of this asked only what the entry reaches, and refused anything that left it. That
+    /// refused **631 clauses in the game** - because a `catch` that does not return runs back into the
+    /// method, so "what it reaches" is the whole method and the walk simply ran off its bound. Where the two
+    /// walks meet is not a failure, it is the point the handler hands control back, which CIL spells
+    /// <c>leave</c>. Subtracting the body is the whole difference between recovering those and refusing them.
+    /// </remarks>
+    private static List<Block> HandlerRegion(Block entry, HashSet<Block> body, ISILControlFlowGraph graph)
+    {
+        if (body.Contains(entry))
+            return [];
+
         var found = new List<Block>();
         var seen = new HashSet<Block>();
         var pending = new Queue<Block>();
@@ -447,12 +509,12 @@ public static class CatchClauses
         {
             var block = pending.Dequeue();
 
-            if (block == graph.ExitBlock || block == graph.EntryBlock || !seen.Add(block))
+            if (block == graph.ExitBlock || block == graph.EntryBlock || body.Contains(block) || !seen.Add(block))
                 continue;
 
             found.Add(block);
 
-            if (found.Count > 32)
+            if (found.Count > 64)
                 return [];
 
             foreach (var successor in block.Successors)
@@ -471,7 +533,10 @@ public static class CatchClauses
     {
         var read = new HashSet<LocalVariable>();
 
-        foreach (var instruction in graph.Instructions)
+        //Every block, not `graph.Instructions` - that property is a BFS from the entry block, and the
+        //handler has just been made unreachable on purpose. Asking it would be asking whether anything
+        //outside the handler reads the value, which is not the question.
+        foreach (var instruction in graph.Blocks.SelectMany(b => b.Instructions))
         {
             foreach (var source in instruction.SourcesAndConstants)
             {
@@ -489,6 +554,38 @@ public static class CatchClauses
                 && i.Operands[0] is not MethodAnalysisContext and not string
                 && i.Operands[1] is LocalVariable answer
                 && !read.Contains(answer));
+        }
+    }
+
+
+    /// <summary>Makes sure every local the handler names is one the generator will have a slot for.</summary>
+    /// <remarks>
+    /// <c>ISILControlFlowGraph.Instructions</c> is a **breadth-first walk from the entry block**, so it
+    /// yields only what is reachable - and this pass makes the handler unreachable on purpose, because that
+    /// is what lays it out last. The generator builds its local map by sweeping that property, so a local
+    /// named only inside a handler was never declared and the body died with
+    /// <c>KeyNotFoundException: The given key 'v5 @ X22' was not present in the dictionary</c> -
+    /// <c>TDCommonUtils::FormatDate</c>, the one generation failure this bought before it was found. A
+    /// generation failure costs the whole body and leaves no marker, so it reads as a whole method on every
+    /// other measure; it is the one number that has to be looked at before any other.
+    /// </remarks>
+    private static void DeclareTheHandlersLocals(MethodAnalysisContext method, List<Block> handler)
+    {
+        foreach (var operand in handler.SelectMany(b => b.Instructions).SelectMany(i => i.Operands))
+        {
+            var memory = operand as MemoryOperand?;
+
+            foreach (var local in new[]
+                     {
+                         operand as LocalVariable,
+                         (operand as FieldReference)?.Local,
+                         memory?.Base as LocalVariable,
+                         memory?.Index as LocalVariable,
+                     })
+            {
+                if (local != null && !method.Locals.Contains(local))
+                    method.Locals.Add(local);
+            }
         }
     }
 
