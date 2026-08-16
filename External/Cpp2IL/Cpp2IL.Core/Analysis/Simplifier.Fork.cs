@@ -19,24 +19,18 @@ public static partial class Simplifier
         replacement is FieldReference || replacement is MemoryOperand { IsConstant: false };
 
     /// <summary>
-    /// Whether two references name the same field. A field of a generic type is named through the arguments
-    /// the type has where it is read, and that naming is worked out fresh at each place - so two references
-    /// to one field are never the same object, and comparing objects would let a read be carried past the
-    /// write that makes it stale.
-    /// </summary>
-    private static bool SameField(FieldAnalysisContext left, FieldAnalysisContext right)
-        => ReferenceEquals(Underlying(left), Underlying(right));
-
-    private static FieldAnalysisContext Underlying(FieldAnalysisContext field)
-        => (field as ConcreteGenericFieldAnalysisContext)?.BaseFieldContext ?? field;
-
-    /// <summary>
     /// Whether the instruction makes the replacement stale, so that carrying it any further would change what
     /// the code says. A constant is never stale; anything read out of memory has a lifetime.
     /// </summary>
+    /// <remarks>
+    /// Where the instruction writes is asked of <see cref="StoreTarget"/> rather than of
+    /// <c>Instruction.Destination</c>, which is null for a store into a field or into memory - that is, for
+    /// exactly the writes this is here to notice. See <see cref="StoreTarget"/> for what that cost.
+    /// </remarks>
     private static bool Invalidates(Instruction instruction, object replacement)
     {
         var isCall = instruction.OpCode is OpCode.Call or OpCode.CallVoid or OpCode.IndirectCall;
+        var written = StoreTarget.Of(instruction);
 
         switch (replacement)
         {
@@ -46,15 +40,19 @@ public static partial class Simplifier
 
                 // The same field written on any object, since nothing here proves the objects are different -
                 // and the object this one is read from being reassigned makes it name a different field.
-                return instruction.Destination switch
+                // A store through a raw memory operand may be that very field: field recovery does not name
+                // every write, and the same slot appears as `[x0 + 0x10]` on one line and as
+                // `this.<>1__state` on the next.
+                return written switch
                 {
-                    FieldReference written => SameField(written.Field, field.Field),
+                    FieldReference stored => StoreTarget.IsTheSameField(stored.Field, field.Field),
                     LocalVariable destination => destination == field.Local,
+                    MemoryOperand => true,
                     _ => false,
                 };
 
             case MemoryOperand memory when !memory.IsConstant:
-                return isCall || instruction.Destination is MemoryOperand or FieldReference;
+                return isCall || written is MemoryOperand or FieldReference;
 
             default:
                 return false;

@@ -150,13 +150,19 @@ public static class FieldReadSinking
     /// </summary>
     private static bool Harmless(Instruction instruction, FieldReference source)
     {
-        if (instruction.Destination is LocalVariable written && ReferenceEquals(written, source.Local))
+        //Where the instruction writes, asked of StoreTarget rather than of `Instruction.Destination` - which
+        //is null for a store into a field or into memory, so all three of these questions used to be asked
+        //of nothing at all and the read was carried straight over the write that makes it stale. See
+        //StoreTarget; `Corpus+<Steps>d__73::MoveNext` is what it cost.
+        var target = StoreTarget.Of(instruction);
+
+        if (target is LocalVariable written && ReferenceEquals(written, source.Local))
             return false;
 
-        if (instruction.Destination is MemoryOperand)
+        if (target is MemoryOperand)
             return false;
 
-        if (instruction.Destination is FieldReference stored && ReferenceEquals(stored.Field, source.Field))
+        if (target is FieldReference stored && StoreTarget.IsTheSameField(stored.Field, source.Field))
             return false;
 
         if (instruction.OpCode is OpCode.IndirectCall)
