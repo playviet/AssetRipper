@@ -186,6 +186,31 @@ public static class StructSlotFields
             or "System.UInt16Enum" or "System.Int32Enum" or "System.UInt32Enum" or "System.Int64Enum"
             or "System.UInt64Enum");
 
+    /// <summary>
+    /// Whether the instantiation is a <see cref="System.Nullable{T}"/>, which the namespace guard would
+    /// otherwise refuse.
+    /// </summary>
+    /// <remarks>
+    /// The guard keeps the arithmetic away from a struct whose layout metadata already records. A generic
+    /// <b>instantiation</b> records none whatever its namespace, so <c>System</c> is not the question - but
+    /// it is a cheap way of excluding <c>Span</c>, <c>ValueTuple</c> and the rest of the BCL's value types
+    /// wholesale, and it takes <c>Nullable</c> with them.
+    ///
+    /// A <c>Nullable&lt;T&gt;</c> on the stack is exactly what this pass is for. <c>Corpus::NullableSum</c>
+    /// accumulates in an <c>int?</c>: the constructor writes both fields through a pointer, and
+    /// <c>total ?? 0</c> is a bare <c>ldr w9, [sp+0xC]</c> of the value four bytes into it. Left unnamed that
+    /// read is a slot nothing assigns, so every iteration added to <c>0</c> and the method returned the last
+    /// element rather than the sum - 7 for {8,1,7}, whole and with no marker.
+    ///
+    /// Its two fields are declared <c>hasValue</c> then <c>value</c> in this game's metadata, so the value is
+    /// the second - see <c>il2cpp-a-nullable-is-two-bytes-one-question</c>, and <b>read the order rather than
+    /// inferring it</b>: the other way round compiles just as well and is wrong. The layout still comes from
+    /// <c>PathIntoStructValue</c> walking the instantiated fields, not from the recorded size, which for a
+    /// <c>Nullable</c> is a lie - the metadata says nine bytes for every instantiation of it.
+    /// </remarks>
+    private static bool IsANullable(GenericInstanceTypeAnalysisContext instantiation)
+        => instantiation.GenericType.FullName == "System.Nullable`1";
+
     /// <summary>The local a slot operand names, whether it stands alone or is the base of an address.</summary>
     private static LocalVariable? SlotLocal(object operand) => operand switch
     {
@@ -240,7 +265,8 @@ public static class StructSlotFields
     private static TypeAnalysisContext? Structure(TypeAnalysisContext? type) => type switch
     {
         GenericInstanceTypeAnalysisContext { IsValueType: true } instantiation
-            when instantiation.Namespace != nameof(System) && !IsSharedStandIn(instantiation) => instantiation,
+            when (instantiation.Namespace != nameof(System) || IsANullable(instantiation))
+                && !IsSharedStandIn(instantiation) => instantiation,
 
         ByRefTypeAnalysisContext { ElementType: { IsValueType: true, IsEnumType: false } pointedAt }
             when pointedAt.Namespace != nameof(System)

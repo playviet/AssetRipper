@@ -149,8 +149,11 @@ public static partial class MetadataResolver
             if (field.IsStatic)
                 continue;
 
-            if (field.BackingData?.FieldOffset != 0 || LaidOutSize(field.FieldType, pointerSize) is not { } size)
+            if (field.BackingData?.FieldOffset != 0
+                || LaidOutSize(AsInstantiated(field.FieldType, instance), pointerSize) is not { } size)
+            {
                 return null;
+            }
 
             position += (size - position % size) % size;
 
@@ -227,7 +230,13 @@ public static partial class MetadataResolver
         //came back as `B`. `UnityEngine.Rect` is the same, with `m_XMin` at 0 and `m_Height` at 12, while a
         //class records its first field at 0x10. **A field beginning at nought is what says a type is written
         //down that way**, and then the distance is already the distance.
-        if (definition.Fields.Any(f => !f.IsStatic && f.BackingData?.FieldOffset == 0))
+        //Not for a generic definition. There every field reports nought because **nothing is recorded**, not
+        //because the type is written down from the value - so the test reads as "laid out from zero", finds
+        //no field at the distance asked for and answers null, without ever reaching the walk below that
+        //exists for exactly this case. `System.Nullable`1` has `hasValue` and `value` both at nought, and a
+        //read four bytes into an `int?` came back as no field at all.
+        if (definition.GenericParameters.Count == 0
+            && definition.Fields.Any(f => !f.IsStatic && f.BackingData?.FieldOffset == 0))
         {
             foreach (var field in definition.Fields)
                 if (!field.IsStatic && field.BackingData?.FieldOffset == offset)
@@ -276,7 +285,7 @@ public static partial class MetadataResolver
             if (field.BackingData?.FieldOffset != 0)
                 return null;
 
-            if (SizeOf(field.FieldType, pointerSize) is not { } size)
+            if (SizeOf(AsInstantiated(field.FieldType, instance), pointerSize) is not { } size)
                 return null;
 
             //Each field starts at a multiple of its own size, which is what the generated struct does.
@@ -391,6 +400,37 @@ public static partial class MetadataResolver
     /// parameter is a pointer there, whatever it stands for elsewhere: the instantiations that would make it
     /// something else get a body of their own. Null where the size is not known from here.
     /// </summary>
+    /// <summary>
+    /// A field's type as the instantiation being laid out has it, rather than as the definition declares it.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="SizeOf"/> gives a bare type parameter the pointer size, which is right in a <b>shared</b>
+    /// body - that is the whole convention - and wrong for a real instantiation, whose field is as wide as
+    /// the argument. The walkers above are only ever pointed at real instantiations (a stand-in is refused
+    /// by their callers), so there the argument is the answer.
+    ///
+    /// <c>Nullable&lt;int&gt;</c> is the case that found it: <c>hasValue</c> then <c>value : T</c>, and
+    /// sizing <c>T</c> as eight bytes aligns <c>value</c> to offset 8 where the machine puts it at 4. The
+    /// walk then ran past the offset it was asked for and reported no field at all, so
+    /// <c>Corpus::NullableSum</c>'s accumulator stayed a slot nothing assigns and every iteration added to
+    /// zero. <c>List&lt;int&gt;.Enumerator._current</c> lands at 16 either way, which is why this went
+    /// unnoticed while the only shape needing it had an eight-byte-aligned field in front.
+    ///
+    /// Set <c>GENERICSIZE_OFF=1</c> to measure the same build without it.
+    /// </remarks>
+    private static TypeAnalysisContext AsInstantiated(TypeAnalysisContext declared,
+        GenericInstanceTypeAnalysisContext? instance)
+    {
+        if (GenericSizeOff || instance is null || declared is not GenericParameterTypeAnalysisContext parameter)
+            return declared;
+
+        return parameter.Index >= 0 && parameter.Index < instance.GenericArguments.Count
+            ? instance.GenericArguments[parameter.Index]
+            : declared;
+    }
+
+    private static readonly bool GenericSizeOff = System.Environment.GetEnvironmentVariable("GENERICSIZE_OFF") == "1";
+
     private static long? SizeOf(TypeAnalysisContext type, int pointerSize)
     {
         if (type is GenericParameterTypeAnalysisContext || !type.IsValueType)
