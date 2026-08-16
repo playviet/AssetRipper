@@ -112,6 +112,21 @@ public static class InaccessibleFieldRecovery
         var instance = declaring as GenericInstanceTypeAnalysisContext;
         var owner = instance?.GenericType ?? declaring;
 
+        //A read of `Nullable<T>.value` is `GetValueOrDefault()`, never `Value`. Both would compile and only
+        //one is what happened: the property **throws** where `hasValue` is false, while the field read the
+        //machine performs is exactly what `GetValueOrDefault` returns. `Corpus::NullableSum` accumulates in
+        //an `int?` starting at null, and `total.Value + values[i]` threw InvalidOperationException on the
+        //first element where `total ?? 0` was meant. Same family as the packed two-byte reading in
+        //`il2cpp-a-nullable-is-two-bytes-one-question`, which settled on the same method for the same reason.
+        if (!written && owner.FullName == "System.Nullable`1" && field.Name == "value"
+            && owner.Methods.FirstOrDefault(m => !m.IsStatic && m.Name == "GetValueOrDefault"
+                && m.Parameters.Count == 0) is { } orDefault)
+        {
+            return instance == null
+                ? orDefault
+                : new ConcreteGenericMethodAnalysisContext(orDefault, instance.GenericArguments, []);
+        }
+
         foreach (var candidate in Names(name))
         {
             var wanted = (written ? "set_" : "get_") + candidate;

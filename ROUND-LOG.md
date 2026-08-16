@@ -268,3 +268,58 @@ the prediction was that every game scorer would be flat. It was.
 | genfail | 0 | **0** |
 
 `Pick<T>` now reads `result = items[num4]; return result;` — semantically the source. **Kept.**
+
+---
+
+## 1.12.6 / export 642, and 1.12.7 / exports 643, 644 — `NullableSum`
+
+**Files and functions**
+
+| file | what |
+|---|---|
+| `Cpp2IL.Core/Analysis/StructSlotFields.cs` | `Structure` lets `System.Nullable\`1` past the namespace guard; new `IsANullable` |
+| `Cpp2IL.Core/Analysis/MetadataResolver.Fork.cs` | new `AsInstantiated`, used by `FieldOfOpenGeneric` and `SpanningField`; and one clause on `FieldOfStructValue`'s records-from-the-value test |
+| `Cpp2IL.Core/Analysis/InaccessibleFieldRecovery.cs` | `Accessor` answers `GetValueOrDefault()` for a read of `Nullable\`1.value` |
+
+**The diagnosis, in three layers, each hiding the next.** `NullableSum([8,1,7])` returned 7 — the last
+element, not the sum. The loop read `int num3 = default(int)` as its accumulator and never assigned it:
+
+```
+LDR W8, [X22, X20, LSL #2]   ; values[i]
+LDR W9, [X31 + 0xC]          ; <- total.GetValueOrDefault(), four bytes into the Nullable at [sp+8]
+ADD W1, W9, W8
+BL  Nullable`1<int>..ctor    ; total = that
+```
+
+`SLOTFIELD_TRACE` named the slots in one line — `stack_-24 (Int32)` sitting inside
+`stackaddr_-28 (Nullable\`1<Int32>)` — so `StructSlotFields` had everything it needed and refused. Three
+refusals in a row, each only visible once the one above it was lifted:
+
+1. **`Structure` excludes namespace `System`.** A cheap way of keeping `Span`, `ValueTuple` and the rest of
+   the BCL out; it takes `Nullable` with them, and a `Nullable<T>` on the stack is exactly what the pass is
+   for.
+2. **`SizeOf` gives a bare type parameter the pointer size.** Right in a *shared* body — that is the
+   convention — and wrong for a real instantiation. `hasValue` then `value : T` sized at eight aligns
+   `value` to offset 8 where the machine puts it at 4, so the walk ran past the offset asked for.
+   `List<int>.Enumerator._current` lands at 16 either way, which is why this went unnoticed.
+3. **`FieldOfStructValue`'s "records from the value" test fires on a generic definition**, where every field
+   reports offset nought because *nothing is recorded* — not because the type is laid out from zero. It then
+   found no field at the distance and answered null without ever reaching the walk that exists for this case.
+
+**And then the fix was still wrong, in the direction that matters.** With the slot named, the read came out
+`num3.Value` and `NullableSum` threw `InvalidOperationException` — a marker replaced by a *worse* lie.
+`Nullable<T>.Value` throws where `hasValue` is false; the field read the machine performs is exactly
+`GetValueOrDefault()`. Same conclusion `NullablePackedCompare` reached for the two-byte reading.
+
+| | 639 | 641 (layers only) | 643 / 644 |
+|---|---|---|---|
+| oracle run / same | 79 / 58 | 79 / 58 | 79 / **59** |
+| `full` + WRONG | 12 | 13 | **12** |
+| `full` + right | 53 | 53 | **54** |
+| `partial` + WRONG | 9 | 8 | **8** |
+| `NullableSum` | 7 | !InvalidOperationException | **16 — right** |
+| compare2 full / unmanaged | 2561 / 315 | 2561 / 315 | **2561 / 315** |
+| commented | 363 | 364 | **364** |
+| cfscore · allscore · decisions · roundtrip · genfail | 609/6 · 2121 · 1326 · 1044 · 0 | — | **all level** |
+
+Only `NullableSum` changes verdict. `commented` +1 on the game is the whole cost. **Kept.**
