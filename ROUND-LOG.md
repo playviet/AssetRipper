@@ -227,3 +227,44 @@ appear where 28 did, every one an unsigned comparison the export used to state a
   reach the top 24. Changing that signature is allowed — `ConditionalCompare.cs` is the fork's own file.
 * **`ComparesUnsigned` on its own.** The operand-type route into `AsksUnsigned` was measured only as part of
   a build where the marker also fires, so its independent worth is unknown. It is monotone and cost nothing.
+
+---
+
+## 1.12.5 / exports 639, 640 — `SharedPick` and `ValuePick`: two shapes, one root
+
+**Files and functions**
+
+| file | what |
+|---|---|
+| `Cpp2IL.Core/Analysis/SharedBody.cs` | **new** — `IsASpecialisation`, `Specialised`, `IsAStandIn` |
+| `Cpp2IL.Core/Analysis/LocalVariables.Fork.cs` | one guard at the top of `SeedSharedReturnBuffer` |
+| `Cpp2IL.Core/InstructionSets/NewArmV8InstructionSet.Fork.cs` | one clause on `stepped` in `AddRuntimeMethodOperand` |
+| `scratchpad/probe2/Program.cs` | `sharedbody`: `__Il2CppFullySharedGenericStructType` added to the stand-in list, and a count of the mis-shared bodies that return a bare type parameter |
+
+**Zero upstream lines.** Both call sites are already fork files.
+
+**The diagnosis.** `Pick<T>` recovered its null check, both magic divisions and its bounds check, and then
+returned `default(T)`. The ISIL said why in one line: `Return returnBuffer @ X2 (T)`, `regs=[X0,X1,X3]`.
+AssetRipper had applied the shared-generic **indirect return** convention — a shared body cannot know how wide
+a `T` is, so it answers through a hidden buffer and the `MethodInfo` moves along a register. But
+`probe2 sharedbody` says `Corpus::Pick @ 7B6330 is <System.Int32>`: il2cpp shares nothing for an ordinary
+value type, so what is registered against the definition is the `int` specialisation's code, and that returns
+in `w0` like anything else (`ldr w0, [x8 + 0x20]` / `ret`). The buffer was a register nothing writes.
+
+**The census, before building.** 1604 generic definitions have a body; **605 are a specialisation's under an
+open name, and 85 of those return a bare type parameter**. In `Assembly-CSharp` the mis-shared family is three
+(`SoftMask::Set`, `BaseTrackingSaveData::Set`, `SetPropertyUtility::SetStruct`) and **none returns one** — so
+the prediction was that every game scorer would be flat. It was.
+
+| | 636 | 639 / 640 |
+|---|---|---|
+| oracle run / same | 79 / 56 | 79 / **58** |
+| `full` + WRONG | 14 | **12** |
+| `full` + right | 51 | **53** |
+| corpus verdicts changed | — | `SharedPick`, `ValuePick`, both DIFFERS → agrees, **and nothing else** |
+| compare2 full / commented / unmanaged | 2561 / 363 / 315 | **2561 / 363 / 315** |
+| cfscore full / partial · files | 609 / 6 · 91/96 | **609 / 6 · 91/96** |
+| allscore · decisions · roundtrip whole | 2121 · 1326 · 1044 | **2121 · 1326 · 1044** |
+| genfail | 0 | **0** |
+
+`Pick<T>` now reads `result = items[num4]; return result;` — semantically the source. **Kept.**

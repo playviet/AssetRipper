@@ -303,6 +303,13 @@ public static partial class LocalVariables
         if (method.ReturnType is not { } returned || !ReturnedThroughABuffer(returned))
             return;
 
+        //Only where the body really is the shared one. il2cpp shares nothing for an ordinary value type, so
+        //what is registered against a definition used only at value types is one specialisation's code - and
+        //that returns in x0 like anything else. Seeding a buffer for it names a register nothing writes, and
+        //the rewrite below then makes every return `default(T)`. See SharedBody, and `Corpus::Pick<T>`.
+        if (SharedBody.IsASpecialisation(method))
+            return;
+
         //il2cpp appends the buffer and then the `MethodInfo`, so the buffer is the integer register right
         //before the one the MethodInfo arrived in. Counted off the MethodInfo rather than off the parameter
         //list, because a float parameter takes no integer register and counting would put it in the wrong

@@ -63,7 +63,7 @@ if (args[3] == "sharedbody")
 		list.Add(concrete);
 	}
 
-	int defs = 0, shared = 0, borrowed = 0;
+	int defs = 0, shared = 0, borrowed = 0, borrowedReturningVar = 0;
 
 	foreach (TypeAnalysisContext type in app.AllTypes)
 	foreach (MethodAnalysisContext m in type.Methods)
@@ -85,7 +85,10 @@ if (args[3] == "sharedbody")
 		// generically. A CONCRETE argument means il2cpp compiled no shared body at all - what is registered
 		// against the definition is that specialisation's code.
 		bool StandIn(TypeAnalysisContext g) => g.FullName is "System.Object"
+			//__Il2CppFullySharedGenericStructType was missing and made JitHelpers::UnsafeEnumCastLong a
+			//false positive - it is a stand-in like the rest. Match the prefix rather than the two names.
 			or "Unity.IL2CPP.Metadata.__Il2CppFullySharedGenericType"
+			or "Unity.IL2CPP.Metadata.__Il2CppFullySharedGenericStructType"
 			or "System.Int32Enum" or "System.Int16Enum" or "System.SByteEnum"
 			or "System.UInt32Enum" or "System.UInt16Enum" or "System.ByteEnum" or "System.Int64Enum" or "System.UInt64Enum";
 
@@ -96,6 +99,11 @@ if (args[3] == "sharedbody")
 		}
 
 		borrowed++;
+		//Whether the mis-shared body is one the return convention is decided for: only a bare type parameter
+		//return takes the hidden buffer and steps the MethodInfo along, so only those are affected.
+		bool returnsVar = m.Definition?.RawReturnType?.Type is LibCpp2IL.BinaryStructures.Il2CppTypeEnum.IL2CPP_TYPE_VAR
+			or LibCpp2IL.BinaryStructures.Il2CppTypeEnum.IL2CPP_TYPE_MVAR;
+		if (returnsVar) borrowedReturningVar++;
 		string args2 = string.Join(", ", match.MethodGenericParameters.Select(g => g.FullName));
 		bool ours = type.DeclaringAssembly?.Name == "Assembly-CSharp";
 		Console.WriteLine($"{(ours ? "OURS     " : "elsewhere")} {type.FullName}::{m.Name} @ {m.UnderlyingPointer:X}  is <{args2}>  of {instantiations!.Count}");
@@ -104,6 +112,7 @@ if (args[3] == "sharedbody")
 	Console.WriteLine($"\ngeneric method definitions with a body        : {defs}");
 	Console.WriteLine($"  a genuine SHARED body (stand-in arguments)  : {shared}");
 	Console.WriteLine($"  a SPECIALISATION's body under an open name  : {borrowed}");
+	Console.WriteLine($"    ...of those, returning a bare type parameter: {borrowedReturningVar}   <- the ones the buffer is wrongly seeded for");
 	return;
 }
 

@@ -823,8 +823,12 @@ public partial class NewArmV8InstructionSet
         //there are. The test is the *raw* return type, because it has to be exactly a type parameter -
         //`ArrayExtension::ResizeArray<T>` returns `T[]`, which is a pointer like any other and takes no
         //buffer, and its MethodInfo is in `x3` today, correctly.
+        //And not where the registered body is a value-type specialisation's rather than the shared one -
+        //there is no buffer in that convention, so the MethodInfo is where it would be without one. See
+        //Analysis.SharedBody; 85 definitions in this game return a type parameter and have no shared body.
         var stepped = context.Definition?.RawReturnType?.Type is LibCpp2IL.BinaryStructures.Il2CppTypeEnum.IL2CPP_TYPE_VAR
-            or LibCpp2IL.BinaryStructures.Il2CppTypeEnum.IL2CPP_TYPE_MVAR;
+            or LibCpp2IL.BinaryStructures.Il2CppTypeEnum.IL2CPP_TYPE_MVAR
+            && !Cpp2IL.Core.Analysis.SharedBody.IsASpecialisation(context);
 
         if (stepped)
             used++;
