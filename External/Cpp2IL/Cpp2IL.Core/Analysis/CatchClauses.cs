@@ -66,6 +66,34 @@ public static class CatchClauses
     public static List<CatchClause>? Of(MethodAnalysisContext method)
         => Recovered.TryGetValue(method, out var clauses) ? clauses : null;
 
+    /// <summary>
+    /// Why a clause was not recovered, counted, when CATCH_CENSUS asks. Nothing reads it in an ordinary run.
+    /// </summary>
+    /// <remarks>
+    /// The number this exists to produce is how far short of the exception tables a structural rule falls.
+    /// The <c>try</c> range is written down in <c>.gcc_except_table</c> and this pass does not read it, so it
+    /// can only see a throw whose landing pad clang happened to lay directly after it. This says how often
+    /// that is, and what the rest look like instead.
+    /// </remarks>
+    private static readonly Dictionary<string, int> Census = new();
+
+    private static void Counted(string why)
+    {
+        if (System.Environment.GetEnvironmentVariable("CATCH_CENSUS") != "1")
+            return;
+
+        lock (Census)
+        {
+            Census[why] = Census.GetValueOrDefault(why) + 1;
+
+            if (Census.TryGetValue("throws", out var total) && total % 500 == 0)
+            {
+                System.Console.Error.WriteLine("CATCH CENSUS " + string.Join("  ",
+                    Census.OrderByDescending(k => k.Value).Select(k => $"{k.Key}={k.Value}")));
+            }
+        }
+    }
+
     public static void Run(MethodAnalysisContext method)
     {
         if (method.ControlFlowGraph is not { } graph)
@@ -84,7 +112,13 @@ public static class CatchClauses
         //One clause only. Two would have to agree about which blocks belong to which, and the evidence that
         //would settle that is the exception table this does not read.
         if (clauses.Count != 1)
+        {
+            if (clauses.Count > 1)
+                Counted("more than one clause");
             return;
+        }
+
+        Counted("recovered");
 
         var only = clauses[0];
 
@@ -124,25 +158,42 @@ public static class CatchClauses
     {
         //The throw has to end the block. Where MergeCallBlocks left one mid-block the instructions after it
         //are the pad's own, and the two cannot be told apart by position.
+        if (guarded.Instructions.Any(i => i.OpCode == OpCode.Throw))
+            Counted("throws");
+
         if (guarded.Instructions.LastOrDefault(i => i.OpCode != OpCode.Nop) is not { OpCode: OpCode.Throw })
+        {
+            if (guarded.Instructions.Any(i => i.OpCode == OpCode.Throw))
+                Counted("the throw does not end the block");
             return null;
+        }
 
         var pads = guarded.Successors.Where(s => s != graph.ExitBlock && s != guarded).ToList();
 
         if (pads.Count != 1)
+        {
+            Counted(pads.Count == 0 ? "the throw has no successor - no pad was laid after it" : "several successors");
             return null;
+        }
 
         var region = Region(guarded, graph);
 
         if (region.Count == 0)
+        {
+            Counted("the region past the throw is not a pad-sized one");
             return null;
+        }
+
+        var found = false;
 
         foreach (var block in region)
         {
-            var (caught, handlerEntry) = Dispatch(block, graph);
+            var (caught, handlerEntry) = Dispatch(block, region, graph);
 
             if (handlerEntry is null || caught is null)
                 continue;
+
+            found = true;
 
             var handler = Reachable(handlerEntry, graph);
 
@@ -159,6 +210,7 @@ public static class CatchClauses
             return new CatchClause { Guarded = guarded, Handler = handler, Caught = caught };
         }
 
+        Counted(found ? "a dispatch was found but its handler is not closed" : "no class_is_assignable_from dispatch in the region");
         return null;
     }
 
@@ -166,7 +218,7 @@ public static class CatchClauses
     /// The type this block tests the exception against and the block it falls into when the test passes,
     /// where the block ends in the landing pad's <c>class_is_assignable_from</c> dispatch.
     /// </summary>
-    private static (TypeAnalysisContext? Caught, Block? Handler) Dispatch(Block block, ISILControlFlowGraph graph)
+    private static (TypeAnalysisContext? Caught, Block? Handler) Dispatch(Block block, List<Block> region, ISILControlFlowGraph graph)
     {
         if (block.Instructions.LastOrDefault(i => i.OpCode != OpCode.Nop) is not
             { OpCode: OpCode.ConditionalJump, Operands.Count: 2 } jump)
@@ -206,7 +258,7 @@ public static class CatchClauses
         TypeAnalysisContext? caught = null;
         foreach (var argument in call.SourcesAndConstants)
         {
-            if (NamedClass(block, argument) is { } named)
+            if (NamedClass(region, argument) is { } named)
                 caught = named;
         }
 
@@ -227,7 +279,7 @@ public static class CatchClauses
     /// <c>il2cpp_codegen_initialize_runtime_metadata</c> answered with, and that call's own argument is the
     /// pointer. One step back is enough, and more than one would start guessing.
     /// </remarks>
-    private static TypeAnalysisContext? NamedClass(Block block, object? operand)
+    private static TypeAnalysisContext? NamedClass(List<Block> region, object? operand)
     {
         if (operand is not LocalVariable local)
             return null;
@@ -235,7 +287,9 @@ public static class CatchClauses
         if (local.Type is RuntimeClassTypeAnalysisContext direct)
             return direct.RepresentedType;
 
-        if (DefinitionIn(block, local) is not { } definition)
+        //Across the whole landing pad, not this block: the metadata call that answers with the pointer is
+        //one block above the dispatch that reads it, which is what a block-local search missed.
+        if (DefinitionIn(region, local) is not { } definition)
             return null;
 
         foreach (var source in definition.SourcesAndConstants)
@@ -342,6 +396,24 @@ public static class CatchClauses
         block.Successors.Clear();
         block.Instructions.Clear();
         graph.Blocks.Remove(block);
+    }
+
+    private static Instruction? DefinitionIn(List<Block> blocks, LocalVariable local)
+    {
+        Instruction? found = null;
+
+        foreach (var block in blocks)
+        {
+            if (DefinitionIn(block, local) is not { } here)
+                continue;
+
+            if (found != null)
+                return null;
+
+            found = here;
+        }
+
+        return found;
     }
 
     /// <summary>The one instruction in this block that writes the local, where there is exactly one.</summary>

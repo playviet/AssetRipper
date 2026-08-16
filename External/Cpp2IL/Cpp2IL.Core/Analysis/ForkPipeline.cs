@@ -733,6 +733,12 @@ public static class ForkPipeline
 
         DeadFrameArithmetic.Run(method);
 
+        // Last of everything that changes the graph, because it deletes blocks and re-orders the block list,
+        // and because what it has to recognise is the shape the generator is about to see: a throw whose
+        // successor is the C++ landing pad the `catch` was compiled into. Running it earlier would hand the
+        // passes above a handler that nothing reaches, and several of them count uses.
+        CatchClauses.Run(method);
+
         // Counts and changes nothing, and only when ADDBASE_CENSUS names a file: the surviving additions of a
         // reference and a byte offset, which is the CS0019 family. Last of all, so what it sees is what the
         // generator sees.

@@ -2338,6 +2338,177 @@ public static partial class IlGenerator
     /// particular - which is what a body that was given up on is worth, and is the difference between a
     /// method that reads and one that is thrown away whole.
     /// </remarks>
+    /// <summary>
+    /// Writes the <c>catch</c> clause <see cref="Analysis.CatchClauses"/> recovered as a real CIL exception
+    /// handler, so that the handler's body is reachable and the decompiler writes it out.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Everything the clause needs from the layout is already true by the time this runs: the analysis moved
+    /// the handler's blocks to the end of the graph and left them reachable from nothing, so
+    /// <see cref="LayoutOrder"/>'s "a block the walk never reached is still written out" clause emits them as
+    /// one contiguous run at the end of the body. That run is the handler range; the guarded block's own run
+    /// is the <c>try</c> range. Neither has to be adjacent to the other.
+    /// </para>
+    /// <para>
+    /// Three things the CIL rules ask for and the ISIL does not know about. A handler is entered with the
+    /// exception on the stack, so it opens with a <c>pop</c> - none of these handlers names the exception,
+    /// because C++ landing pads read it out of the runtime rather than off the stack. Control may not
+    /// <b>fall</b> into a handler, so where the block before it does, a branch to the epilogue goes in - which
+    /// is the same answer running off the end of the body already gave, since <c>InitializeLocals</c> makes
+    /// the returned local a default. And <c>ret</c> may not be used to leave a protected region, so every
+    /// <c>ret</c> in the handler becomes a store to one local and a <c>leave</c> to the one epilogue.
+    /// </para>
+    /// <para>
+    /// It runs after everything that moves or removes an instruction, and every boundary is looked up by
+    /// identity: if any of the four is no longer in the body, the clause is dropped rather than written at a
+    /// guessed offset.
+    /// </para>
+    /// </remarks>
+    private static void AddCatchClauses(MethodAnalysisContext context, MethodDefinition definition,
+        ModuleDefinition module, ReferenceImporter importer,
+        Dictionary<Instruction, List<CilInstruction>> instructionMap)
+    {
+        if (Analysis.CatchClauses.Of(context) is not [{ } clause])
+            return;
+
+        var body = definition.CilMethodBody!;
+        var instructions = body.Instructions;
+
+        var (guardedFirst, guardedLast) = EmittedRange(clause.Guarded, instructionMap);
+        var (handlerFirst, _) = EmittedRange(clause.Handler[0], instructionMap);
+
+        if (guardedFirst is null || guardedLast is null || handlerFirst is null)
+        {
+            Refused(context, "the clause's own blocks emitted nothing");
+            return;
+        }
+
+        var tryStart = At(instructions, guardedFirst);
+        var tryLast = At(instructions, guardedLast);
+        var handlerStart = At(instructions, handlerFirst);
+
+        //The handler may begin at the instruction directly after the try - that is the ordinary shape, and
+        //demanding a gap refused every clause the analysis recovered.
+        if (tryStart < 0 || tryLast < tryStart || handlerStart <= tryLast)
+        {
+            Refused(context, $"the ranges do not hold: try {tryStart}..{tryLast}, handler {handlerStart}");
+            return;
+        }
+
+        //The try is the throw and what builds what it throws. Anything else in the range would need a `leave`
+        //of its own, and the range would be a guess in the first place - see CatchClauses.
+        if (instructions[tryLast].OpCode.Code != CilCode.Throw)
+        {
+            Refused(context, $"the try does not end in a throw but in {instructions[tryLast].OpCode}");
+            return;
+        }
+
+        if (clause.Caught.ToTypeSignature(module).ToTypeDefOrRef() is not { } caught)
+        {
+            Refused(context, $"no type reference for {clause.Caught.FullName}");
+            return;
+        }
+
+        //Nothing may fall into a handler. Where the run before it does, the branch to the epilogue says what
+        //running off the end of the body already said.
+        var epilogue = new CilInstruction(CilOpCodes.Nop);
+        var epilogueLabel = new CilInstructionLabel(epilogue);
+
+        if (instructions[handlerStart - 1].OpCode.FlowControl
+            is not (CilFlowControl.Return or CilFlowControl.Throw or CilFlowControl.Branch))
+        {
+            instructions.Insert(handlerStart, new CilInstruction(CilOpCodes.Br, epilogueLabel));
+            handlerStart++;
+        }
+
+        instructions.Insert(handlerStart, new CilInstruction(CilOpCodes.Pop));
+
+        var returned = context.ReturnType is { } type && type.FullName != "System.Void"
+            ? ContextToTypeSignature.LocalTypeSignature(type, context, module)
+            : null;
+
+        CilLocalVariable? answer = null;
+        if (returned != null)
+        {
+            answer = new CilLocalVariable(returned);
+            body.LocalVariables.Add(answer);
+        }
+
+        //Backwards, so that the insertions do not move the indices still to be visited.
+        for (var i = instructions.Count - 1; i >= handlerStart; i--)
+        {
+            if (instructions[i].OpCode.Code != CilCode.Ret)
+                continue;
+
+            instructions[i].OpCode = CilOpCodes.Leave;
+            instructions[i].Operand = epilogueLabel;
+
+            if (answer != null)
+                instructions.Insert(i, new CilInstruction(CilOpCodes.Stloc, answer));
+        }
+
+        instructions.Add(epilogue);
+
+        if (answer != null)
+            instructions.Add(CilOpCodes.Ldloc, answer);
+
+        instructions.Add(CilOpCodes.Ret);
+
+        body.ExceptionHandlers.Add(new CilExceptionHandler
+        {
+            HandlerType = CilExceptionHandlerType.Exception,
+            ExceptionType = caught,
+            TryStart = new CilInstructionLabel(instructions[At(instructions, guardedFirst)]),
+            TryEnd = new CilInstructionLabel(instructions[At(instructions, guardedLast) + 1]),
+            HandlerStart = new CilInstructionLabel(instructions[At(instructions, handlerFirst) - 1]),
+            HandlerEnd = epilogueLabel,
+        });
+
+        Refused(context, $"wrote catch ({clause.Caught.FullName})");
+    }
+
+    /// <summary>
+    /// Where an instruction sits in the body, <b>by identity</b>. <c>IndexOf</c> compares values, and a
+    /// handler that opens on a <c>nop</c> would be found at the first <c>nop</c> in the method instead of at
+    /// its own - which is exactly how the first attempt at this silently refused every clause it recovered.
+    /// </summary>
+    private static int At(CilInstructionCollection instructions, CilInstruction wanted)
+    {
+        for (var i = 0; i < instructions.Count; i++)
+        {
+            if (ReferenceEquals(instructions[i], wanted))
+                return i;
+        }
+
+        return -1;
+    }
+
+    /// <summary>Says why a recovered clause was not written, when CATCH_TRACE asks.</summary>
+    private static void Refused(MethodAnalysisContext context, string why)
+    {
+        if (System.Environment.GetEnvironmentVariable("CATCH_TRACE") == "1")
+            System.Console.Error.WriteLine($"CATCH {context.DeclaringType?.Name}::{context.Name}: {why}");
+    }
+
+    /// <summary>The first and last CIL instruction a block was emitted as, where it produced any.</summary>
+    private static (CilInstruction? First, CilInstruction? Last) EmittedRange(Block block,
+        Dictionary<Instruction, List<CilInstruction>> instructionMap)
+    {
+        CilInstruction? first = null, last = null;
+
+        foreach (var instruction in block.Instructions)
+        {
+            if (!instructionMap.TryGetValue(instruction, out var generated) || generated.Count == 0)
+                continue;
+
+            first ??= generated[0];
+            last = generated[^1];
+        }
+
+        return (first, last);
+    }
+
     private static void EnsureTheBodyEnds(MethodAnalysisContext context, MethodDefinition definition,
         ModuleDefinition module, ReferenceImporter importer)
     {

@@ -204,6 +204,7 @@ public static partial class IlGenerator
         }
 
         EnsureTheBodyEnds(context, definition, module, importer);
+        AddCatchClauses(context, definition, module, importer, instructionMap);
     }
     
 
