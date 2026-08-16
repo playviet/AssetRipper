@@ -1406,6 +1406,85 @@ if (args[3] == "hfa")
 	return;
 }
 
+// landing [assemblySubstring] - how much of the game is a C++ landing pad, i.e. a managed catch clause.
+//
+// il2cpp compiles `catch (T)` into: raise, then a landing pad that asks
+// `il2cpp_codegen_class_is_assignable_from(T_TypeInfo, object_class(ex))` and either falls into the handler
+// body or re-raises. The class pointer is the one thing in that sequence the analysis already types
+// (`Il2CppClass<T>`), so it is what a catch clause can be counted by.
+if (args[3] == "landing")
+{
+	int padMethods = 0, withThrow = 0, throwWithSuccessor = 0, withClassInPad = 0, clauses = 0;
+	var byType = new Dictionary<string, int>();
+	var examples = new List<string>();
+
+	foreach (TypeAnalysisContext type in app.AllTypes)
+	{
+		if (args.Length > 4 && !(type.DeclaringAssembly?.Name?.Contains(args[4]) ?? false)) continue;
+		foreach (MethodAnalysisContext m in type.Methods)
+		{
+			if (m.UnderlyingPointer == 0) continue;
+			try { m.Analyze(); } catch { continue; }
+			if (m.ControlFlowGraph is null) continue;
+			padMethods++;
+
+			var pads = new List<Block>();
+			bool anyThrow = false;
+			foreach (Block b in m.ControlFlowGraph.Blocks)
+			{
+				if (!b.Instructions.Any(i => i.OpCode == OpCode.Throw)) continue;
+				anyThrow = true;
+				foreach (Block s in b.Successors)
+					if (s != m.ControlFlowGraph.ExitBlock && s != b)
+						pads.Add(s);
+			}
+			if (anyThrow) withThrow++;
+			if (pads.Count == 0) continue;
+			throwWithSuccessor++;
+
+			// Everything reachable from a landing pad, bounded - the pad and the handler are a small region.
+			var seen = new HashSet<Block>();
+			var queue = new Queue<Block>(pads);
+			var region = new List<Block>();
+			while (queue.Count > 0 && region.Count < 40)
+			{
+				Block b = queue.Dequeue();
+				if (b == m.ControlFlowGraph.ExitBlock || !seen.Add(b)) continue;
+				region.Add(b);
+				foreach (Block s in b.Successors) queue.Enqueue(s);
+			}
+
+			int here = 0;
+			foreach (Block b in region)
+				foreach (Instruction i in b.Instructions)
+					foreach (object o in i.Operands)
+						if (o is LocalVariable { Type: RuntimeClassTypeAnalysisContext klass })
+						{
+							here++;
+							byType[klass.RepresentedType.FullName ?? "?"] = byType.GetValueOrDefault(klass.RepresentedType.FullName ?? "?") + 1;
+						}
+
+			if (here > 0)
+			{
+				withClassInPad++;
+				clauses += here;
+				if (examples.Count < 25) examples.Add($"{type.FullName}::{m.Name}  pads={pads.Count} region={region.Count} classes={here}");
+			}
+		}
+	}
+
+	Console.WriteLine($"padMethods analysed                              {padMethods}");
+	Console.WriteLine($"  with a Throw                                {withThrow}");
+	Console.WriteLine($"  whose Throw block has a successor           {throwWithSuccessor}");
+	Console.WriteLine($"  with a class pointer in that region         {withClassInPad}");
+	Console.WriteLine($"  class-pointer operands there (>= clauses)   {clauses}");
+	Console.WriteLine("--- most caught types ---");
+	foreach (var kv in byType.OrderByDescending(k => k.Value).Take(20)) Console.WriteLine($"  {kv.Value,5}  {kv.Key}");
+	Console.WriteLine("--- examples ---");
+	foreach (string e in examples) Console.WriteLine("  " + e);
+	return;
+}
+
 // rawisil <type> [method] - the ISIL straight out of the lifter, before a single analysis pass.
 //
 // `dump` and `isil` both call Analyze() first, so neither can tell a lifter that never produced an
