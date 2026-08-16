@@ -426,3 +426,48 @@ and `roundtrip` are level; `cfscore` loses one body and `unmanaged` gains eight 
 RECOVERY.md names: *a read that becomes a marker is better than a read that quietly returns the wrong value*,
 and here the old behaviour was reading a field **after it had been overwritten**. `livecount` says live code
 went up, and the live lines that did leave are `_ = list.Count;` discards, not statements.
+
+---
+
+## 1.12.10 / exports 650, 651 — `mov Xd, #bitmask`, which Disarm renders as `INVALID`
+
+`Cpp2IL.Core/InstructionSets/NewArmV8InstructionSet.Fork.cs` — new `MovedBitmask`, one line at the `MOV` case
+in `NewArmV8InstructionSet.cs`. `scratchpad/probe2/Program.cs` — new `badoperand` mode.
+
+`mov x9, #-4294967296` is `orr x9, xzr, #0xffffffff00000000`, the same bitmask encoding `LogicalImmediate`
+already decodes for `and`/`orr`/`eor`. Disarm reports the mnemonic and then hands over an operand it cannot
+represent — `Op1Kind` is `Register` and `Op1Reg` is `Arm64Register.INVALID` — so the lifter moves a **local
+nothing ever assigns**, and everything computed from it is arithmetic on nothing.
+
+**65 sites in 58 methods**, all `MOV`, counted with the new `badoperand` mode (distinct from `invalid`, which
+counts words Disarm refuses outright — those are all NEON). `Buffer::MemoryCopy`, `MulticastDelegate::
+CombineImpl` and `BigInteger::IsProbablePrime` among them.
+
+`Corpus::Reversed` is the shape: counting an index **down** is done in the high half of a register —
+`x10 = len << 32`, `x10 += x9` each turn with `x9 = -1 << 32`, and `asr #30` reads the index back already
+scaled by four. The whole chain was built on the undefined local; it now reads
+`long num2 = -4294967296L + (num << 32);`.
+
+| | 648 | 651 |
+|---|---|---|
+| oracle run / same | 79 / 62 | 79 / 62 |
+| every game scorer | 2560 · 371 · 324 · 607/8 · 90/96 · 2120 · 1326 · 1044 · 0 | **identical** |
+| livecount | — | live -1, branches 0 |
+
+**Kept, and honestly: no scorer moved.** It is not inert — the ISIL goes from an undefined local to the right
+constant at 65 sites — but all 65 are in the substituted assemblies, so nothing scoreable sees them. Same
+family as the six wrong-value decoder bugs `il2cpp-differential-test-the-disassembler` records.
+
+### `Reversed` is now half-fixed, and the other half is specified
+
+The index chain is right; the remaining fault is one step later. The read is
+`[values + 0x20 + v70]` with **no scale**, where `v70 = x10 asr #30` is a **byte offset** (index × 4).
+`IlGenerator.Fork.cs`'s array path returns `memory.Index` unchanged when `memory.Addend == elements`,
+whatever `memory.Scale` says — so `values[num4]` is four times too big and throws.
+
+The rule is exact: **an index the addressing mode does not scale is a byte offset, and the subscript is that
+offset divided by the element width.** It cannot be done where it was found — that function returns operands,
+not instructions, and a division has to be emitted — so it belongs in `ArrayAccessRecovery`, beside the other
+subscript reconstructions. Not attempted here: the subscript path is the one that cost 12 game methods the
+last time it was widened (`il2cpp-a-slot-inside-a-struct-is-its-field`), and it wants its own round with its
+own before/after.

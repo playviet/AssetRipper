@@ -347,7 +347,9 @@ public partial class NewArmV8InstructionSet : Cpp2IlInstructionSet
                 if (instruction.Op0Kind == Arm64OperandKind.Register)
                     adrpOffsets.Remove(instruction.Op0Reg);
 
-                Add(address, OpCode.Move, ConvertOperand(instruction, 0), ConvertOperand(instruction, 1));
+                //A `mov` of a bitmask immediate the disassembler could not render - see MovedBitmask in the fork.
+                Add(address, OpCode.Move, ConvertOperand(instruction, 0),
+                    MovedBitmask(context, instruction) ?? ConvertOperand(instruction, 1));
                 Add(address, OpCode.CheckEqual, new Register(null, "Z"), ConvertOperand(instruction, 0), 0);
                 break;
             case Arm64Mnemonic.MOVN:

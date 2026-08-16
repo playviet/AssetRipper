@@ -1431,6 +1431,50 @@ public partial class NewArmV8InstructionSet
     /// instead, following DecodeBitMasks from the architecture manual.
     /// </para>
     /// </remarks>
+    /// <summary>
+    /// The constant a <c>mov</c> of a bitmask immediate moves, where the disassembler could not render it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <c>mov x9, #-4294967296</c> is <c>orr x9, xzr, #0xffffffff00000000</c> - the same bitmask encoding
+    /// <see cref="LogicalImmediate"/> already decodes for <c>and</c>, <c>orr</c> and <c>eor</c>. Disarm
+    /// reports the mnemonic and then hands over an operand it cannot represent, so the instruction arrives as
+    /// <c>MOV X9, INVALID</c>: the lifter moves a register **nothing ever assigns**, and everything computed
+    /// from it is arithmetic on a local with no definition.
+    /// </para>
+    /// <para>
+    /// <c>Corpus::Reversed</c> is the shape. Counting an index down is done in the <b>high half</b> of a
+    /// register - <c>x10 = len &lt;&lt; 32</c>, then <c>x10 += x9</c> each turn with <c>x9</c> being
+    /// <c>-1 &lt;&lt; 32</c>, and <c>asr #30</c> reads the index back out already scaled by four. With
+    /// <c>x9</c> undefined the whole chain is, and <c>copy[i] = values[len - 1 - i]</c> came out as an
+    /// index the analysis could say nothing about - <c>IndexOutOfRangeException</c> on every input.
+    /// </para>
+    /// <para>
+    /// Taken only where the raw word really is <c>orr Xd, XZR, #imm</c>, and only where the disassembler did
+    /// not give an immediate of its own - so an instruction it read correctly is left exactly as it was.
+    /// </para>
+    /// </remarks>
+    internal static long? MovedBitmask(MethodAnalysisContext context, Arm64Instruction instruction)
+    {
+        //Disarm reports the operand as a register and names it INVALID - it is not a register at all, and
+        //`RegisterFor` then makes a local called INVALID that nothing ever assigns.
+        var unrenderable = instruction.Op1Kind == Arm64OperandKind.Register
+            && instruction.Op1Reg == Arm64Register.INVALID;
+
+        if (!unrenderable)
+            return null;
+
+        if (RawWord(context, instruction) is not { } word)
+            return null;
+
+        //`orr` of a bitmask immediate against the zero register, which is what `mov` of one assembles as.
+        //opc is bits 30..29 and 01 is ORR; Rn is bits 9..5 and 31 is the zero register.
+        if ((word >> 23 & 0x3F) != 0b100100 || (word >> 29 & 3) != 1 || (word >> 5 & 0x1F) != 31)
+            return null;
+
+        return LogicalImmediate(context, instruction);
+    }
+
     private static long? LogicalImmediate(MethodAnalysisContext context, Arm64Instruction instruction)
     {
         var binary = context.AppContext.Binary;

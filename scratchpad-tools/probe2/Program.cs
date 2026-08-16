@@ -1089,6 +1089,46 @@ if (args[3] == "xextend")
 	return;
 }
 
+// badoperand - an instruction Disarm DECODED but whose operand it could not render. Distinct from `invalid`,
+// which counts words it refused outright. `mov x9, #-4294967296` - an ORR of a bitmask immediate against the
+// zero register - comes out as `MOV X9, INVALID`, and the lifter then moves a register nothing ever assigns.
+if (args[3] == "badoperand")
+{
+	int walked = 0, sites = 0;
+	Dictionary<string, int> byMnemonic = new();
+	HashSet<string> boMethods = new();
+	List<string> examples = new();
+
+	foreach (TypeAnalysisContext type in app.AllTypes)
+		foreach (MethodAnalysisContext m in type.Methods)
+		{
+			if (m.UnderlyingPointer == 0) continue;
+			walked++;
+			IEnumerable<Disarm.Arm64Instruction> body;
+			try { body = Cpp2IL.Core.Utils.NewArm64Utils.GetArm64MethodBodyAtVirtualAddress(app.Binary, m.UnderlyingPointer); }
+			catch { continue; }
+
+			foreach (Disarm.Arm64Instruction i in body)
+			{
+				if (i.Mnemonic == Disarm.Arm64Mnemonic.INVALID) continue;
+				string text = i.ToString();
+				if (!text.Contains("INVALID")) continue;
+
+				sites++;
+				byMnemonic[i.Mnemonic.ToString()] = byMnemonic.GetValueOrDefault(i.Mnemonic.ToString()) + 1;
+				boMethods.Add($"{type.Name}::{m.Name}");
+				if (examples.Count < 12) examples.Add($"{type.Name}::{m.Name}  0x{i.Address:X}  {text}");
+			}
+		}
+
+	Console.WriteLine($"{walked} methods walked");
+	Console.WriteLine($"decoded instructions with an unrenderable operand: {sites} sites in {boMethods.Count} methods");
+	foreach (var e in byMnemonic.OrderByDescending(x => x.Value).Take(14))
+		Console.WriteLine($"   {e.Value,6}  {e.Key}");
+	foreach (string e in examples) Console.WriteLine("   " + e);
+	return;
+}
+
 // sharedcalls - calls whose callee is on a shared generic instantiation (System.Object or a *Enum stand-in
 // in its arguments), counted by whether the method itself carries a `methodof` naming the real
 // instantiation of the same method. il2cpp hands a shared body the concrete MethodInfo, so where that is
