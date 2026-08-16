@@ -191,3 +191,39 @@ opcode, one line each — and `IlGenerator` reads the mark. **It emits nothing.*
 
 `Weight` now reads `return (int)(((uint)kind >= 7u) ? 0L : num);` — and the two scratch locals the
 conversion form left behind are gone with it.
+
+| | 633 baseline | 637 (fast, both on) | 638 (full, both on) |
+|---|---|---|---|
+| compare2 full (decompiled only) | 2561 | **2561** | **2561** |
+| commented / unmanaged | 363 / 315 | **363 / 315** | **363 / 315** |
+| notfound / indirect | 38 / 18 | **38 / 18** | **38 / 18** |
+| cfscore full / partial | 609 / 6 | **609 / 6** | **609 / 6** |
+| files clean | 91/96 | **91/96** | **91/96** |
+| allscore | 2121 (91.2%) | **2121** | **2121** |
+| decisions | 1326/1382 | **1326** | **1326** |
+| roundtrip whole | 1044 | **1044** | **1044** |
+| genfail | 0 | **0** | **0** |
+| Unity gate | 12 CS7069 (floor) | — | **12 CS7069** |
+
+**Kept.** Every compilability measure identical, the corpus oracle two shapes better, and the Unity gate on
+its floor. 80 game files change text and none changes score — which is what a correctness fix looks like
+here. The one worth naming: `CFramework/Utility::TimeFormatMS` went from
+`long num5 = (long)((ulong)(0L + num4) >> 32) + (long)num3;` to
+`int num5 = (int)((ulong)(0L + num4) >> 32) + num3;`, so it computes its hours right; and 800 `(uint)` casts
+appear where 28 did, every one an unsigned comparison the export used to state as a signed one.
+
+---
+
+## Specified but unbuilt
+
+* **`Shifts`.** Declined with a measurement, above. The right place for it is not the lifter: deciding
+  whether `add x8, x8, w9, sxtw #2` is arithmetic or an element address needs the **base's type**, which the
+  lifter does not have and a later ISIL pass does. That is a design change, not a round.
+* **`WordWidth` at the last 8 sites.** `CSEL` (4), `UBFM`, `SBFM`, `BFM`, `CMP` and `ORR`'s operand 1 (1
+  each) are not hooked; 362 of the 370 are. Each needs its own one-line call.
+* **`CCMP`.** `ConditionalCompare.Guard` cannot mark its comparison because its `emit` returns `void`, so a
+  carry condition folded into an `&&` chain is still read as signed. `CCMP` is 205 + 114 in the top 24 of
+  `probe2 carry` and both of those are `EQ`/`NE`, which are unaffected; the carry-reading ones did not
+  reach the top 24. Changing that signature is allowed — `ConditionalCompare.cs` is the fork's own file.
+* **`ComparesUnsigned` on its own.** The operand-type route into `AsksUnsigned` was measured only as part of
+  a build where the marker also fires, so its independent worth is unknown. It is monotone and cost nothing.
