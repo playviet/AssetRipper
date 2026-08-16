@@ -115,11 +115,15 @@ public static class CatchClauses
                 splits.Add((block, tail));
         }
 
+        //Computed here, after the splits and before anything is severed, because a handler's extent is a
+        //question about the graph as the program wrote it - see HandlerRegion.
+        var dominators = new DominatorInfo(graph);
+
         var clauses = new List<CatchClause>();
 
         foreach (var block in graph.Blocks.ToList())
         {
-            if (Recognise(block, graph) is not { } clause)
+            if (Recognise(block, graph, dominators) is not { } clause)
                 continue;
 
             clauses.Add(clause);
@@ -130,7 +134,7 @@ public static class CatchClauses
         //so the table's answer is a fallback, never a rival.
         if (clauses.Count == 0 && ExceptionEdges.AttachedTo(method) is { } attached)
         {
-            if (RecogniseThrough(attached.From, attached.Pad, graph) is { } fromTheTable)
+            if (RecogniseThrough(attached.From, attached.Pad, graph, dominators) is { } fromTheTable)
             {
                 Counted("recovered from the protected range");
                 clauses.Add(fromTheTable);
@@ -147,13 +151,18 @@ public static class CatchClauses
                 Unsplit(splits[i].Head, splits[i].Tail, graph);
         }
 
-        //One clause only. Two would have to agree about which blocks belong to which, and the evidence that
-        //would settle that is the exception table this does not read.
+        //Still one clause emitted, but a second candidate no longer costs the method the first. Two used to
+        //refuse both, on the grounds that they would have to agree about which blocks belong to which - and
+        //now they do not have to: dominance makes their extents disjoint or nested, so the first is safe to
+        //take on its own. Emitting both is a separate question and was measured to buy nothing.
+        if (clauses.Count > 1)
+        {
+            Counted("more than one clause");
+            clauses.RemoveRange(1, clauses.Count - 1);
+        }
+
         if (clauses.Count != 1)
         {
-            if (clauses.Count > 1)
-                Counted("more than one clause");
-
             LetGoOfTheUnusedPad(method, graph, []);
             return;
         }
@@ -290,7 +299,7 @@ public static class CatchClauses
     }
 
     /// <summary>The clause a block's throw is guarded by, where the block's successor is a landing pad.</summary>
-    private static CatchClause? Recognise(Block guarded, ISILControlFlowGraph graph)
+    private static CatchClause? Recognise(Block guarded, ISILControlFlowGraph graph, DominatorInfo dominators)
     {
         //The throw has to end the block. Where MergeCallBlocks left one mid-block the instructions after it
         //are the pad's own, and the two cannot be told apart by position.
@@ -313,14 +322,14 @@ public static class CatchClauses
             return null;
         }
 
-        return RecogniseThrough(guarded, pads[0], graph);
+        return RecogniseThrough(guarded, pads[0], graph, dominators);
     }
 
     /// <summary>
     /// The clause reached from one guarded block through one landing pad, whether the pad was found by
     /// falling into it or named by the exception table.
     /// </summary>
-    private static CatchClause? RecogniseThrough(Block guarded, Block pad, ISILControlFlowGraph graph)
+    private static CatchClause? RecogniseThrough(Block guarded, Block pad, ISILControlFlowGraph graph, DominatorInfo dominators)
     {
         var region = Region(guarded, pad, graph);
 
@@ -341,7 +350,7 @@ public static class CatchClauses
 
             found = true;
 
-            var handler = HandlerRegion(handlerEntry, Body(guarded, graph), graph);
+            var handler = HandlerRegion(handlerEntry, graph, dominators);
 
             if (handler.Count == 0)
             {
@@ -521,39 +530,54 @@ public static class CatchClauses
     }
 
     /// <summary>
-    /// The handler's own blocks: what its entry reaches and the method does not.
+    /// The handler's own blocks: everything its entry <b>dominates</b>.
     /// </summary>
     /// <remarks>
-    /// The first version of this asked only what the entry reaches, and refused anything that left it. That
-    /// refused **631 clauses in the game** - because a `catch` that does not return runs back into the
-    /// method, so "what it reaches" is the whole method and the walk simply ran off its bound. Where the two
-    /// walks meet is not a failure, it is the point the handler hands control back, which CIL spells
-    /// <c>leave</c>. Subtracting the body is the whole difference between recovering those and refusing them.
+    /// <para>
+    /// This began as "what the entry reaches and the method does not", which was right for a handler that
+    /// returns and wrong for every other kind. It left <b>three</b> separate things broken, and they turn out
+    /// to be one thing: <b>the handler's end was unknown</b>.
+    /// </para>
+    /// <list type="bullet">
+    /// <item>A handler that runs back into the method reaches the whole method, so the walk ran off its bound
+    /// and 466 clauses were refused as "the handler is the rest of the method".</item>
+    /// <item>il2cpp funnels a method's landing pads into a <b>shared tail</b> - <c>__cxa_end_catch</c> and the
+    /// common continuation - so one clause's region contained the next one's entry and the two could not both
+    /// be kept. That fired <b>185</b> times and is why lifting the one-clause-per-method cap bought nothing.</item>
+    /// <item>And with no extent there was nothing to make a multi-block <c>try</c> out of either.</item>
+    /// </list>
+    /// <para>
+    /// Dominance answers all three at once, and it is the same reasoning that worked for the returning case -
+    /// where two walks meet is where control is handed back - stated exactly. A block reached from a second
+    /// landing pad is dominated by neither, so the shared tail belongs to no handler and drops out. A block on
+    /// the normal path after the region is reachable without entering the handler, so it is not dominated and
+    /// is where the handler <c>leave</c>s to. And two handlers' extents are disjoint by construction, because
+    /// dominance regions of distinct blocks nest or do not meet at all.
+    /// </para>
+    /// <para>
+    /// The bound stays at 64 and is now a <b>check</b> rather than a guess: with a real extent, a handler that
+    /// is half the method means the recognition is wrong, and the right answer is to refuse it and say so.
+    /// </para>
     /// </remarks>
-    private static List<Block> HandlerRegion(Block entry, HashSet<Block> body, ISILControlFlowGraph graph)
+    private static List<Block> HandlerRegion(Block entry, ISILControlFlowGraph graph, DominatorInfo dominators)
     {
-        if (body.Contains(entry))
-            return [];
+        var found = new List<Block> { entry };
 
-        var found = new List<Block>();
-        var seen = new HashSet<Block>();
-        var pending = new Queue<Block>();
-        pending.Enqueue(entry);
-
-        while (pending.Count > 0)
+        foreach (var block in graph.Blocks)
         {
-            var block = pending.Dequeue();
+            if (block == entry || block == graph.EntryBlock || block == graph.ExitBlock)
+                continue;
 
-            if (block == graph.ExitBlock || block == graph.EntryBlock || body.Contains(block) || !seen.Add(block))
+            if (!dominators.Dominates(entry, block))
                 continue;
 
             found.Add(block);
 
             if (found.Count > 64)
+            {
+                Counted("the handler dominates more than a handler can be");
                 return [];
-
-            foreach (var successor in block.Successors)
-                pending.Enqueue(successor);
+            }
         }
 
         return found;
