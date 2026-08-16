@@ -796,3 +796,32 @@ again. One read is the pattern's own test; anything beyond it is a use the fold 
 show the compiler's cache instead of a lambda literal — about 25 methods where a cached lambda is used twice,
 every one of which had the same latent two-fields bug. `compare2`'s denominator grows by the same 7 as its
 `full`, so the percentage reads 91.0% → 90.9% while nothing got worse.
+
+## 1.13.3 / exports 666, 667 — `Reversed`: the index the addressing mode does not scale
+
+`Cpp2IL.Core/Analysis/UnscaledSubscript.cs` (**new**), one call after the two array passes are re-run.
+
+The rule as specified: *an index the addressing mode does not scale is a byte offset, and the subscript is
+that offset over the element width.* But **not** by emitting a division — by moving the scaling out of the
+shift:
+
+```
+add x12, x19, x10, asr #30     ; values + (index * 4)      <- 32 - log2(stride)
+```
+
+`x >> 30` used as a byte offset with stride 4 **is** `x >> 32` used as a subscript with scale 4, exactly, and
+it costs no instruction. That is also what keeps it narrow: it applies only where the index's **one**
+definition is a right shift and the index has **one** use. The general case — an arbitrary byte offset —
+would need the division, and the general case is where widening this path cost twelve game methods before.
+
+| | 665 | 667 |
+|---|---|---|
+| oracle run / same | 79 / 64 | 79 / **65** |
+| `full` + WRONG | 9 | **8** |
+| `Reversed` | !IndexOutOfRangeException | **[7,1,5] — right** |
+| every game scorer | 2568/3262 · 371 · 323 · 608/7 · 2121 · 1328 · 1044 · 0 | **identical** |
+| files differing in `Assembly-CSharp` | — | **0** |
+
+**Kept, and honestly: it does not fire in the game at all.** The count-down-in-the-high-half idiom is in the
+corpus and in corlib; `Assembly-CSharp` has none of it. Zero cost, one shape, and the rule is now built
+rather than only written down.

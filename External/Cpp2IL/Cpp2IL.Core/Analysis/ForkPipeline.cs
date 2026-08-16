@@ -732,6 +732,11 @@ public static class ForkPipeline
         ArrayAccessRecovery.Run(method);
         ArrayElementAddress.Run(method);
 
+        // And the index that reached the addressing mode unscaled, which is a byte offset rather than a
+        // subscript - a loop counting DOWN keeps its index in the high half of a register and lets one shift
+        // do the scaling too. After the two above, because it is their operand it corrects.
+        UnscaledSubscript.Run(method);
+
         // Last, because it is a question about what everything above left behind: every pass that recovers a
         // call replaces machinery with the statement it stood for, and the machinery does not go anywhere.
         // Dead code elimination cannot take it because a store into the frame counts as a use of what it
