@@ -825,3 +825,51 @@ would need the division, and the general case is where widening this path cost t
 **Kept, and honestly: it does not fire in the game at all.** The count-down-in-the-high-half idiom is in the
 corpus and in corlib; `Assembly-CSharp` has none of it. Zero cost, one shape, and the rule is now built
 rather than only written down.
+
+## 1.13.4 / exports 668, 669 — `Total` and `Tally`: the buffer is the whole struct, not its front field
+
+`Cpp2IL.Core/Analysis/TheBufferIsTheWholeStruct.cs` (**new**), one call beside `StaticStorageIsTheFirstField`.
+
+A composite over sixteen bytes is returned indirectly — the caller passes a slot's address in `x8`. The
+binding works; what does not is that the destination is a memory write at **distance nought**, and field
+resolution names distance nought of a struct as its first member:
+
+```
+Call List<int>::GetEnumerator, v42._list, values      // the whole enumerator, called `._list`
+Call Enumerator<int>::MoveNext,  …, v42               // …run on a slot nothing wrote
+```
+
+so the recovered source calls `GetEnumerator()`, throws the answer away, and iterates
+`default(List<int>.Enumerator)` — which is empty, so the loop never runs. Exact rather than a guess about
+what a distance means: only where the callee **returns indirectly** and the slot is declared as the type it
+returns. `FrontMember`, which named it, is right everywhere else.
+
+| | 667 | 669 |
+|---|---|---|
+| oracle run / same | 79 / 65 | 79 / **67** |
+| `full` + WRONG | 8 | **7** |
+| `full` + right | 59 | **61** |
+| verdicts changed | — | `Total`, `Tally`, both DIFFERS → agrees |
+| **discarded `x.GetEnumerator();`** | **19** | **9** |
+| **`Enumerator … = default(…)`** | **46** | **36** |
+| commented | 371 | 378 |
+| livecount | — | live −32, branches 0 |
+| compare2 full · cfscore · allscore · decisions · roundtrip · genfail | 2568 · 608/7 · 2121 · 1328 · 1044 · 0 | **all level** |
+
+**Kept.** Ten `foreach` loops in the game now iterate a real enumerator instead of an empty one — the
+observable, since no scorer can see it. The `live −32` is junk going away, not code:
+`RendererExtension.IsVisible` went from `Bounds bounds = default(Bounds); _ = bounds.center;
+_ = renderer.bounds; return TestPlanesAABB(frustumPlanes, bounds);` to
+`return GeometryUtility.TestPlanesAABB(_frustumPlanes, renderer.bounds);`.
+
+The `+7 commented` is one method, `TrackingManager`, and it is the **stand-in seam again from the other
+side**: `Dictionary<string, int>.Enumerator e = enumerator2;` where `enumerator2` still says
+`Dictionary<object, int>.Enumerator`, which is a cast between two instantiations.
+
+### 1.13.5 / exports 670, 671 — the mirror clause, inert, reverted
+
+The obvious answer — `SharperInstantiation` applied to the **source** of a copy rather than its destination —
+measured **byte-identical on every scorer and on the corpus**. The reason is `carriedOnly`: `enumerator2`'s
+definitions are not all copies, so the guard that makes `StandInCopyType` safe refuses it. Reverted rather
+than loosened; loosening `carriedOnly` is what cost forty commented statements the last time it was tried
+(the pass says so in its own remarks).

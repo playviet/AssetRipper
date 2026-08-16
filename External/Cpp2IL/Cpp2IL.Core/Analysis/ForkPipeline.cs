@@ -150,6 +150,12 @@ public static class ForkPipeline
         // nothing. Here rather than in the last hook: by then the callee's signature has retyped the local
         // `System.Object&` and it no longer says whose storage it is.
         StaticStorageIsTheFirstField.Run(method);
+
+        // Beside it, and the same mistake about what a distance of nought means: a struct returned through
+        // x8 fills the whole slot, and field resolution had named the write its FIRST MEMBER - so every
+        // `foreach` over a List or a Dictionary called GetEnumerator, threw the answer away and iterated a
+        // default.
+        TheBufferIsTheWholeStruct.Run(method);
         // An argument kept somewhere that survives a call is read back once per branch, and a local written in
         // several places is one the propagation in SSA leaves alone. First, so that everything below sees the
         // argument itself where the compiled code was passing a copy of it.
