@@ -662,3 +662,11 @@ that changed is better. It is gated `BOXEDOBJECT_OFF=1`.
 
 The only body still behind master is `PowerUpBuyPopup::Show`, read against its original above and shown not
 to be worse.
+
+## 1.12.14 / export 659 re-run as the FULL export — the Unity gate
+
+Unity gate **12 CS7069, its floor**, unchanged from master. Full export scores identically to fast:
+compare2 full 2561, commented 371, unmanaged 323, cfscore 608/7, allscore 2121, decisions 1326,
+roundtrip whole 1044, genfail 0.
+
+Export numbers 630–659 are now all used.
