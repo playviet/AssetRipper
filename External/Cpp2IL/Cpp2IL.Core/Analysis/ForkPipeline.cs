@@ -29,10 +29,34 @@ public static class ForkPipeline
     public static void AfterTheGraphIsBuilt(MethodAnalysisContext method)
     {
         ExceptionEdges.Run(method);
+        Trace(method, "AfterTheGraphIsBuilt");
+    }
+
+    /// <summary>
+    /// Prints the body at a named point in the pipeline, when <c>PIPETRACE</c> matches the method's name.
+    /// </summary>
+    /// <remarks>
+    /// The standing trap of this project is diagnosing a shape off a finished dump that does not exist where
+    /// the pass runs - see <c>il2cpp-the-dump-is-not-where-the-pass-runs</c>. Every hook calls this, so
+    /// "which pass removed it" is one run rather than a bisection.
+    /// </remarks>
+    public static void Trace(MethodAnalysisContext method, string where)
+    {
+        if (System.Environment.GetEnvironmentVariable("PIPETRACE") is not { } asked
+            || !method.Name.Contains(asked) || method.ControlFlowGraph is not { } graph)
+        {
+            return;
+        }
+
+        System.Console.WriteLine($"===== PIPE {where}");
+
+        foreach (var instruction in graph.Instructions)
+            System.Console.WriteLine($"  PIPE {instruction.OpCode} {string.Join(", ", instruction.Operands)}");
     }
 
     public static void AfterStackAnalysis(MethodAnalysisContext method)
     {
+        Trace(method, "AfterStackAnalysis");
         // Before the pass below, which aliases an address register onto its slot and removes the move that
         // said so - after that there is nothing left to record which slot a libm out-pointer named.
         OutPointerSlotResult.Run(method);
@@ -62,6 +86,7 @@ public static class ForkPipeline
     /// <summary>Runs where locals have just been given their types and fields.</summary>
     public static void AfterTypesAndFieldsResolved(MethodAnalysisContext method)
     {
+        Trace(method, "AfterTypesAndFieldsResolved");
 
         // Again, now that locals are typed: a class-initialisation guard is recognised by the runtime
         // class pointer it reads out of, and that pointer is only typed by the pass above. On builds
@@ -94,6 +119,7 @@ public static class ForkPipeline
     /// <summary>Runs where a delegate's invoke has just been recognised as one.</summary>
     public static void AfterDelegateInvokeRecovery(MethodAnalysisContext method)
     {
+        Trace(method, "AfterDelegateInvokeRecovery");
         // A delegate invoke is only known to be one by the step above, so the arguments it does not take are
         // still on it until here - and one of them is the delegate's own method pointer, whose load would
         // otherwise be kept alive by that operand and written out as a placeholder.
@@ -107,6 +133,7 @@ public static class ForkPipeline
     /// </summary>
     public static void BeforeFloatLiteralsAreFixed(MethodAnalysisContext method)
     {
+        Trace(method, "BeforeFloatLiteralsAreFixed");
         // A constant too wide for one instruction arrives as a chain of masks and ors over immediates, which
         // the decompiler folds at the end - so the output never looked wrong, but no pass in between could
         // read the number. This is what lets the one below read it.
@@ -131,6 +158,20 @@ public static class ForkPipeline
 
     public static void BeforeUnusedLocalsAreDropped(MethodAnalysisContext method)
     {
+        Trace(method, "BeforeUnusedLocalsAreDropped");
+
+        // The first static field is at distance nought, so there is no addition for FieldAddressRecovery to
+        // read and a type's static storage goes straight into `Interlocked.CompareExchange(ref SomeEvent,…)`
+        // as a bare local - which the generator then writes as a throwaway, so every event accessor swapped
+        // nothing. Here rather than in the last hook: by then the callee's signature has retyped the local
+        // `System.Object&` and it no longer says whose storage it is.
+        StaticStorageIsTheFirstField.Run(method);
+
+        // Beside it, and the same mistake about what a distance of nought means: a struct returned through
+        // x8 fills the whole slot, and field resolution had named the write its FIRST MEMBER - so every
+        // `foreach` over a List or a Dictionary called GetEnumerator, threw the answer away and iterated a
+        // default.
+        TheBufferIsTheWholeStruct.Run(method);
         // An argument kept somewhere that survives a call is read back once per branch, and a local written in
         // several places is one the propagation in SSA leaves alone. First, so that everything below sees the
         // argument itself where the compiled code was passing a copy of it.
@@ -443,6 +484,7 @@ public static class ForkPipeline
     /// <summary>Runs last of all, on the copies the passes before it leave behind.</summary>
     public static void AfterUnusedLocalsAreDropped(MethodAnalysisContext method)
     {
+        Trace(method, "AfterUnusedLocalsAreDropped");
         // Answering the class-prepared bit leaves a branch on `1 != 0` whose other arm holds il2cpp's
         // initialisation call, and reachability alone cannot see that the arm is unreachable - a conditional
         // jump points at both of them. Directly above the collection, which is what then takes the arm away,
@@ -682,10 +724,27 @@ public static class ForkPipeline
 
         StandInCopyType.Run(method);
 
+        // Beside it, and the same kind of correction from the other direction: what a box answers with is an
+        // `object`, and a merge with a string arm had given it `System.String` - so the boxed value came out
+        // as `(string)(object)7` and threw on a cast the source never had. Here, so that everything which
+        // resolves against the type it displaces has already run.
+        BoxedIsAnObject.Run(method);
+
         // And where it declined, the copy itself is what is wrong. A register carrying a `MethodInfo*` on
         // one edge and an array on the next is two values, not one; `SsaForm` states that rule already but
         // asks before either end has a type. Directly after the pass above, which has first refusal.
         StandInEdgeCopy.Run(method);
+
+        // And once more on the calls and on the field reads, for the same reason the array passes are re-run
+        // below: a shared call is given back its real instantiation from the type its RECEIVER holds, and a
+        // receiver that only became `List<TargetProgress>` on the line above was still `List<object>` when
+        // this ran the first time. Then `get_Item` answers `object`, and a read at 0x10 of the element has no
+        // type to resolve a field against - `BoardController::InitBoard` wrote every target colour as zero.
+        if (!StandInCopyType.SharedInstanceOff)
+        {
+            GenericSharingRecovery.Run(method);
+            MetadataResolver.ResolveFieldOffsets(method);
+        }
 
         // And once more on what that just named. A read at 0x18 of an array is its length and a read at
         // 0x20 plus a scaled index is an element, and both are decided from the type the base carries - so a
@@ -694,6 +753,11 @@ public static class ForkPipeline
         // initialisation guard had left holding `Il2CppClass<BoardSettingSO>`.
         ArrayAccessRecovery.Run(method);
         ArrayElementAddress.Run(method);
+
+        // And the index that reached the addressing mode unscaled, which is a byte offset rather than a
+        // subscript - a loop counting DOWN keeps its index in the high half of a register and lets one shift
+        // do the scaling too. After the two above, because it is their operand it corrects.
+        UnscaledSubscript.Run(method);
 
         // Last, because it is a question about what everything above left behind: every pass that recovers a
         // call replaces machinery with the statement it stood for, and the machinery does not go anywhere.

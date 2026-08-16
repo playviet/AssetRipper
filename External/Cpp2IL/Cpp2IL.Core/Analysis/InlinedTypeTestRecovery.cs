@@ -78,6 +78,10 @@ public static class InlinedTypeTestRecovery
                 block.Instructions.Insert(i + 1, new Instruction(block.Instructions[i].Index,
                     equal ? OpCode.CheckNotEqual : OpCode.CheckEqual, answer, value, 0));
 
+                //And what the answer is for: below the branch the object IS one, so every statement there
+                //should read the narrowed value rather than the tested one. See TypeTestNarrowing.
+                TypeTestNarrowing.Run(graph, block, answer, tested, value);
+
                 i++;
             }
         }

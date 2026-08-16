@@ -1751,6 +1751,65 @@ public static partial class IlGenerator
         operand is LocalVariable local && LowersToNativeInt(local.Type);
 
     /// <summary>
+    /// Whether an ordered comparison of these two operands is the unsigned one.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The IL stack has no unsignedness: a <see cref="uint"/> and an <see cref="int"/> are both int32 on it,
+    /// and which comparison is meant is carried by the <b>instruction</b> - <c>clt</c> against
+    /// <c>clt.un</c>. Emitting the signed one for a pair of unsigned values is not a formatting difference,
+    /// it is a different answer for everything above <c>int.MaxValue</c>, and the decompiler faithfully
+    /// writes the cast back: <c>uint num2 = (uint)kind;</c> followed by <c>(int)num2 &gt;= 7</c>, which
+    /// undoes the whole point of the conversion.
+    /// </para>
+    /// <para>
+    /// This is the emission half of <see cref="InstructionSets.NewArmV8InstructionSet.RecordUnsignedComparison"/>:
+    /// arm64's carry conditions are unsigned questions, the lifter states them by converting both sides to
+    /// <see cref="uint"/>, and without this they lower back to a signed comparison. <c>Corpus::Weight</c>
+    /// returned -305 where the source returns 0 with both halves in place but only one of them.
+    /// </para>
+    /// <para>
+    /// A constant is neutral - it is loaded at whatever width the other side has and reads the same either
+    /// way while it is non-negative - so only the operands that are values decide, and any signed one among
+    /// them keeps the signed comparison.
+    /// </para>
+    /// </remarks>
+    private static readonly bool UnsignedComparisonOff = System.Environment.GetEnvironmentVariable("UNSIGNEDCMP_OFF") == "1";
+
+    /// <summary>Whether this ordered comparison is the unsigned one, by either of the two things that say so.</summary>
+    /// <remarks>
+    /// The condition it came from is the exact answer and is recorded at the lift - see
+    /// <see cref="Analysis.UnsignedComparison"/>. The operand types are a second, weaker one, for a
+    /// comparison that reaches here with an unsigned value in it by some other route.
+    /// </remarks>
+    private static bool AsksUnsigned(Instruction instruction) =>
+        !UnsignedComparisonOff
+        && (Analysis.UnsignedComparison.Asks(instruction)
+            || ComparesUnsigned(instruction.Operands[1], instruction.Operands[2]));
+
+    private static bool ComparesUnsigned(object left, object right)
+    {
+        var unsigned = false;
+
+        foreach (var operand in new[] { left, right })
+        {
+            if (operand is not LocalVariable local || local.Type is not { } type)
+                continue;
+
+            switch (type.FullName)
+            {
+                case "System.Byte" or "System.UInt16" or "System.UInt32" or "System.UInt64" or "System.Char":
+                    unsigned = true;
+                    break;
+                case "System.SByte" or "System.Int16" or "System.Int32" or "System.Int64":
+                    return false;
+            }
+        }
+
+        return unsigned;
+    }
+
+    /// <summary>
     /// A local whose address can be handed to a by-reference parameter. Where the argument is a value the method
     /// already has a local for, that local is used, so what the callee writes lands where the code reads it.
     /// </summary>

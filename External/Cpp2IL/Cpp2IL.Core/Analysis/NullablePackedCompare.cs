@@ -51,7 +51,63 @@ public static class NullablePackedCompare
             instruction.OpCode = OpCode.Call;
             instruction.Operands = [getter, instruction.Operands[0], packed];
         }
+
+        AskHasValue(method, graph);
     }
+
+    /// <summary>
+    /// Reads <c>packed &amp; 0xFF</c> on a <c>Nullable&lt;T&gt;</c> as the question it is: <c>HasValue</c>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The other half of the same packing. Where the value is wider than a byte the compiler cannot ask both
+    /// questions with one compare, so it loads the whole thing and masks the field it wants - and
+    /// <c>hasValue</c> is declared first and is one byte, so the low byte <b>is</b> <c>HasValue</c>:
+    /// </para>
+    /// <code>
+    /// BL   Nullable`1&lt;int&gt;..ctor    ; hasValue = true, value = v
+    /// LDR  X8, [X31 + 0x8]           ; the whole eight bytes
+    /// ANDS X31, X8, 0xFF             ; the low byte, result discarded - this is the flag
+    /// B.EQ ...                       ; so: if (!maybe.HasValue)
+    /// </code>
+    /// <para>
+    /// Written out as an <c>and</c> it is <c>((T?)num &amp; 0xFFL) != 0</c>, which the language has no
+    /// operator for: <c>Corpus::NullableChain</c> lost its whole <c>if</c> body and returned "none" for every
+    /// input. Which byte is which is read from the metadata and not inferred, for the reason the compare
+    /// above gives - the other way round says <c>GetValueOrDefault</c>, compiles perfectly and is wrong.
+    /// </para>
+    /// <para>
+    /// The mask is the whole of the evidence and it is enough: byte zero of a <c>Nullable</c> holds nothing
+    /// else, whatever <c>T</c> is.
+    /// </para>
+    /// </remarks>
+    private static void AskHasValue(MethodAnalysisContext method, Graphs.ISILControlFlowGraph graph)
+    {
+        foreach (var instruction in graph.Instructions)
+        {
+            if (instruction is not { OpCode: OpCode.And, Operands: [LocalVariable answer, LocalVariable packed, { } mask] }
+                || !IsHighByte(mask)
+                || packed.Type is not GenericInstanceTypeAnalysisContext { GenericType.FullName: "System.Nullable`1" } type
+                || HasValue(type) is not { } getter)
+            {
+                continue;
+            }
+
+            instruction.OpCode = OpCode.Call;
+            instruction.Operands = [getter, answer, packed];
+
+            //The mask produced a number and the call produces a bool, so what it is stored in has to say so -
+            //otherwise the branch below reads `(long)maybe.HasValue`, which is not a conversion C# has.
+            answer.Type = method.AppContext.SystemTypes.SystemBooleanType;
+        }
+    }
+
+    /// <summary>The <c>HasValue</c> getter, named at the instantiation for the reason <see cref="Getter"/> gives.</summary>
+    private static MethodAnalysisContext? HasValue(GenericInstanceTypeAnalysisContext instance)
+        => instance.GenericType.Methods.FirstOrDefault(m
+               => m is { Name: "get_HasValue", IsStatic: false, Parameters.Count: 0 }) is { } member
+            ? new ConcreteGenericMethodAnalysisContext(member, instance.GenericArguments, [])
+            : null;
 
     /// <summary>The bound the compiler compares against, whatever width the lifter gave the constant.</summary>
     private static bool IsHighByte(object against)

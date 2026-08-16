@@ -63,7 +63,7 @@ if (args[3] == "sharedbody")
 		list.Add(concrete);
 	}
 
-	int defs = 0, shared = 0, borrowed = 0;
+	int defs = 0, shared = 0, borrowed = 0, borrowedReturningVar = 0;
 
 	foreach (TypeAnalysisContext type in app.AllTypes)
 	foreach (MethodAnalysisContext m in type.Methods)
@@ -85,7 +85,10 @@ if (args[3] == "sharedbody")
 		// generically. A CONCRETE argument means il2cpp compiled no shared body at all - what is registered
 		// against the definition is that specialisation's code.
 		bool StandIn(TypeAnalysisContext g) => g.FullName is "System.Object"
+			//__Il2CppFullySharedGenericStructType was missing and made JitHelpers::UnsafeEnumCastLong a
+			//false positive - it is a stand-in like the rest. Match the prefix rather than the two names.
 			or "Unity.IL2CPP.Metadata.__Il2CppFullySharedGenericType"
+			or "Unity.IL2CPP.Metadata.__Il2CppFullySharedGenericStructType"
 			or "System.Int32Enum" or "System.Int16Enum" or "System.SByteEnum"
 			or "System.UInt32Enum" or "System.UInt16Enum" or "System.ByteEnum" or "System.Int64Enum" or "System.UInt64Enum";
 
@@ -96,6 +99,11 @@ if (args[3] == "sharedbody")
 		}
 
 		borrowed++;
+		//Whether the mis-shared body is one the return convention is decided for: only a bare type parameter
+		//return takes the hidden buffer and steps the MethodInfo along, so only those are affected.
+		bool returnsVar = m.Definition?.RawReturnType?.Type is LibCpp2IL.BinaryStructures.Il2CppTypeEnum.IL2CPP_TYPE_VAR
+			or LibCpp2IL.BinaryStructures.Il2CppTypeEnum.IL2CPP_TYPE_MVAR;
+		if (returnsVar) borrowedReturningVar++;
 		string args2 = string.Join(", ", match.MethodGenericParameters.Select(g => g.FullName));
 		bool ours = type.DeclaringAssembly?.Name == "Assembly-CSharp";
 		Console.WriteLine($"{(ours ? "OURS     " : "elsewhere")} {type.FullName}::{m.Name} @ {m.UnderlyingPointer:X}  is <{args2}>  of {instantiations!.Count}");
@@ -104,6 +112,7 @@ if (args[3] == "sharedbody")
 	Console.WriteLine($"\ngeneric method definitions with a body        : {defs}");
 	Console.WriteLine($"  a genuine SHARED body (stand-in arguments)  : {shared}");
 	Console.WriteLine($"  a SPECIALISATION's body under an open name  : {borrowed}");
+	Console.WriteLine($"    ...of those, returning a bare type parameter: {borrowedReturningVar}   <- the ones the buffer is wrongly seeded for");
 	return;
 }
 
@@ -852,7 +861,10 @@ if (args[3] == "carry")
 
 	static bool SetsFlags(Disarm.Arm64Mnemonic m) => m is Disarm.Arm64Mnemonic.ADDS or Disarm.Arm64Mnemonic.SUBS
 		or Disarm.Arm64Mnemonic.ANDS or Disarm.Arm64Mnemonic.BICS or Disarm.Arm64Mnemonic.CCMP or Disarm.Arm64Mnemonic.CCMN
-		or Disarm.Arm64Mnemonic.FCMP or Disarm.Arm64Mnemonic.FCMPE or Disarm.Arm64Mnemonic.ADCS or Disarm.Arm64Mnemonic.SBCS;
+		or Disarm.Arm64Mnemonic.FCMP or Disarm.Arm64Mnemonic.FCMPE or Disarm.Arm64Mnemonic.ADCS or Disarm.Arm64Mnemonic.SBCS
+		//CMP/CMN/TST were missing, and Disarm reports them under their own mnemonics rather than as the
+		//SUBS/ADDS/ANDS they alias - so every comparison written as a comparison was invisible to this count.
+		or Disarm.Arm64Mnemonic.CMP or Disarm.Arm64Mnemonic.CMN or Disarm.Arm64Mnemonic.TST;
 
 	foreach (TypeAnalysisContext type in app.AllTypes)
 		foreach (MethodAnalysisContext m in type.Methods)
@@ -902,6 +914,218 @@ if (args[3] == "carry")
 	Console.WriteLine($"{walked} methods");
 	foreach (var e in pairs.OrderByDescending(x => x.Value).Take(24))
 		Console.WriteLine($"{e.Value,7}  {e.Key,-28} {(example.TryGetValue(e.Key, out var x) ? x[..Math.Min(70, x.Length)] : "")}");
+	return;
+}
+
+// wtrunc - a W-form data-processing instruction reading a register whose last straight-line definition
+// produced more than thirty-two significant bits. On arm64 the W form takes the low word of each source and
+// zero-extends its result; ISIL has no width, so the whole thing happens in `long` and the answer is wrong
+// with no marker. `Corpus::DivMagic` is the shape: `smaddl x8,w0,w8,xzr` / `lsr x8,x8,#32` / `add w8,w8,w0`.
+// The second column is the subset whose wide value descends from a WIDENING MULTIPLY - the magic-division
+// population, which is what a division by a constant compiles to.
+if (args[3] == "wtrunc")
+{
+	static int Index(Disarm.InternalDisassembly.Arm64Register r) =>
+		r is >= Disarm.InternalDisassembly.Arm64Register.W0 and <= Disarm.InternalDisassembly.Arm64Register.W31 ? r - Disarm.InternalDisassembly.Arm64Register.W0
+		: r is >= Disarm.InternalDisassembly.Arm64Register.X0 and <= Disarm.InternalDisassembly.Arm64Register.X31 ? r - Disarm.InternalDisassembly.Arm64Register.X0
+		: -1;
+	static bool IsW(Disarm.InternalDisassembly.Arm64Register r) => r is >= Disarm.InternalDisassembly.Arm64Register.W0 and <= Disarm.InternalDisassembly.Arm64Register.W31;
+	static bool IsX(Disarm.InternalDisassembly.Arm64Register r) => r is >= Disarm.InternalDisassembly.Arm64Register.X0 and <= Disarm.InternalDisassembly.Arm64Register.X31;
+
+	static bool WideningMultiply(Disarm.Arm64Mnemonic m) => m is Disarm.Arm64Mnemonic.SMADDL
+		or Disarm.Arm64Mnemonic.UMADDL or Disarm.Arm64Mnemonic.SMULL or Disarm.Arm64Mnemonic.UMULL
+		or Disarm.Arm64Mnemonic.SMSUBL or Disarm.Arm64Mnemonic.UMSUBL
+		or Disarm.Arm64Mnemonic.SMULH or Disarm.Arm64Mnemonic.UMULH;
+
+	//Data processing: the instructions whose W form really does truncate. A load or a move assigns the whole
+	//value and ISIL holds values rather than registers with stale halves, so those are not counted - the same
+	//correction that took the earlier truncation count from 1178 to 7.
+	static bool DataProcessing(Disarm.Arm64Mnemonic m) => m is Disarm.Arm64Mnemonic.ADD or Disarm.Arm64Mnemonic.SUB
+		or Disarm.Arm64Mnemonic.ADDS or Disarm.Arm64Mnemonic.SUBS or Disarm.Arm64Mnemonic.MUL
+		or Disarm.Arm64Mnemonic.MADD or Disarm.Arm64Mnemonic.MSUB or Disarm.Arm64Mnemonic.NEG
+		or Disarm.Arm64Mnemonic.AND or Disarm.Arm64Mnemonic.ORR or Disarm.Arm64Mnemonic.EOR
+		or Disarm.Arm64Mnemonic.ANDS or Disarm.Arm64Mnemonic.BIC or Disarm.Arm64Mnemonic.ORN
+		or Disarm.Arm64Mnemonic.UBFM or Disarm.Arm64Mnemonic.SBFM or Disarm.Arm64Mnemonic.BFM
+		or Disarm.Arm64Mnemonic.LSLV or Disarm.Arm64Mnemonic.LSRV or Disarm.Arm64Mnemonic.ASRV
+		or Disarm.Arm64Mnemonic.RORV or Disarm.Arm64Mnemonic.CMP or Disarm.Arm64Mnemonic.CMN
+		or Disarm.Arm64Mnemonic.CSEL or Disarm.Arm64Mnemonic.CSINC or Disarm.Arm64Mnemonic.SDIV
+		or Disarm.Arm64Mnemonic.UDIV;
+
+	int sites = 0, magicSites = 0, walked = 0;
+	HashSet<string> wtMethods = new(), magicMethods = new();
+	Dictionary<string, int> byMnemonic = new();
+	List<string> examples = new();
+
+	foreach (TypeAnalysisContext type in app.AllTypes)
+		foreach (MethodAnalysisContext m in type.Methods)
+		{
+			if (m.UnderlyingPointer == 0) continue;
+			walked++;
+			IEnumerable<Disarm.Arm64Instruction> body;
+			try { body = Cpp2IL.Core.Utils.NewArm64Utils.GetArm64MethodBodyAtVirtualAddress(app.Binary, m.UnderlyingPointer); }
+			catch { continue; }
+
+			//0 = not wide, 1 = wide, 2 = wide and descended from a widening multiply.
+			int[] wide = new int[32];
+
+			foreach (Disarm.Arm64Instruction i in body)
+			{
+				//Straight-line only. A branch either way means the register could have been written on a
+				//path this walk did not take, and a linear scan is not a def-use analysis.
+				if (i.Mnemonic is Disarm.Arm64Mnemonic.B or Disarm.Arm64Mnemonic.BL or Disarm.Arm64Mnemonic.BR
+					or Disarm.Arm64Mnemonic.BLR or Disarm.Arm64Mnemonic.CBZ or Disarm.Arm64Mnemonic.CBNZ
+					or Disarm.Arm64Mnemonic.TBZ or Disarm.Arm64Mnemonic.TBNZ or Disarm.Arm64Mnemonic.RET)
+				{
+					Array.Clear(wide);
+					continue;
+				}
+
+				Disarm.InternalDisassembly.Arm64Register[] srcs = [i.Op1Reg, i.Op2Reg, i.Op3Reg];
+
+				if (DataProcessing(i.Mnemonic) && IsW(i.Op0Reg))
+				{
+					int worst = 0;
+					foreach (Disarm.InternalDisassembly.Arm64Register s in srcs)
+					{
+						int ix = Index(s);
+						if (ix >= 0 && ix != 31 && wide[ix] > worst) worst = wide[ix];
+					}
+
+					if (worst > 0)
+					{
+						sites++;
+						wtMethods.Add($"{type.Name}::{m.Name}");
+						byMnemonic[i.Mnemonic.ToString()] = byMnemonic.GetValueOrDefault(i.Mnemonic.ToString()) + 1;
+						if (worst == 2)
+						{
+							magicSites++;
+							magicMethods.Add($"{type.Name}::{m.Name}");
+							if (examples.Count < 12) examples.Add($"{type.Name}::{m.Name}  0x{i.Address:X} {i}");
+						}
+					}
+				}
+
+				//What the instruction leaves behind.
+				int dest = Index(i.Op0Reg);
+				if (dest < 0 || dest == 31) continue;
+
+				if (WideningMultiply(i.Mnemonic)) { wide[dest] = 2; continue; }
+
+				if (IsW(i.Op0Reg)) { wide[dest] = 0; continue; }   //a W write zeroes the top half
+
+				if (IsX(i.Op0Reg))
+				{
+					int worst = 0;
+					foreach (Disarm.InternalDisassembly.Arm64Register s in srcs)
+					{
+						int ix = Index(s);
+						if (ix >= 0 && ix != 31 && wide[ix] > worst) worst = wide[ix];
+					}
+					//An X-form shift/arith carries the width of what it read; anything else (a load, a move,
+					//an address) starts fresh, because ISIL holds the whole value it assigns.
+					wide[dest] = DataProcessing(i.Mnemonic) ? worst : 0;
+				}
+			}
+		}
+
+	Console.WriteLine($"{walked} methods walked");
+	Console.WriteLine($"W-form reads of a value wider than 32 bits: {sites} sites in {wtMethods.Count} methods");
+	Console.WriteLine($"   of those, descended from a widening multiply (magic division): {magicSites} sites in {magicMethods.Count} methods");
+	foreach (var e in byMnemonic.OrderByDescending(x => x.Value).Take(14))
+		Console.WriteLine($"   {e.Value,6}  {e.Key}");
+	Console.WriteLine("examples:");
+	foreach (string e in examples) Console.WriteLine("   " + e);
+	return;
+}
+
+// xextend - a 64-bit data-processing instruction whose last operand is a w register widened by uxtw/sxtw.
+// `Corpus::Shifts` is the shape: `add x8, x8, w8, uxtw #1` is a 64-bit multiply-by-three of a value the
+// recovery kept 32 bits wide. The same encoding is how an array index is widened inside an address, so the
+// second column separates the ones whose result is used as an address (a load or store follows on it).
+if (args[3] == "xextend")
+{
+	static bool IsX(Disarm.InternalDisassembly.Arm64Register r) =>
+		r is >= Disarm.InternalDisassembly.Arm64Register.X0 and <= Disarm.InternalDisassembly.Arm64Register.X31;
+
+	int sites = 0, addressed = 0, walked = 0;
+	Dictionary<string, int> byMnemonic = new();
+	List<string> examples = new();
+
+	foreach (TypeAnalysisContext type in app.AllTypes)
+		foreach (MethodAnalysisContext m in type.Methods)
+		{
+			if (m.UnderlyingPointer == 0) continue;
+			walked++;
+			List<Disarm.Arm64Instruction> body;
+			try { body = Cpp2IL.Core.Utils.NewArm64Utils.GetArm64MethodBodyAtVirtualAddress(app.Binary, m.UnderlyingPointer).ToList(); }
+			catch { continue; }
+
+			for (int k = 0; k < body.Count; k++)
+			{
+				Disarm.Arm64Instruction i = body[k];
+				if (i.FinalOpExtendType is not (Disarm.Arm64ExtendType.UXTW or Disarm.Arm64ExtendType.SXTW)) continue;
+				if (!IsX(i.Op0Reg)) continue;
+
+				sites++;
+				byMnemonic[i.Mnemonic + " " + i.FinalOpExtendType] = byMnemonic.GetValueOrDefault(i.Mnemonic + " " + i.FinalOpExtendType) + 1;
+
+				//Used as an address: within four instructions something loads or stores through the register
+				//this one wrote.
+				bool asAddress = false;
+				for (int j = k + 1; j < Math.Min(k + 5, body.Count); j++)
+					if (body[j].MemBase == i.Op0Reg) { asAddress = true; break; }
+
+				if (asAddress) addressed++;
+				else if (examples.Count < 10) examples.Add($"{type.Name}::{m.Name}  0x{i.Address:X} {i}");
+			}
+		}
+
+	Console.WriteLine($"{walked} methods walked");
+	Console.WriteLine($"64-bit op with a uxtw/sxtw word operand: {sites} sites; {addressed} feed an address, {sites - addressed} do not");
+	foreach (var e in byMnemonic.OrderByDescending(x => x.Value).Take(12))
+		Console.WriteLine($"   {e.Value,7}  {e.Key}");
+	Console.WriteLine("examples that are not an address:");
+	foreach (string e in examples) Console.WriteLine("   " + e);
+	return;
+}
+
+// badoperand - an instruction Disarm DECODED but whose operand it could not render. Distinct from `invalid`,
+// which counts words it refused outright. `mov x9, #-4294967296` - an ORR of a bitmask immediate against the
+// zero register - comes out as `MOV X9, INVALID`, and the lifter then moves a register nothing ever assigns.
+if (args[3] == "badoperand")
+{
+	int walked = 0, sites = 0;
+	Dictionary<string, int> byMnemonic = new();
+	HashSet<string> boMethods = new();
+	List<string> examples = new();
+
+	foreach (TypeAnalysisContext type in app.AllTypes)
+		foreach (MethodAnalysisContext m in type.Methods)
+		{
+			if (m.UnderlyingPointer == 0) continue;
+			walked++;
+			IEnumerable<Disarm.Arm64Instruction> body;
+			try { body = Cpp2IL.Core.Utils.NewArm64Utils.GetArm64MethodBodyAtVirtualAddress(app.Binary, m.UnderlyingPointer); }
+			catch { continue; }
+
+			foreach (Disarm.Arm64Instruction i in body)
+			{
+				if (i.Mnemonic == Disarm.Arm64Mnemonic.INVALID) continue;
+				string text = i.ToString();
+				if (!text.Contains("INVALID")) continue;
+
+				sites++;
+				byMnemonic[i.Mnemonic.ToString()] = byMnemonic.GetValueOrDefault(i.Mnemonic.ToString()) + 1;
+				boMethods.Add($"{type.Name}::{m.Name}");
+				if (examples.Count < 12) examples.Add($"{type.Name}::{m.Name}  0x{i.Address:X}  {text}");
+			}
+		}
+
+	Console.WriteLine($"{walked} methods walked");
+	Console.WriteLine($"decoded instructions with an unrenderable operand: {sites} sites in {boMethods.Count} methods");
+	foreach (var e in byMnemonic.OrderByDescending(x => x.Value).Take(14))
+		Console.WriteLine($"   {e.Value,6}  {e.Key}");
+	foreach (string e in examples) Console.WriteLine("   " + e);
 	return;
 }
 

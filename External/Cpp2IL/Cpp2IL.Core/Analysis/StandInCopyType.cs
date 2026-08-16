@@ -85,6 +85,12 @@ public static class StandInCopyType
                     into.Type = held;
                     settling = true;
                 }
+                else if (!SharedInstanceOff && SharperInstantiation(into.Type, held) is { } sharper
+                    && carriedOnly.GetValueOrDefault(into))
+                {
+                    into.Type = sharper;
+                    settling = true;
+                }
                 else if (source is LocalVariable from
                     && LocalVariables.IsRuntimeStandIn(from.Type) && Nameable(into.Type) && carriedOnly.GetValueOrDefault(from))
                 {
@@ -93,6 +99,64 @@ public static class StandInCopyType
                 }
             }
         }
+    }
+
+    /// <summary>Set <c>SHAREDCOPY_OFF=1</c> to measure the same build without the instantiation rule.</summary>
+    internal static readonly bool SharedInstanceOff = System.Environment.GetEnvironmentVariable("SHAREDCOPY_OFF") == "1";
+
+    /// <summary>
+    /// The real instantiation behind a generic-sharing stand-in, where a copy says what it is.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The other stand-in, and it needs the same treatment for a different reason. il2cpp shares one body per
+    /// reference instantiation, so every call into <c>List&lt;T&gt;</c> names its receiver
+    /// <c>List&lt;object&gt;</c> - and that type then settles on the local, because
+    /// <c>SetTypeIfUnknown</c> will not revisit one. While copy propagation folded the field read into the
+    /// call the receiver kept the field's real type and nothing noticed; once a copy legitimately survives
+    /// (see <see cref="StoreTarget"/>) the local keeps <c>List&lt;object&gt;</c>, its element reads as
+    /// <c>object</c>, and a field of the element has nothing to resolve against.
+    /// </para>
+    /// <para>
+    /// <c>BoardController::InitBoard</c> is what named it: <c>_targetColors[i] = _targets[i].color</c> came
+    /// back as <c>targetColors3[num5] = (ECellColor)obj;</c> with the colour read left as
+    /// <c>Unmanaged memory load: [… (System.Object)+10]</c> - so every target colour was written as zero.
+    /// </para>
+    /// <para>
+    /// Exact rather than heuristic: the two must be the <b>same generic definition</b>, argument for
+    /// argument, differing only where the stand-in has a stand-in and the copy has something real. Two
+    /// locals a copy joins hold one object, so if the instantiations can differ at all they are not the same
+    /// thing and nothing is taken. <c>System.Object</c> standing where a <b>value type</b> is refused for
+    /// that reason - a value-type instantiation gets a body of its own and is never shared with one.
+    /// </para>
+    /// </remarks>
+    private static TypeAnalysisContext? SharperInstantiation(TypeAnalysisContext? standIn, TypeAnalysisContext? real)
+    {
+        if (standIn is not GenericInstanceTypeAnalysisContext shared
+            || real is not GenericInstanceTypeAnalysisContext concrete
+            || shared.GenericType.FullName != concrete.GenericType.FullName
+            || shared.GenericArguments.Count != concrete.GenericArguments.Count)
+        {
+            return null;
+        }
+
+        var sharper = false;
+
+        for (var argument = 0; argument < shared.GenericArguments.Count; argument++)
+        {
+            var stands = shared.GenericArguments[argument];
+            var given = concrete.GenericArguments[argument];
+
+            if (stands.FullName == given.FullName)
+                continue;
+
+            if (!SharedBody.IsAStandIn(stands) || given.IsValueType || SharedBody.IsAStandIn(given))
+                return null;
+
+            sharper = true;
+        }
+
+        return sharper ? real : null;
     }
 
     /// <summary>A reference type the program itself has - which a stand-in never is.</summary>

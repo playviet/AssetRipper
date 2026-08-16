@@ -78,12 +78,16 @@ public partial class NewArmV8InstructionSet : Cpp2IlInstructionSet
         haveComparison = false;
         ConditionalCompare.Reset();
         vectorLanes.Reset();
+        WordWidth.Reset(); //Which registers hold more than a w-form instruction can read - see the fork.
 
         var instructions = new List<Instruction>();
         var addresses = new List<ulong>();
 
         foreach (var instruction in insns)
+        {
             ConvertInstructionStatement(instruction, instructions, addresses, context);
+            WordWidth.Note(instruction);
+        }
 
         // fix branches
         for (var i = 0; i < instructions.Count; i++)
@@ -141,13 +145,18 @@ public partial class NewArmV8InstructionSet : Cpp2IlInstructionSet
             ConditionalCompare.Clear();
         }
 
+        //A w-form instruction reads the low word of a source that may hold more - see WordWidth in the fork.
+        object NarrowedOperand(int operand)
+            => WordWidth.Narrowed(context, instruction, ConvertOperand(instruction, operand), operand, (o, ops) => Add(address, o, ops));
+
         //The last register operand of a data processing instruction can carry a shift - `bic w1, w20, w20, asr
         //#31` is how `Math.Max(0, x)` is written without a branch, and `add x0, x1, x2, lsl #3` is how an array
         //element is addressed. Ignoring the shift turned the first into `x & ~x`, which is nothing at all, so the
         //shift is done first and what comes out is used in its place.
         object ShiftedOperand(int operand)
         {
-            var value = ConvertOperand(instruction, operand);
+            //A w-form instruction reads the low word of a source that may hold more - see WordWidth in the fork.
+            var value = WordWidth.Narrowed(context, instruction, ConvertOperand(instruction, operand), operand, (o, ops) => Add(address, o, ops));
 
             //A narrowing conversion the architecture folds into the operand - see ExtendedTo in the fork. It
             //narrows what goes in and then widens straight back, because the instruction's *result* is a full
@@ -339,7 +348,9 @@ public partial class NewArmV8InstructionSet : Cpp2IlInstructionSet
                 if (instruction.Op0Kind == Arm64OperandKind.Register)
                     adrpOffsets.Remove(instruction.Op0Reg);
 
-                Add(address, OpCode.Move, ConvertOperand(instruction, 0), ConvertOperand(instruction, 1));
+                //A `mov` of a bitmask immediate the disassembler could not render - see MovedBitmask in the fork.
+                Add(address, OpCode.Move, ConvertOperand(instruction, 0),
+                    MovedBitmask(context, instruction) ?? ConvertOperand(instruction, 1));
                 Add(address, OpCode.CheckEqual, new Register(null, "Z"), ConvertOperand(instruction, 0), 0);
                 break;
             case Arm64Mnemonic.MOVN:
@@ -563,7 +574,7 @@ public partial class NewArmV8InstructionSet : Cpp2IlInstructionSet
                         //The flag-setting instruction that produced the condition is still in hand, so the
                         //branch can be given the comparison it actually makes rather than an expression over
                         //modelled flags. The compare's own flag arithmetic is then dead and gets collected.
-                        Add(address, relational, condition, ComparisonSide(instruction.MnemonicConditionCode, true), ComparisonSide(instruction.MnemonicConditionCode, false));
+                        MarkUnsigned(instruction.MnemonicConditionCode, Add(address, relational, condition, ComparisonSide(instruction.MnemonicConditionCode, true), ComparisonSide(instruction.MnemonicConditionCode, false)));
 
                         if (!ConditionalCompare.Apply(instruction.MnemonicConditionCode, condition, (opCode, operands) => Add(address, opCode, operands)))
                             goto default;
@@ -725,7 +736,7 @@ public partial class NewArmV8InstructionSet : Cpp2IlInstructionSet
             case Arm64Mnemonic.MUL:
             case Arm64Mnemonic.FMUL:
                 //Multiply is (dest, src1, src2)
-                Add(address, OpCode.Multiply, ConvertOperand(instruction, 0), ConvertOperand(instruction, 1), ConvertOperand(instruction, 2));
+                Add(address, OpCode.Multiply, ConvertOperand(instruction, 0), NarrowedOperand(1), NarrowedOperand(2));
                 break;
 
             case Arm64Mnemonic.ADD:
@@ -751,7 +762,7 @@ public partial class NewArmV8InstructionSet : Cpp2IlInstructionSet
                 }
 
                 //Add is (dest, src1, src2)
-                Add(address, OpCode.Add, ConvertOperand(instruction, 0), ConvertOperand(instruction, 1), ShiftedOperand(2));
+                Add(address, OpCode.Add, ConvertOperand(instruction, 0), NarrowedOperand(1), ShiftedOperand(2));
                 break;
 
             case Arm64Mnemonic.SUB:
@@ -763,7 +774,7 @@ public partial class NewArmV8InstructionSet : Cpp2IlInstructionSet
                 }
 
                 //Sub is (dest, src1, src2)
-                Add(address, OpCode.Subtract, ConvertOperand(instruction, 0), ConvertOperand(instruction, 1), ShiftedOperand(2));
+                Add(address, OpCode.Subtract, ConvertOperand(instruction, 0), NarrowedOperand(1), ShiftedOperand(2));
                 break;
 
             case Arm64Mnemonic.AND:
@@ -775,7 +786,7 @@ public partial class NewArmV8InstructionSet : Cpp2IlInstructionSet
             case Arm64Mnemonic.SUBS:
             case Arm64Mnemonic.ANDS:
                 var dest = ConvertOperand(instruction, 0);
-                var src1 = ConvertOperand(instruction, 1);
+                var src1 = NarrowedOperand(1);
                 var src2 = BitwiseOperand(context, instruction, ConvertOperand(instruction, 2));
 
                 var opCode = instruction.Mnemonic switch
@@ -1022,10 +1033,10 @@ public partial class NewArmV8InstructionSet : Cpp2IlInstructionSet
                 {
                     var product = new Register(null, "TEMP");
                     Add(address, OpCode.Multiply, product,
-                        WidenedSource(context, instruction, ConvertOperand(instruction, 1), 1, (o, ops) => Add(address, o, ops)),
-                        WidenedSource(context, instruction, ConvertOperand(instruction, 2), 2, (o, ops) => Add(address, o, ops)));
+                        WidenedSource(context, instruction, NarrowedOperand(1), 1, (o, ops) => Add(address, o, ops)),
+                        WidenedSource(context, instruction, NarrowedOperand(2), 2, (o, ops) => Add(address, o, ops)));
 
-                    var accumulator = ConvertOperand(instruction, 3);
+                    var accumulator = NarrowedOperand(3);
                     if (instruction.Mnemonic is Arm64Mnemonic.MSUB or Arm64Mnemonic.SMSUBL or Arm64Mnemonic.UMSUBL)
                         Add(address, OpCode.Subtract, ConvertOperand(instruction, 0), accumulator, product);
                     else
@@ -1036,8 +1047,8 @@ public partial class NewArmV8InstructionSet : Cpp2IlInstructionSet
             case Arm64Mnemonic.SMULL:
             case Arm64Mnemonic.UMULL:
                 Add(address, OpCode.Multiply, ConvertOperand(instruction, 0),
-                    WidenedSource(context, instruction, ConvertOperand(instruction, 1), 1, (o, ops) => Add(address, o, ops)),
-                    WidenedSource(context, instruction, ConvertOperand(instruction, 2), 2, (o, ops) => Add(address, o, ops)));
+                    WidenedSource(context, instruction, NarrowedOperand(1), 1, (o, ops) => Add(address, o, ops)),
+                    WidenedSource(context, instruction, NarrowedOperand(2), 2, (o, ops) => Add(address, o, ops)));
                 break;
 
             case Arm64Mnemonic.CSET:
@@ -1048,7 +1059,7 @@ public partial class NewArmV8InstructionSet : Cpp2IlInstructionSet
 
                     if (haveComparison && TryGetRelationalOpCode(instruction.FinalOpConditionCode, out var setRelational))
                     {
-                        Add(address, setRelational, destination, ComparisonSide(instruction.FinalOpConditionCode, true), ComparisonSide(instruction.FinalOpConditionCode, false));
+                        MarkUnsigned(instruction.FinalOpConditionCode, Add(address, setRelational, destination, ComparisonSide(instruction.FinalOpConditionCode, true), ComparisonSide(instruction.FinalOpConditionCode, false)));
 
                         if (!ConditionalCompare.Apply(instruction.FinalOpConditionCode, destination, (opCode, operands) => Add(address, opCode, operands)))
                             goto default;
@@ -1083,7 +1094,7 @@ public partial class NewArmV8InstructionSet : Cpp2IlInstructionSet
                     goto default;
                 {
                     var shortCondition = new Register(null, "Z");
-                    Add(address, shortRelational, shortCondition, ComparisonSide(instruction.FinalOpConditionCode, true), ComparisonSide(instruction.FinalOpConditionCode, false));
+                    MarkUnsigned(instruction.FinalOpConditionCode, Add(address, shortRelational, shortCondition, ComparisonSide(instruction.FinalOpConditionCode, true), ComparisonSide(instruction.FinalOpConditionCode, false)));
 
                     if (!ConditionalCompare.Apply(instruction.FinalOpConditionCode, shortCondition, (opCode, operands) => Add(address, opCode, operands)))
                         goto default;
@@ -1111,7 +1122,7 @@ public partial class NewArmV8InstructionSet : Cpp2IlInstructionSet
                 if (haveComparison && TryGetRelationalOpCode(instruction.FinalOpConditionCode, out var selectRelational))
                 {
                     var selectCondition = new Register(null, "Z");
-                    Add(address, selectRelational, selectCondition, ComparisonSide(instruction.FinalOpConditionCode, true), ComparisonSide(instruction.FinalOpConditionCode, false));
+                    MarkUnsigned(instruction.FinalOpConditionCode, Add(address, selectRelational, selectCondition, ComparisonSide(instruction.FinalOpConditionCode, true), ComparisonSide(instruction.FinalOpConditionCode, false)));
 
                     if (!ConditionalCompare.Apply(instruction.FinalOpConditionCode, selectCondition, (opCode, operands) => Add(address, opCode, operands)))
                         goto default;
