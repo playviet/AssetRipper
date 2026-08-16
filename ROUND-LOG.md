@@ -873,3 +873,28 @@ measured **byte-identical on every scorer and on the corpus**. The reason is `ca
 definitions are not all copies, so the guard that makes `StandInCopyType` safe refuses it. Reverted rather
 than loosened; loosening `carriedOnly` is what cost forty commented statements the last time it was tried
 (the pass says so in its own remarks).
+
+## 1.13.6 / export 672 — the full export and the Unity gate
+
+Unity gate **12 CS7069, its floor**. Full export scores identically to fast: compare2 full 2568 of 3262,
+commented 378, unmanaged 323, cfscore 608/7, allscore 2121, decisions 1328, roundtrip whole 1044, genfail 0.
+
+## Where it stands at 1.13.6
+
+| | master (630) | now |
+|---|---|---|
+| **oracle run / same** | 79 / **54** | 79 / **67** |
+| **`full` + WRONG** | **16** | **7** |
+| `full` + right | 49 | **61** |
+| `partial` + WRONG | 9 | **5** |
+| compare2 full | 2561 of 3255 | 2568 of 3262 |
+| cfscore full / partial · files | 609 / 6 · 91/96 | 608 / 7 · 90/96 |
+| allscore | 2121 | **2121** |
+| **decisions** | 1326 | **1328** |
+| roundtrip whole · genfail · Unity | 1044 · 0 · 12 CS7069 | **1044 · 0 · 12 CS7069** |
+| commented · unmanaged | 363 · 315 | 378 · 323 |
+
+**Fifteen corpus shapes recovered** across the two stretches. The seven still wrong: `Divide` and `Guarded`
+(the floor — clang deleted both handlers), `Thrown` and `Using` (exception flow, the other agent's), `Shifts`
+(declined, 12400 sites of evidence), and `ClearAndSet` and `Describe` (the slot-address model change,
+written up and deliberately not attempted).
