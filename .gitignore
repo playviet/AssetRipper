@@ -22,3 +22,8 @@ scratchpad-tools/gate/
 
 # autodiff builds a throwaway console project beside itself to run both sides of the corpus.
 scratchpad-tools/autodiff/
+
+# probeg extracts the game's libil2cpp.so + global-metadata.dat here (~150 MB). It is a copy of the apk,
+# re-created on demand from the path in `apkpath`, and must never be committed.
+scratchpad-tools/il2cpp/
+scratchpad/

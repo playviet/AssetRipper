@@ -1,0 +1,735 @@
+using System;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+using Cpp2IL.Core.ISIL;
+using Cpp2IL.Core.InstructionSets;
+using Cpp2IL.Core.Logging;
+using Cpp2IL.Core.Model.Contexts;
+
+namespace Cpp2IL.Core.Analysis;
+
+/// <summary>
+/// Turns a call to a <b>generic virtual method</b> back into the call it came from.
+///
+/// A virtual method that is itself generic cannot be dispatched through a vtable slot, because the slot
+/// holds one method and the call needs one instantiation of it. il2cpp therefore compiles the call to a
+/// runtime lookup: take the slot number off the <c>MethodInfo</c> the call site names, read the method that
+/// occupies that slot on the receiver's own class, hand the two to a helper that combines the receiver's
+/// type arguments with the call site's, and call through the pointer at the front of what comes back.
+/// </summary>
+/// <remarks>
+/// <para>
+/// Unity ships the source of the inlined half - <c>libil2cpp/codegen/il2cpp-codegen.h</c>:
+/// </para>
+/// <code>
+/// const RuntimeMethod* il2cpp_codegen_get_generic_virtual_method(const RuntimeMethod* method, const RuntimeObject* obj)
+/// {
+///     uint16_t slot = method->slot;
+///     const RuntimeMethod* methodDefinition = obj->klass->vtable[slot].method;
+///     return il2cpp_codegen_get_generic_virtual_method_internal(methodDefinition, method);
+/// }
+/// </code>
+/// <para>
+/// Only <c>..._internal</c> is out of line, and Cpp2IL's key function set does not name it - so on a game
+/// that leans on generic virtuals the whole run comes back as machinery:
+/// </para>
+/// <code>
+/// Move v50 @ X1_v2 (Il2CppMethodInfo), methodof(ES3Reader::Read)
+/// ShiftLeft v54, [v50 (Il2CppMethodInfo)+50], 4          // MethodInfo::slot, times sizeof(VirtualInvokeData)
+/// Add  v55, [this @ X0 (ES3Reader)], v54                 // klass + slot*0x10
+/// Move v56, [v55+140]                                    // Il2CppClass::vtable[slot].method
+/// Call 3B02AC0, v58, v56, methodof(ES3Reader::Read), …    // "Method not found @3B02AC0"
+/// Move v61, [v58+8]                                      // MethodInfo::virtualMethodPointer
+/// IndirectCall v61, returnVal1 (T), this (ES3Reader), type (ES3Type), …   // "Indirect call:"
+/// </code>
+/// <para>
+/// Six statements, one <c>notfound</c>, one <c>indirect</c> and three unresolved reads, for
+/// <c>return Read&lt;T&gt;(type);</c>. On Snacky Dash that one idiom is <b>72% of <c>notfound</c> plus
+/// <c>indirect</c> combined</b> - 853 resolver sites and the ~1,743 indirect calls they feed. See
+/// <c>scratchpad-tools/CALLGAP.md</c> §5 and <c>scratchpad-tools/GVCALL.md</c>.
+/// </para>
+/// <para>
+/// <b>The callee is not inferred - it is written down.</b> The runtime's own signature says the helper's
+/// second argument is <c>genericVirtualMethod</c>, the method the <i>source</i> named at this call site, and
+/// that operand arrives already resolved as a <see cref="RuntimeMethodInfoAnalysisContext"/>. Naming it is
+/// the same argument <see cref="VirtualCallRecovery"/> makes about a vtable slot, one level up: the emitted
+/// call is still virtual, so dispatch still finds the override, and what is written down is the declaration
+/// the call was made through. <b>Where that operand names nothing, this declines and the marker stays</b> -
+/// a marker is better than a wrong answer.
+/// </para>
+/// <para>
+/// <b>The helper is found by its idiom and never by its address.</b> <c>FORK.md</c> records that following
+/// a runtime function by address caused the worst regression this fork has measured, and this fork must work
+/// on more than one game. <see cref="Resolvers"/> votes over the generated code exactly as
+/// <c>NewArm64KeyFunctionAddresses.AttemptInstructionAnalysisToFillGaps</c> votes for metadata init.
+/// </para>
+/// </remarks>
+public static class GenericVirtualCallRecovery
+{
+    /// <summary>
+    /// <c>Il2CppClass::vtable[n]</c> is a <c>VirtualInvokeData { Il2CppMethodPointer methodPtr; const MethodInfo* method; }</c>,
+    /// so the <c>MethodInfo</c> half of the first entry is eight bytes past the table.
+    /// </summary>
+    private const long VtableEntryMethod = Il2CppClassLayout.Vtable + 8;
+
+    /// <summary>How far after the call to look for the load of the code pointer out of the answer.</summary>
+    private const int LoadWindow = 6;
+
+    /// <summary>How far after that load to look for the branch through it.</summary>
+    private const int CallWindow = 6;
+
+    /// <summary>
+    /// How far above the call to look for the slot read and the vtable read that feed it. Bounded, and the
+    /// search stops at the previous call - see <c>il2cpp-a-call-ends-the-register-search</c>.
+    /// </summary>
+    private const int FeedWindow = 24;
+
+    /// <summary>The fewest sites of the full idiom a candidate must have before it is believed.</summary>
+    private const int MinimumVotes = 24;
+
+    /// <summary>How far ahead of the runner-up the leader must be.</summary>
+    private const int MarginOverRunnerUp = 4;
+
+    public static bool Run(MethodAnalysisContext method)
+    {
+        if (method.ControlFlowGraph is not { } graph)
+            return false;
+
+        if (Resolvers(method.AppContext) is not { Count: > 0 } resolvers)
+            return false;
+
+        var voidType = method.AppContext.SystemTypes.SystemVoidType;
+        var definitions = DefinitionsIn(graph);
+        var changed = false;
+
+        foreach (var resolverCall in graph.Instructions)
+        {
+            //The lifter gives a call to a function no method table names the target address itself, plus x0
+            //as the result and the whole integer run as arguments. See AddUnmanagedCall / ImportedCall.
+            if (resolverCall.OpCode != OpCode.Call
+                || resolverCall.Operands.Count < 4
+                || resolverCall.Operands[0] is not ulong target
+                || !resolvers.Contains(target))
+            {
+                continue;
+            }
+
+            //Argument 1, in x1: the runtime's own signature calls it genericVirtualMethod, and it is the
+            //method the source wrote at this call site.
+            if (NamedMethod(resolverCall.Operands[3], definitions) is not { } callee)
+            {
+                Trace(method, resolverCall, "the MethodInfo argument names no method");
+                continue;
+            }
+
+            if (callee.IsStatic)
+            {
+                Trace(method, resolverCall, $"{callee.Name} is static, which a generic virtual call cannot be");
+                continue;
+            }
+
+            if (resolverCall.Operands[1] is not LocalVariable resolved)
+            {
+                Trace(method, resolverCall, "the resolver's answer went nowhere");
+                continue;
+            }
+
+            //`resolved->virtualMethodPointer`. Exactly one, so a body that reads the answer twice - which
+            //nothing generated does - is left alone rather than half rewritten.
+            if (SoleEntryPointLoad(graph, resolved) is not { } pointerLoad
+                || pointerLoad.Operands[0] is not LocalVariable pointer)
+            {
+                Trace(method, resolverCall, "no single load of the method pointer out of the answer");
+                continue;
+            }
+
+            if (SoleCallThrough(graph, pointer, resolved) is not { } indirectCall)
+            {
+                Trace(method, resolverCall, "the method pointer is not called exactly once");
+                continue;
+            }
+
+            //The call was handed every register an argument could have arrived in, because nothing was known
+            //about what it took. Now that the callee is named, the convention says which of them it read -
+            //and the receiver is the first of them, which is what a BLR's x0 is by definition.
+            if (Aapcs64.ArgumentsOf(callee, indirectCall.Operands) is not { } arguments)
+            {
+                Trace(method, resolverCall, $"aapcs64 could not lay out {callee.Name}'s arguments");
+                continue;
+            }
+
+            if (ReferenceEquals(callee.ReturnType, voidType))
+            {
+                indirectCall.OpCode = OpCode.CallVoid;
+                indirectCall.Operands = [callee, .. arguments];
+            }
+            else if (indirectCall.Operands.Count > 1 && indirectCall.Operands[1] is LocalVariable result)
+            {
+                indirectCall.OpCode = OpCode.Call;
+                indirectCall.Operands = [callee, result, .. arguments];
+            }
+            else
+            {
+                //A value comes back but there is nowhere left to put it, so leaving the call as it is keeps
+                //the stack honest rather than dropping a value the emitted IL would still push.
+                Trace(method, resolverCall, $"{callee.Name} returns a value with nowhere to put it");
+                continue;
+            }
+
+            Trace(method, resolverCall, $"folded into a call to {callee.DeclaringType?.Name}.{callee.Name}");
+
+            //And the machinery that found it. Without this the round trades one `notfound` and one
+            //`indirect` for three unresolved reads and measures worse.
+            Sweep(graph, definitions, resolverCall, pointerLoad);
+
+            changed = true;
+        }
+
+        return changed;
+    }
+
+    // ---------------------------------------------------------------------------------------------------
+    // Reading the body
+    // ---------------------------------------------------------------------------------------------------
+
+    /// <summary>Every local written in exactly one place, and where.</summary>
+    /// <remarks>
+    /// Only the unambiguous ones: a local two instructions write is one whose value at any point cannot be
+    /// read off a single definition, and every use this pass makes of the map - following a copy back to the
+    /// <c>MethodInfo</c> it holds, deciding that a value is dead - is wrong if it is answered from one of
+    /// several writers.
+    /// </remarks>
+    private static Dictionary<LocalVariable, Instruction> DefinitionsIn(Graphs.ISILControlFlowGraph graph)
+    {
+        Dictionary<LocalVariable, Instruction> definitions = [];
+        HashSet<LocalVariable> several = [];
+
+        foreach (var instruction in graph.Instructions)
+        {
+            if (instruction.Destination is not LocalVariable destination)
+                continue;
+
+            if (!definitions.TryAdd(destination, instruction))
+                several.Add(destination);
+        }
+
+        foreach (var ambiguous in several)
+            definitions.Remove(ambiguous);
+
+        return definitions;
+    }
+
+    /// <summary>
+    /// The method a <c>MethodInfo</c> operand names, through however many steps copy propagation left.
+    /// </summary>
+    /// <remarks>
+    /// Three shapes, because where the pass runs decides which of them is in front of it: the metadata
+    /// usage folded straight into the call, a local the resolver typed, or a local still holding the move
+    /// that loaded it. Handling all three is what stops this pass's answer depending on its position.
+    /// </remarks>
+    private static MethodAnalysisContext? NamedMethod(object operand, Dictionary<LocalVariable, Instruction> definitions)
+    {
+        for (var step = 0; step < 4; step++)
+        {
+            switch (operand)
+            {
+                case RuntimeMethodInfoAnalysisContext { RepresentedMethod: { } named }:
+                    return named;
+                case LocalVariable { Type: RuntimeMethodInfoAnalysisContext { RepresentedMethod: { } typed } }:
+                    return typed;
+                case LocalVariable local
+                    when definitions.TryGetValue(local, out var definition)
+                        && definition is { OpCode: OpCode.Move, Operands: [_, { } source] }:
+                    operand = source;
+                    continue;
+                default:
+                    return null;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// The one instruction that reads <c>MethodInfo::virtualMethodPointer</c> out of the resolver's answer,
+    /// where there is exactly one and nothing else reads the answer except the call this pass is about to
+    /// rewrite.
+    /// </summary>
+    private static Instruction? SoleEntryPointLoad(Graphs.ISILControlFlowGraph graph, LocalVariable resolved)
+    {
+        Instruction? found = null;
+
+        foreach (var instruction in graph.Instructions)
+        {
+            if (instruction is not { OpCode: OpCode.Move, Operands: [LocalVariable, MemoryOperand { Index: null, Scale: 0 } read] })
+                continue;
+
+            if (read.Base is not LocalVariable holder || !ReferenceEquals(holder, resolved))
+                continue;
+
+            if (read.Addend != Il2CppMethodInfoLayout.VirtualMethodPointer)
+                return null;
+
+            if (found != null)
+                return null;
+
+            found = instruction;
+        }
+
+        return found;
+    }
+
+    /// <summary>
+    /// The one <c>IndirectCall</c> made through the loaded pointer, where there is exactly one and nothing
+    /// else reads it.
+    /// </summary>
+    /// <remarks>
+    /// The target is either the local itself or - where copy propagation folded the load into the call, which
+    /// is the shape it usually ends up in - the memory operand the load read, in which case the load is still
+    /// its own instruction and this is the second reader of it.
+    /// </remarks>
+    private static Instruction? SoleCallThrough(Graphs.ISILControlFlowGraph graph, LocalVariable pointer, LocalVariable resolved)
+    {
+        Instruction? found = null;
+
+        foreach (var instruction in graph.Instructions)
+        {
+            if (instruction.OpCode != OpCode.IndirectCall || instruction.Operands.Count < 2)
+                continue;
+
+            var isTheCall = instruction.Operands[0] switch
+            {
+                LocalVariable target => ReferenceEquals(target, pointer),
+                MemoryOperand { Index: null, Scale: 0, Base: LocalVariable holder } folded
+                    => ReferenceEquals(holder, resolved) && folded.Addend == Il2CppMethodInfoLayout.VirtualMethodPointer,
+                _ => false,
+            };
+
+            if (!isTheCall)
+                continue;
+
+            if (found != null)
+                return null;
+
+            found = instruction;
+        }
+
+        return found;
+    }
+
+    // ---------------------------------------------------------------------------------------------------
+    // Clearing the machinery away
+    // ---------------------------------------------------------------------------------------------------
+
+    /// <summary>
+    /// Drops the resolver call, the load of the code pointer, and the chain that worked out the vtable entry,
+    /// once nothing reads them.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately <b>not</b> a general dead-code pass. It starts at the two instructions this pass
+    /// identified, walks back only through the pure arithmetic and loads that fed them, and drops one only
+    /// when its destination has no reader left anywhere in the graph - which is what makes it safe to run
+    /// on a load, something the ordinary collection will not take on its own. Anything else the chain
+    /// touches - another call, a store, a value some other statement also reads - is left exactly alone.
+    /// </remarks>
+    private static void Sweep(
+        Graphs.ISILControlFlowGraph graph,
+        Dictionary<LocalVariable, Instruction> definitions,
+        Instruction resolverCall,
+        Instruction pointerLoad)
+    {
+        HashSet<Instruction> chain = [resolverCall, pointerLoad];
+        Queue<Instruction> pending = new([resolverCall, pointerLoad]);
+
+        while (pending.Count > 0)
+        {
+            var instruction = pending.Dequeue();
+
+            foreach (var used in Reads(instruction))
+            {
+                if (!definitions.TryGetValue(used, out var definition) || !IsMachinery(definition) || !chain.Add(definition))
+                    continue;
+
+                pending.Enqueue(definition);
+            }
+        }
+
+        for (var settling = true; settling;)
+        {
+            settling = false;
+
+            foreach (var instruction in chain)
+            {
+                if (instruction.OpCode == OpCode.Nop || instruction.Destination is not LocalVariable produced)
+                    continue;
+
+                if (IsReadAnywhere(graph, produced))
+                    continue;
+
+                instruction.OpCode = OpCode.Nop;
+                instruction.Operands = [];
+                settling = true;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Whether an instruction is part of the address arithmetic a generic virtual call site is made of, and
+    /// so may be dropped once nothing reads it. A call is not - it may do anything - and neither is anything
+    /// whose result does not come out in a local.
+    /// </summary>
+    private static bool IsMachinery(Instruction instruction)
+        => instruction.OpCode is OpCode.Move or OpCode.Add or OpCode.ShiftLeft or OpCode.Multiply
+            && instruction.Destination is LocalVariable;
+
+    /// <summary>The locals an instruction reads. Operand zero is where a value goes; a memory operand's base
+    /// is read wherever it sits, including there.</summary>
+    private static IEnumerable<LocalVariable> Reads(Instruction instruction)
+    {
+        var destination = instruction.OpCode is OpCode.Call or OpCode.IndirectCall ? 1 : 0;
+
+        for (var i = 0; i < instruction.Operands.Count; i++)
+        {
+            switch (instruction.Operands[i])
+            {
+                case LocalVariable used when i != destination:
+                    yield return used;
+                    break;
+                case MemoryOperand { Base: LocalVariable through }:
+                    yield return through;
+                    break;
+                case FieldReference { Local: { } owner }:
+                    yield return owner;
+                    break;
+            }
+        }
+    }
+
+    private static bool IsReadAnywhere(Graphs.ISILControlFlowGraph graph, LocalVariable local)
+    {
+        foreach (var instruction in graph.Instructions)
+        {
+            if (instruction.OpCode == OpCode.Nop)
+                continue;
+
+            foreach (var used in Reads(instruction))
+            {
+                if (ReferenceEquals(used, local))
+                    return true;
+            }
+        }
+
+        return false;
+    }
+
+    // ---------------------------------------------------------------------------------------------------
+    // Finding the resolver, by its idiom, across the whole binary
+    // ---------------------------------------------------------------------------------------------------
+
+    private static readonly ConditionalWeakTable<ApplicationAnalysisContext, HashSet<ulong>> found = new();
+
+    private static readonly object electing = new();
+
+    /// <summary>
+    /// The addresses a call to the generic-virtual-method resolver can arrive at - the branch target found in
+    /// the generated code, and the address a chain of thunks from it ends at, because the lifter presents the
+    /// second where <c>FollowThunks</c> applies and the first where it does not.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Elected by a vote over <b>every</b> call the generated code makes into the runtime, not a sample,
+    /// because the vote is comparative and a sample of an idiom that occurs in one method in twenty is not.
+    /// It is the shape <c>AttemptInstructionAnalysisToFillGaps</c> uses for metadata init, and it has the
+    /// same safety property: where no candidate is overwhelmingly the most common, it elects nothing and
+    /// this pass is inert.
+    /// </para>
+    /// <para>
+    /// Measured on both games, and the result is why this is stated as a vote rather than a table. Snacky
+    /// Dash elects <c>0x3AE432C</c> with 7,552 sites of the full idiom and <b>no runner-up at any vote
+    /// count</b>; Fluffy Field elects <c>0x2184654</c> with 147 and no runner-up either. Both are
+    /// one-instruction thunks - to <c>0x3B02AC0</c> and <c>0x21A2A7C</c> - and those two functions are
+    /// byte-for-byte identical across two Unity versions. No address appears in this file.
+    /// </para>
+    /// </remarks>
+    private static HashSet<ulong>? Resolvers(ApplicationAnalysisContext application)
+    {
+        if (found.TryGetValue(application, out var already))
+            return already;
+
+        lock (electing)
+        {
+            if (found.TryGetValue(application, out already))
+                return already;
+
+            var elected = Elect(application);
+            found.Add(application, elected);
+            return elected;
+        }
+    }
+
+    private static HashSet<ulong> Elect(ApplicationAnalysisContext application)
+    {
+        HashSet<ulong> none = [];
+
+        //Every encoding below is arm64, and the idiom is the arm64 compilation of the helper. A different
+        //instruction set needs its own reading of the same shape, not this one applied to other words.
+        if (application.InstructionSet is not NewArmV8InstructionSet || application.Binary.is32Bit)
+            return none;
+
+        if (ManagedRegion(application) is not var (lowest, highest) || highest <= lowest)
+            return none;
+
+        Dictionary<ulong, int> full = [];
+        var binary = application.Binary;
+        var content = binary.GetRawBinaryContent();
+
+        const ulong window = 1 << 20;
+
+        for (var start = lowest; start < highest; start += window)
+        {
+            var length = (int)Math.Min(window, highest - start) & ~3;
+
+            if (length < 4
+                || !binary.TryMapVirtualAddressToRaw(start, out var raw)
+                || raw < 0
+                || raw + length > content.Length)
+            {
+                continue;
+            }
+
+            //A window that is not one run of bytes in the file would have its instructions read at the wrong
+            //addresses, so it is skipped rather than guessed at.
+            if (!binary.TryMapVirtualAddressToRaw(start + (ulong)length - 4, out var last) || last != raw + length - 4)
+                continue;
+
+            CountIn(MemoryMarshal.Cast<byte, uint>(content.Slice((int)raw, length)), start, lowest, highest, full);
+        }
+
+        var leader = 0ul;
+        var leaderVotes = 0;
+        var runnerUp = 0;
+
+        foreach (var candidate in full)
+        {
+            if (candidate.Value > leaderVotes)
+            {
+                runnerUp = leaderVotes;
+                leader = candidate.Key;
+                leaderVotes = candidate.Value;
+            }
+            else if (candidate.Value > runnerUp)
+            {
+                runnerUp = candidate.Value;
+            }
+        }
+
+        if (leaderVotes < MinimumVotes || leaderVotes < runnerUp * MarginOverRunnerUp)
+        {
+            Logger.VerboseNewline(leaderVotes == 0
+                ? "\tNo generic-virtual-method resolver found - no call site has the idiom."
+                : $"\tBest generic-virtual-method resolver candidate 0x{leader:X} has only {leaderVotes} sites against a runner-up of {runnerUp}. Declining.");
+
+            return none;
+        }
+
+        //The lifter follows a chain of one-instruction jumps before it writes the call down, so the address a
+        //pass sees is the end of that chain and not the branch target. Both are accepted.
+        var followed = NewArmV8InstructionSet.FollowThunks(binary, leader);
+
+        Logger.VerboseNewline($"\tGeneric-virtual-method resolver found at 0x{leader:X}"
+            + (followed == leader ? "" : $" (a thunk to 0x{followed:X})")
+            + $", {leaderVotes} sites of the idiom, runner-up {runnerUp}.");
+
+        return [leader, followed];
+    }
+
+    /// <summary>
+    /// Votes for every call whose answer is used the way the resolver's answer is used, over one run of
+    /// generated code.
+    /// </summary>
+    /// <remarks>
+    /// The shape, and nothing generated has it anywhere else: a call out of the managed region whose result
+    /// is loaded from at <c>MethodInfo::virtualMethodPointer</c> and then branched through, with the slot
+    /// read and the vtable entry that feed it still above.
+    /// </remarks>
+    private static void CountIn(ReadOnlySpan<uint> words, ulong start, ulong lowest, ulong highest, Dictionary<ulong, int> full)
+    {
+        for (var index = 0; index < words.Length; index++)
+        {
+            if (!IsBranchAndLink(words[index], out var displacement))
+                continue;
+
+            var target = (ulong)((long)start + index * 4 + displacement);
+
+            //A call to another managed body is the method doing its own work, not a runtime helper.
+            if (target >= lowest && target <= highest)
+                continue;
+
+            var loaded = -1;
+            var register = 0u;
+
+            for (var step = 1; step <= LoadWindow && index + step < words.Length; step++)
+            {
+                var word = words[index + step];
+
+                //A call ends the search: whatever x0 held before it, it does not hold after.
+                if (IsBranchAndLink(word, out _) || IsBranchThroughRegister(word, out _))
+                    break;
+
+                if (IsLoad64(word, out var into, out var basis, out var addend)
+                    && basis == 0
+                    && addend == Il2CppMethodInfoLayout.VirtualMethodPointer)
+                {
+                    loaded = index + step;
+                    register = into;
+                    break;
+                }
+            }
+
+            if (loaded < 0)
+                continue;
+
+            var called = false;
+
+            for (var step = 1; step <= CallWindow && loaded + step < words.Length; step++)
+            {
+                var word = words[loaded + step];
+
+                if (IsBranchThroughRegister(word, out var through) && through == register)
+                {
+                    called = true;
+                    break;
+                }
+
+                if (IsBranchAndLink(word, out _))
+                    break;
+            }
+
+            if (!called)
+                continue;
+
+            var slot = false;
+            var vtable = false;
+
+            for (var step = 1; step <= FeedWindow && index - step >= 0; step++)
+            {
+                var word = words[index - step];
+
+                if (IsBranchAndLink(word, out _) || IsBranchThroughRegister(word, out _))
+                    break;
+
+                if (IsLoad16(word, out _, out _, out var half) && half == Il2CppMethodInfoLayout.Slot)
+                    slot = true;
+
+                //The entry is reached either by a load at the vtable's own distance or by an addition that
+                //works the address out first - both arrangements occur, and neither is the shape.
+                if (IsLoad64(word, out _, out _, out var wide) && wide == VtableEntryMethod)
+                    vtable = true;
+
+                if (IsAddImmediate(word, out _, out _, out var immediate) && immediate == VtableEntryMethod)
+                    vtable = true;
+            }
+
+            if (slot && vtable)
+                full[target] = full.GetValueOrDefault(target) + 1;
+        }
+    }
+
+    /// <summary>Where the managed methods are, so a call into the runtime can be told from a call to one.</summary>
+    private static (ulong Lowest, ulong Highest) ManagedRegion(ApplicationAnalysisContext application)
+    {
+        var lowest = ulong.MaxValue;
+        var highest = ulong.MinValue;
+
+        foreach (var address in application.MethodsByAddress.Keys)
+        {
+            if (address == 0)
+                continue;
+
+            if (address < lowest)
+                lowest = address;
+
+            if (address > highest)
+                highest = address;
+        }
+
+        return lowest == ulong.MaxValue ? (0, 0) : (lowest, highest);
+    }
+
+    // BL label - the displacement is signed over 26 bits and counts instructions.
+    private static bool IsBranchAndLink(uint word, out long displacement)
+    {
+        displacement = 0;
+
+        if ((word & 0xFC00_0000) != 0x9400_0000)
+            return false;
+
+        var offset = (long)(word & 0x03FF_FFFF);
+
+        if ((offset & 0x0200_0000) != 0)
+            offset -= 0x0400_0000;
+
+        displacement = offset << 2;
+        return true;
+    }
+
+    // BLR Xn.
+    private static bool IsBranchThroughRegister(uint word, out uint register)
+    {
+        register = (word >> 5) & 31;
+        return (word & 0xFFFF_FC1F) == 0xD63F_0000;
+    }
+
+    // LDR Xt, [Xn, #imm] - unsigned offset form, so the immediate counts eight byte units.
+    private static bool IsLoad64(uint word, out uint into, out uint basis, out long addend)
+    {
+        into = word & 31;
+        basis = (word >> 5) & 31;
+        addend = ((word >> 10) & 0xFFF) * 8;
+        return (word & 0xFFC0_0000) == 0xF940_0000;
+    }
+
+    // LDRH Wt, [Xn, #imm] - two byte units, which is what a uint16_t slot number is read with.
+    private static bool IsLoad16(uint word, out uint into, out uint basis, out long addend)
+    {
+        into = word & 31;
+        basis = (word >> 5) & 31;
+        addend = ((word >> 10) & 0xFFF) * 2;
+        return (word & 0xFFC0_0000) == 0x7940_0000;
+    }
+
+    // ADD Xd, Xn, #imm with no shift.
+    private static bool IsAddImmediate(uint word, out uint into, out uint basis, out long immediate)
+    {
+        into = word & 31;
+        basis = (word >> 5) & 31;
+        immediate = (word >> 10) & 0xFFF;
+        return (word & 0xFFC0_0000) == 0x9100_0000;
+    }
+
+    // ---------------------------------------------------------------------------------------------------
+
+    /// <summary>
+    /// Says what happened at every site, so that what this moved is a count in the export log rather than an
+    /// argument. <c>GVCALL_TRACE=1</c>, narrowed by <c>GVCALL_METHOD</c>, in the shape <c>RGCTX_TRACE</c> and
+    /// <c>IFACE_TRACE</c> already use.
+    /// </summary>
+    /// <remarks>
+    /// It earns its place twice over here. A probe dump is the body as analysis <i>finished</i> with it, and
+    /// this pass runs in the middle - see <c>il2cpp-the-dump-is-not-where-the-pass-runs</c> - so the only
+    /// honest answer to "was the shape there where it ran" is a line printed from where it ran.
+    /// </remarks>
+    private static void Trace(MethodAnalysisContext method, Instruction site, string outcome)
+    {
+        if (Environment.GetEnvironmentVariable("GVCALL_TRACE") != "1")
+            return;
+
+        if (Environment.GetEnvironmentVariable("GVCALL_METHOD") is { } wanted && !method.Name.Contains(wanted))
+            return;
+
+        var verdict = outcome.StartsWith("folded") ? "fold" : "decline";
+
+        Console.WriteLine($"GVCALL {verdict} {method.DeclaringType?.Name}::{method.Name} @{site.Index}: {outcome}");
+    }
+}

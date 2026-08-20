@@ -23,6 +23,8 @@ scores differently looks exactly like a code regression.
 | `bump.sh` | NuGet caches by version, so a rebuild is invisible unless the version changes |
 | `cfscore.py` | the 96 files that have an original beside them |
 | `compare2.py` | every body in the game, not just the 96 |
+| `gamescore.py` | the whole picture of an export with **no original source** - totals, classification, rethrown generator crashes, the marker census by body, and the fix queue. `--json` for `gamescorediff.py`. See `GAMESCORE.md` |
+| `gamescorediff.py` | what moved between two `gamescore --json` runs, with the verdict |
 | `decisions.py` | did the branching survive |
 | `roundtrip.py` | what the binary says the method does, no source needed |
 | `autodiff.py` | the ground-truth corpus, run without being told what to test |

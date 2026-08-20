@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>netstandard2.1</TargetFramework>
+    <AssemblyName>mscorlib</AssemblyName>
+    <RootNamespace>mscorlib</RootNamespace>
+    <AssemblyVersion>4.0.0.0</AssemblyVersion>
+    <FileVersion>4.0.0.0</FileVersion>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
+    <ProduceReferenceAssembly>false</ProduceReferenceAssembly>
+    <DebugType>none</DebugType>
+    <NoWarn>$(NoWarn);CS0436</NoWarn>
+    <WarningLevel>0</WarningLevel>
+  </PropertyGroup>
+  <ItemGroup><Compile Include="shim.cs" /><Compile Include="forwards.cs" /></ItemGroup>
+</Project>

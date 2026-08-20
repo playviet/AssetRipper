@@ -56,13 +56,23 @@ settings.ExportSettings.RelinkUnityPackages = true;
 // Leaving this out is invisible in the 96 scored files - they are the game's own - and moves `compare2` by
 // almost sixty bodies, because that one counts the whole game. It is the setting that was hardest to notice
 // missing, so the settings dump below stays.
-settings.ExportSettings.ScriptOriginalSourceDirectories =
-[
-    "/Users/playviet/Documents/_BZ/game-hub-origin/Assets/AAA/CFramework/Assets/3rdParty/Demigiant",
-    "/Users/playviet/Documents/_BZ/game-hub-origin/Assets/ThirdParty/unity-package/Assets/Utility/EnhancedScroller v2",
-    "/Users/playviet/Documents/_BZ/game-hub-origin/Assets/ThirdParty/unity-package/Assets/Utility/SoftMask",
-    "/Users/playviet/Documents/_BZ/game-hub-origin/Assets/Dreamteck",
-];
+// These paths are **Fluffy Field's**. They are on this machine, so they apply to any game run through here
+// unless told otherwise - and substituting one game's copy of DOTween into another's is a wrong body that no
+// scorer flags, because it compiles whole. `RIPRUN_ORIGIN=none` drops them for a game that is not that one;
+// `RIPRUN_ORIGIN=<dir>:<dir>` names its own.
+string? originEnv = Environment.GetEnvironmentVariable("RIPRUN_ORIGIN");
+settings.ExportSettings.ScriptOriginalSourceDirectories = originEnv switch
+{
+    "none" => [],
+    not null and not "" => [.. originEnv.Split(':', StringSplitOptions.RemoveEmptyEntries)],
+    _ =>
+    [
+        "/Users/playviet/Documents/_BZ/game-hub-origin/Assets/AAA/CFramework/Assets/3rdParty/Demigiant",
+        "/Users/playviet/Documents/_BZ/game-hub-origin/Assets/ThirdParty/unity-package/Assets/Utility/EnhancedScroller v2",
+        "/Users/playviet/Documents/_BZ/game-hub-origin/Assets/ThirdParty/unity-package/Assets/Utility/SoftMask",
+        "/Users/playviet/Documents/_BZ/game-hub-origin/Assets/Dreamteck",
+    ],
+};
 
 // What the run was configured with, into the log. This is how the missing setting above was found after
 // Program.cs was lost: the old logs still had the dump, and diffing it against a new one named the difference

@@ -1,0 +1,49 @@
+#!/bin/zsh
+# probeg <mode> [args...] - run probe against the GAME binary, not the corpus.
+# The corpus has no shape for several game defects, and pointing only at it is how two rounds
+# were spent building on a premise the ISIL would have refuted in a minute.
+#
+# $SP/il2cpp/ is probe's own copy of the binary and the metadata. The scratchpad has now been lost
+# five times, so re-extract it from the apk named in $SP/apkpath rather than assuming it is there.
+#
+# WHICH GAME - this cost a near-miss on 2026-08-20. `apkpath` named Fluffy Field while the session was
+# working on Snacky Dash, `il2cpp/` already held Fluffy Field's binary, and probeg dumped Fluffy Field
+# for every query. A Snacky Dash type printed NOTHING and exited 0, which reads exactly like
+# "that method does not exist". So:
+#   * the binary in use is printed to stderr on every run, always, and
+#   * $SP/il2cpp/.source records which apk it came from; if that no longer matches, it is re-extracted.
+# Override per-invocation with PROBE_APK=/path/to.apk (or .xapk - the inner apks are searched).
+SP=${0:A:h}
+export DOTNET_ROOT=$HOME/.dotnet
+export PATH=$HOME/.dotnet:$PATH
+
+APK="${PROBE_APK:-$(cat $SP/apkpath)}"
+[ -f "$APK" ] || { echo "probeg: no such apk: $APK" >&2; exit 1; }
+
+if [ ! -f $SP/il2cpp/libil2cpp.so ] || [ "$(cat $SP/il2cpp/.source 2>/dev/null)" != "$APK" ]; then
+  rm -rf $SP/il2cpp
+  mkdir -p $SP/il2cpp
+  SRC="$APK"
+  # An .xapk is a zip of apks: the .so and the metadata live in different inner ones.
+  if [ "${APK:e}" = "xapk" ] || [ "${APK:e}" = "apks" ]; then
+    TMP=$(mktemp -d)
+    unzip -o -q "$APK" '*.apk' -d $TMP
+    for inner in $TMP/*.apk; do
+      unzip -o -j -q "$inner" 'lib/arm64-v8a/libil2cpp.so' -d $SP/il2cpp 2>/dev/null
+      unzip -o -j -q "$inner" 'assets/bin/Data/Managed/Metadata/global-metadata.dat' -d $SP/il2cpp 2>/dev/null
+    done
+    rm -rf $TMP
+  else
+    unzip -o -j -q "$APK" 'lib/arm64-v8a/libil2cpp.so' -d $SP/il2cpp
+    unzip -o -j -q "$APK" 'assets/bin/Data/Managed/Metadata/global-metadata.dat' -d $SP/il2cpp
+  fi
+  [ -f $SP/il2cpp/libil2cpp.so ] && [ -f $SP/il2cpp/global-metadata.dat ] \
+    || { echo "probeg: could not extract libil2cpp.so + global-metadata.dat from $APK" >&2; exit 1; }
+  echo "$APK" > $SP/il2cpp/.source
+fi
+
+# Always, on every run. A silent probe reading of the wrong game is indistinguishable from a missing method.
+echo "probeg: ${APK:t}  ($(stat -f%z $SP/il2cpp/libil2cpp.so) bytes of libil2cpp.so)" >&2
+
+exec dotnet "$SP/probe/bin/Release/net10.0/probe.dll" \
+  "$SP/il2cpp/libil2cpp.so" "$SP/il2cpp/global-metadata.dat" 6000.0.78f1 "$@"
