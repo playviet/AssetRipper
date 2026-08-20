@@ -457,6 +457,7 @@ public static partial class LocalVariables
                 case OpCode.Subtract:
                 case OpCode.Multiply:
                 case OpCode.Divide:
+                case OpCode.Modulus:
                 case OpCode.And:
                 case OpCode.Or:
                 case OpCode.Xor:

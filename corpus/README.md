@@ -101,3 +101,38 @@ cost a wrong diagnosis of the struct-in-registers family once already (`Distance
 A corpus failure names a **shape**, not a defect count. It is a catalogue of what recovery cannot do,
 weighted by what someone chose to write, not by what the game's binary contains. Check the shape's frequency
 in the game before working on it.
+
+## The shape this corpus is specified to need next
+
+**A `finally` whose side effect the optimiser cannot delete.** `Guarded` was meant to be the `finally` test
+and it is not one: arm64's `sdiv` does not trap, so clang proved the `catch` unreachable, deleted it *and*
+the `finally` with it, and kept only the `finally`'s `* 2` folded into a shift. `Divide` went the same way.
+Both are faithful recoveries of bodies clang emptied — see `BASELINE.md` — which means **there is currently
+no ground truth for `finally` anywhere in this corpus**, and `try`/`catch` recovery landed at 1.11.x with
+nothing able to judge the other half of the feature.
+
+What is needed is a `finally` whose effect survives optimisation, i.e. one that writes somewhere the
+optimiser must keep:
+
+```csharp
+public static int Finally(int value)
+{
+    List<int> log = new List<int>();
+    try
+    {
+        if (value < 0) throw new ArgumentOutOfRangeException("value");
+        log.Add(1);
+        return value * 2;
+    }
+    finally { log.Add(log.Count + 100); }   // appended to a list, not multiplied into a local
+}
+```
+
+and it must **return something the `finally` observably changed** — `log.Count * 1000 + answer` — or the
+oracle cannot see whether the `finally` ran at all. A local multiplied by two is exactly what clang folds
+away; a list the method then reads is not.
+
+Worth adding beside it: a `try`/`finally` with **no** `catch` (the `using` shape, which `Using` only reaches
+through `IDisposable`), and a `catch` that **does not return** but falls out and keeps going — that last one
+is the single largest population in the game (466 methods at the 1.11.8 census) and the corpus has no
+instance of it at all.

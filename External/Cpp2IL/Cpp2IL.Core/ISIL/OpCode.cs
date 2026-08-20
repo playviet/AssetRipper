@@ -115,5 +115,12 @@ public enum OpCode
     Throw,
 
     /// <summary>Moves op 3 into op 1 if op 2 is true, and op 4 into op 1 otherwise.</summary>
-    Select
+    Select,
+
+    /// <summary>
+    /// Divides op 2 by op 3 and moves the *remainder* into op 1. Fork: what a call to <c>fmod</c>/<c>fmodf</c>
+    /// is - the language's <c>%</c>, which on a floating point value is defined as exactly what those compute.
+    /// Appended rather than placed beside <see cref="Divide"/> so that no existing value moves.
+    /// </summary>
+    Modulus
 }

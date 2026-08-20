@@ -422,7 +422,8 @@ public static partial class IlGenerator
                         break;
 
                     if (instruction.Operands[0] is ulong targetAddress)
-                        instructions.Add(CilOpCodes.Ldstr, $"Method not found @{targetAddress:X}");
+                        //Fork: an address names nothing, and the ELF names an imported function outright.
+                        instructions.Add(CilOpCodes.Ldstr, Analysis.UnresolvedCallMarker.Describe(context, targetAddress));
                     else // Probably key function
                         instructions.Add(CilOpCodes.Ldstr, $"Unknown call target operand: {instruction}");
 
@@ -566,6 +567,7 @@ public static partial class IlGenerator
             case OpCode.Subtract:
             case OpCode.Multiply:
             case OpCode.Divide:
+            case OpCode.Modulus:
 
             case OpCode.ShiftLeft:
             case OpCode.ShiftRight:
@@ -652,6 +654,10 @@ public static partial class IlGenerator
                     case OpCode.Subtract: instructions.Add(CilOpCodes.Sub); break;
                     case OpCode.Multiply: instructions.Add(CilOpCodes.Mul); break;
                     case OpCode.Divide: instructions.Add(CilOpCodes.Div); break;
+                    //`rem` on a float or a double is the truncated remainder, which is what `fmod` computes
+                    //and what the language's `%` is defined as - see Analysis/MathIntrinsics and the fmod
+                    //hook in NewArmV8InstructionSet.Fork. Signed, exactly as Divide above is.
+                    case OpCode.Modulus: instructions.Add(CilOpCodes.Rem); break;
 
                     case OpCode.ShiftLeft: instructions.Add(CilOpCodes.Shl); break;
                     case OpCode.ShiftRight: instructions.Add(Analysis.LogicalShift.BringsInZeroes(instruction) ? CilOpCodes.Shr_Un : CilOpCodes.Shr); break;
@@ -866,8 +872,7 @@ public static partial class IlGenerator
                 }
 
                 //Not fully implemented, these basically shouldn't actually ever exist in the final IL.
-                instructions.Add(CilOpCodes.Ldc_I4_0);
-                instructions.Add(CilOpCodes.Conv_I);
+                PushPlaceholderZero(instructions, expectedType);
                 break;
             case TypeAnalysisContext token2 when TryLoadTypeToken(token2, expectedType, instructions, module, importer):
                 break;
@@ -876,8 +881,8 @@ public static partial class IlGenerator
                 //the type instead, as this used to, says something the code never did, and does not even compile when
                 //the constructor it picks is one the project cannot reach: a build strips its class libraries down to
                 //what the game used, so what is reachable there and what is reachable in the editor differ.
-                instructions.Add(CilOpCodes.Ldc_I4_0);
-                instructions.Add(CilOpCodes.Conv_I);
+                //At the width of the place it is going: see PushPlaceholderZero in the fork.
+                PushPlaceholderZero(instructions, expectedType);
                 break;
             default:
                 instructions.Add(CilOpCodes.Ldstr, "Unknown operand: " + operand.ToString());

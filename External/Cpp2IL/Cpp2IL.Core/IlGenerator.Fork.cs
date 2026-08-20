@@ -1574,6 +1574,39 @@ public static partial class IlGenerator
     };
 
     // The types a value sits in a 32-bit slot for, which includes an enum with any of them underneath.
+    /// <summary>
+    /// The placeholder zero the generator pushes where an operand carries no value it can name - a runtime
+    /// class handle, a MethodInfo, a type used as a value - emitted at the width of the place it is going to.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The placeholder was always <c>ldc.i4.0; conv.i</c>, a NATIVE integer, and <c>ConvertToWidthOf</c>
+    /// cannot correct it: that helper only ever widens, deliberately, because narrowing a real value loses
+    /// information. So an ordered comparison of an <c>int</c> against one of these came out as
+    /// <c>value &gt; IntPtr.Zero</c>, and there is no such operator in the class library Unity ships.
+    /// `CrateProgressTracker` and `SnakeOccupancyManager` - both `dict.TryGetValue(k, out int v) &amp;&amp; v &gt; 0` -
+    /// were two of the last four errors in the whole Snacky Dash export.
+    /// </para>
+    /// <para>
+    /// Narrowing is safe here in a way it is not for a real value, and that is the whole argument: the
+    /// placeholder carries **nothing**. Zero at 32 bits says exactly as much as zero at 64, and it says it in
+    /// a type the comparison has an operator for. Where the place wants a native or 64-bit integer, or wants
+    /// nothing in particular, the old native zero is still what is emitted.
+    /// </para>
+    /// <para>
+    /// This does not make the body right - a class handle standing where a number belongs is still a lost
+    /// value, and [[il2cpp-1912-branches-test-a-placeholder-zero]] counts what that costs. It makes the body
+    /// COMPILE, and leaves the marker beside it saying what was lost.
+    /// </para>
+    /// </remarks>
+    private static void PushPlaceholderZero(CilInstructionCollection instructions, TypeAnalysisContext? expectedType)
+    {
+        instructions.Add(CilOpCodes.Ldc_I4_0);
+
+        if (!IsThirtyTwoBitInteger(StoredAs(expectedType)))
+            instructions.Add(CilOpCodes.Conv_I);
+    }
+
     private static bool IsThirtyTwoBitInteger(TypeAnalysisContext? type) =>
         StoredAs(type)?.Type is Il2CppTypeEnum.IL2CPP_TYPE_I4 or Il2CppTypeEnum.IL2CPP_TYPE_U4
             or Il2CppTypeEnum.IL2CPP_TYPE_I2 or Il2CppTypeEnum.IL2CPP_TYPE_U2
@@ -1747,8 +1780,31 @@ public static partial class IlGenerator
     /// Whether the operand ends up as a native integer in the emitted IL: either a value whose type was
     /// never established, or one of the runtime handles that has no managed type to lower to.
     /// </summary>
-    private static bool LowersToNativeInt(object operand) =>
-        operand is LocalVariable local && LowersToNativeInt(local.Type);
+    /// <remarks>
+    /// <para>
+    /// A native integer on the stack does not have to have come from a local. <see cref="LoadOperand"/>
+    /// pushes <c>ldc.i4.0; conv.i</c> for a runtime handle used as a value - a class pointer, a
+    /// <c>MethodInfo</c> - because there is no managed value to load for either. Asking only about a local
+    /// missed those, and then <c>widenToInt64</c> did not fire and the comparison came out as
+    /// <c>int &gt; IntPtr</c>, which the editor rejects: <c>System.IntPtr</c> has no relational operators.
+    /// Two methods in Snacky Dash failed to compile that way, both of them
+    /// <c>dict.TryGetValue(k, out int v) &amp;&amp; v &gt; 0</c>.
+    /// </para>
+    /// <para>
+    /// Only an ordered comparison can reach this with a non-local: the equality case beside it
+    /// independently requires both operands to be a <see cref="LocalVariable"/>. So this can only fire
+    /// where the output does not compile today. A memory operand is deliberately not included - whether it
+    /// resolves to an element, a by-ref read or the placeholder is not decidable from the operand alone.
+    /// </para>
+    /// </remarks>
+    private static bool LowersToNativeInt(object operand) => operand switch
+    {
+        LocalVariable local => LowersToNativeInt(local.Type),
+        //A synthetic runtime handle - RuntimeClassTypeAnalysisContext, RuntimeMethodInfoAnalysisContext and
+        //their siblings all derive from this - and a plain type used as a value both land here.
+        TypeAnalysisContext => true,
+        _ => false,
+    };
 
     /// <summary>
     /// Whether an ordered comparison of these two operands is the unsigned one.

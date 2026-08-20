@@ -147,7 +147,16 @@ internal static partial class InvalidSourceRepair
 					continue;
 				}
 
-				fileSystem.File.WriteAllText(file.Path, ApplyEdits(file.Text, edits));
+				//A repair removes statements, and removing statements never changes how many braces a file has. Where
+				//it would have, the round is dropped rather than written: an unbalanced file is not one broken
+				//method, it is every method after it, and then every attempt after that reading a tree built from
+				//a text that no longer says what it did.
+				if (RepairedText(file, edits) is not { } repairedText)
+				{
+					continue;
+				}
+
+				fileSystem.File.WriteAllText(file.Path, repairedText);
 				repairedFiles.Add(file.Path);
 
 				int rewrittenHere = edits.Count(edit => edit.Rewritten);
@@ -398,15 +407,38 @@ internal static partial class InvalidSourceRepair
 			//A method that no longer returns on every path, or no longer assigns an out parameter, is missing
 			//something rather than containing something wrong. Adding it back is cheaper than emptying the method.
 			//A statement that only needs saying differently is rewritten in place, before anything is given up on.
-			Edit? edit = id == "CS1729"
+			//
+			//A stand-in the repair itself wrote is left alone entirely - neither commented nor emptied around.
+			//Commenting it out empties the body again, which writes another stand-in, which the next attempt comments
+			//out in turn: the loop arguing with itself for all `MaxAttempts`, four lines of noise at a time. It is
+			//already the least the method can say.
+			//CS7036 reaches the same repair as CS1729 - both are a constructor that no longer chains to a base
+			//needing arguments - but unlike CS1729 it is not only ever about the implicit `base()`: a
+			//`new Foo()` inside the constructor's own body that is short of an argument reports the same id
+			//from inside the same declaration, and chaining a base call for that would answer a question
+			//nobody asked. The implicit base call is attributed to the declaration's HEADER, so the guard is
+			//on the diagnostic's own position - not on `node.Span`, which for a constructor declaration runs
+			//to the end of the body and rejects every real case.
+			Edit? edit = id == "CS1729" || (id == "CS7036" && IsConstructorHeader(node, position))
 				? FindBaseInitializerEdit(node, compilation)
 				: IsMissingSomething(id)
 					? FindFixupEdit(node, id)
 					: (lastAttempt ? null : FindStatement(node)) is { } statement
-						? FindRewriteEdit(file, statement, problems, compilation) ?? CommentEdit(file, statement)
+						? IsOwnInsertion(statement)
+							? (Edit?)null
+							: FindRewriteEdit(file, statement, problems, compilation) ?? CommentEdit(file, statement)
 						: FindBodyEdit(node);
 
 			if (edit is null)
+			{
+				continue;
+			}
+
+			//A whole statement balances its braces. One that does not is one that has picked up a brace belonging to
+			//something outside it - the method's closing brace, or the class's - and commenting it would take the
+			//brace with it. Checked against the text, because the tree was built from a file an earlier round may
+			//already have damaged.
+			if (!edit.Value.Rewritten && !SpanKeepsBraces(file, edit.Value.Span))
 			{
 				continue;
 			}
@@ -545,6 +577,14 @@ internal static partial class InvalidSourceRepair
 				continue;
 			}
 
+			//A body that is already nothing but the stand-in a previous attempt left behind has nothing left to
+			//empty. Emptying it again writes a second stand-in on top of the first, and the attempt after that a
+			//third - which is how one method ended up carrying eight of them.
+			if (body.Statements.All(IsOwnInsertion))
+			{
+				return null;
+			}
+
 			TextSpan span = TextSpan.FromBounds(body.Statements[0].SpanStart, body.Statements[^1].Span.End);
 
 			//Where the whole body goes and something has to stand in its place, the statements are replaced
@@ -575,6 +615,14 @@ internal static partial class InvalidSourceRepair
 	/// lot of otherwise sound code with it. Which base constructor was originally called is not known, so the shortest
 	/// one is called with default arguments; that is a guess, but it is contained to the one call.
 	/// </remarks>
+	/// <summary>
+	/// Whether a diagnostic at <paramref name="position"/> is about the constructor's own header - its
+	/// modifiers, name or parameter list - rather than about something inside its body.
+	/// </summary>
+	private static bool IsConstructorHeader(SyntaxNode node, int position)
+		=> node.FirstAncestorOrSelf<ConstructorDeclarationSyntax>() is { } constructor
+			&& position <= constructor.ParameterList.Span.End;
+
 	private static Edit? FindBaseInitializerEdit(SyntaxNode node, CSharpCompilation? compilation)
 	{
 		if (compilation is null || node.FirstAncestorOrSelf<ConstructorDeclarationSyntax>() is not { Initializer: null } constructor)
@@ -1604,6 +1652,17 @@ internal static partial class InvalidSourceRepair
 			if (replacement is not null)
 			{
 				builder.Append('\n').Append(replacement);
+			}
+
+			//The last thing written was a `//` comment, and a `//` comment runs to the end of the physical line - so
+			//anything that followed the span on that same line would be resumed *inside* it. Where the decompiler
+			//wrote one statement per line there is nothing there; where a rewrite has put several statements on one
+			//line there is, and in `CameraTools.TryGetLevelBoundsWorld` it was the `}` of the block that
+			//`RewriteStructPropertyMember` had written. The file lost a brace, and every later attempt was reading a
+			//method that no longer ended where it did. Start the resumed source on a line of its own instead.
+			if (HasCodeAfterOnLine(text, span.End))
+			{
+				builder.Append('\n');
 			}
 
 			position = span.End;

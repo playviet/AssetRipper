@@ -45,6 +45,7 @@ public class Instruction(int index, OpCode opcode, params object[] operands)
             case OpCode.Subtract:
             case OpCode.Multiply:
             case OpCode.Divide:
+            case OpCode.Modulus:
             case OpCode.ShiftLeft:
             case OpCode.ShiftRight:
             case OpCode.And:
@@ -90,7 +91,7 @@ public class Instruction(int index, OpCode opcode, params object[] operands)
                 => [Operands[1]],
 
             OpCode.Add or OpCode.Subtract or OpCode.Multiply
-                or OpCode.Divide or OpCode.ShiftLeft or OpCode.ShiftRight
+                or OpCode.Divide or OpCode.Modulus or OpCode.ShiftLeft or OpCode.ShiftRight
                 or OpCode.And or OpCode.Or or OpCode.Xor
                 => [Operands[2], Operands[1]],
 

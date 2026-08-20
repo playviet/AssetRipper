@@ -84,6 +84,15 @@ internal class ScriptDecompiler
 
 		settings.UseNestedDirectoriesForNamespaces = true;
 
+		//An anonymous type is hidden from project output while this is on, because the decompiler expects to
+		//have rewritten every use of it back into `new { X = a }`. On recovered IL it does not: the pattern it
+		//matches is not there, so the uses survive as `_003C_003Ef__AnonymousType0<,>` and the declaration is
+		//written as an EMPTY FILE beside them. Snacky Dash exported three such files and 40 of the 45
+		//remaining compile errors were their references. Turning it off costs nothing measurable here -
+		//`grep -c "new {"` over that export is **zero**, so the transform never once succeeded - and it makes
+		//the declaration and the references agree.
+		settings.AnonymousTypes = false;
+
 		if (FullyQualifiedTypeNames)
 		{
 			settings.AlwaysUseGlobal = true;

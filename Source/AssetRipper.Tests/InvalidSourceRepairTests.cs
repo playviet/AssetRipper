@@ -553,4 +553,101 @@ internal class InvalidSourceRepairTests
 
 		Assert.That(Repair(Source), Is.EqualTo(Source));
 	}
+
+	[Test]
+	public void CommentingOneOfSeveralStatementsOnALineKeepsTheRestOfTheLine()
+	{
+		//A `//` comment runs to the end of the physical line, so commenting a statement out took with it whatever
+		//followed it on that line. That is nothing where recovery writes one statement per line, and everything where
+		//a rewrite has put a whole read-modify-write block on one: `CameraTools.TryGetLevelBoundsWorld` lost the
+		//block's closing brace this way, and with it the method's brace and the class's on the attempt after.
+		string result = Repair("""
+			namespace Game
+			{
+				public class Widget
+				{
+					public void Go(int a)
+					{
+						{ int copy = a; copy.NoSuchMember(); a = copy; }
+					}
+				}
+			}
+			""", compile: true);
+
+		using (Assert.EnterMultipleScope())
+		{
+			Assert.That(result, Does.Contain(Marker));
+			Assert.That(result, Does.Contain("a = copy;"));
+			Assert.That(Balance(result), Is.Zero, "the repair changed how many braces the file has");
+			Assert.That(CSharpSyntaxTree.ParseText(result).GetDiagnostics().Where(d => d.Severity == DiagnosticSeverity.Error),
+				Is.Empty, "the repaired file no longer parses");
+		}
+	}
+
+	[Test]
+	public void TheRepairDoesNotCommentOutWhatItInserted()
+	{
+		//Emptying a method leaves a `return default;` behind. Commenting that out empties the body again, which
+		//writes another one, which the next attempt comments out in its turn - one quartet of lines per attempt, all
+		//the way to MaxAttempts. Whatever else happens, the note is written once.
+		string result = Repair("""
+			namespace Game
+			{
+				public class Widget
+				{
+					public int Broken(int a)
+					{
+						return a.NoSuchMember() + NotAThing(a);
+					}
+				}
+			}
+			""", compile: true);
+
+		using (Assert.EnterMultipleScope())
+		{
+			Assert.That(Occurrences(result, InvalidSourceRepair.EmptiedNote), Is.LessThanOrEqualTo(1));
+			Assert.That(Balance(result), Is.Zero);
+			Assert.That(CSharpSyntaxTree.ParseText(result).GetDiagnostics().Where(d => d.Severity == DiagnosticSeverity.Error),
+				Is.Empty);
+		}
+	}
+
+	/// <summary>
+	/// How many braces the source opens without closing, counting only the ones that are code.
+	/// </summary>
+	/// <remarks>
+	/// Crude on purpose, and only ever used to compare a repaired file with the one it came from. The snippets here
+	/// have no directives, no verbatim strings and no braces in a literal.
+	/// </remarks>
+	private static int Balance(string text)
+	{
+		int balance = 0;
+		foreach (string line in text.Split('\n'))
+		{
+			string code = line.TrimStart();
+			if (code.StartsWith("//", StringComparison.Ordinal))
+			{
+				continue;
+			}
+
+			int comment = code.IndexOf("//", StringComparison.Ordinal);
+			if (comment >= 0)
+			{
+				code = code[..comment];
+			}
+
+			balance += code.Count(c => c == '{') - code.Count(c => c == '}');
+		}
+		return balance;
+	}
+
+	private static int Occurrences(string text, string value)
+	{
+		int count = 0;
+		for (int i = text.IndexOf(value, StringComparison.Ordinal); i >= 0; i = text.IndexOf(value, i + value.Length, StringComparison.Ordinal))
+		{
+			count++;
+		}
+		return count;
+	}
 }

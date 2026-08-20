@@ -596,8 +596,13 @@ public static class InterfaceCallRecovery
     {
         foreach (var (found, fromClass, throughInvoker) in Entries(target, definitions))
         {
+            InterfaceCallCensus.Counted("attempted");
+
             if (fromClass < VTableOffset64)
+            {
+                InterfaceCallCensus.Counted("offset-below-vtable");
                 continue;
+            }
 
             //Worked out here rather than taken from the shared helper, which reports the first slot as no slot
             //at all: for a class that is right, since its first entry is not something a call reaches this
@@ -605,26 +610,46 @@ public static class InterfaceCallRecovery
             var inVtable = fromClass - Il2CppClassUsefulOffsets.GetVtableOffset(method.AppContext.MetadataVersion, false);
 
             if (inVtable < 0 || inVtable % SlotWidth != 0)
+            {
+                InterfaceCallCensus.Counted("not-a-slot-boundary");
                 continue;
+            }
 
             //What the offset was added to is the class, and the class was read out of the object.
             if (Single(found, definitions) is not { OpCode: OpCode.Add, Operands: [_, LocalVariable runtimeClass, LocalVariable scaled] })
+            {
+                InterfaceCallCensus.Counted("no-single-add-defining-the-entry");
                 continue;
+            }
 
             //What type the object has does not matter here, and usually is not known: it arrives from a cast
             //whose result nothing typed. The interface is what says which method this is.
             if (LoadedFrom(runtimeClass, definitions) is not { } receiver)
+            {
+                InterfaceCallCensus.Counted("class-not-loaded-from-an-object");
                 continue;
+            }
 
             if (Scaling(scaled, definitions) is not var (walked, alreadyCounted))
+            {
+                InterfaceCallCensus.Counted("no-scaling");
                 continue;
+            }
 
             if (InterfaceComparedAgainst(walked, method, definitions) is not { } interfaceType)
+            {
+                //The one the Snacky Dash census points at: UniTask's interfaces are generic
+                //instantiations, so the walk compares against a class read out of the rgctx rather
+                //than against a typeof.
+                InterfaceCallCensus.Counted("interface-not-named-by-the-comparison");
                 continue;
+            }
 
+            InterfaceCallCensus.Counted("recovered");
             return (interfaceType, (int)(inVtable / SlotWidth) + alreadyCounted, receiver, runtimeClass, throughInvoker);
         }
 
+        InterfaceCallCensus.Counted("no-entry-survived");
         return null;
     }
 

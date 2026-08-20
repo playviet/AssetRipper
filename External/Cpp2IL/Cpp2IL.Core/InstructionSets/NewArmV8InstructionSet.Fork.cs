@@ -123,6 +123,13 @@ public partial class NewArmV8InstructionSet
     /// Only the ones that are exactly a managed method of the same shape. <c>modf</c> and <c>sincosf</c> hand
     /// answers back through pointers, <c>exp2f</c> has no counterpart, and <c>memcpy</c> is a struct
     /// assignment rather than a call - each of those is a different problem and is left as it was.
+    /// <c>ldexp</c> is left too, its second argument being an integer in <c>w0</c> rather than a float in
+    /// <c>v1</c>; <c>Analysis.UnresolvedCallMarker</c> at least names it where it stays a marker.
+    /// </para>
+    /// <para>
+    /// <b>And one of them is not a method at all.</b> <c>fmod</c> is the <c>%</c> operator, so it is emitted
+    /// as an <c>OpCode.Modulus</c> rather than as a call - the largest unmapped import in either game,
+    /// 642 sites here and 40 on the other binary.
     /// <c>__stack_chk_fail</c> is dropped: it is what the guard branch calls when the stack has been
     /// smashed, and recovered C# has no stack to smash.
     /// </para>
@@ -211,6 +218,26 @@ public partial class NewArmV8InstructionSet
                 isDouble ? 2.0 : 2.0f, RegisterFor(Arm64Register.V0)])];
         }
 
+        //`fmod` is not a call at all - it is the `%` operator. C# defines the remainder of two floating
+        //point values as exactly what `fmod` computes, the truncated remainder `x - trunc(x / y) * y`, and
+        //that is also what the CLR's `rem` does, so this is an identity rather than an approximation.
+        //`Math.IEEERemainder` is emphatically *not* it: it rounds the quotient to nearest rather than
+        //truncating, and gives a different answer for half of all inputs - which is why the table below has
+        //no entry for `fmod` and why one could not be added.
+        //
+        //**The largest unmapped import in either game**: 642 sites on Snacky Dash (`fmod` 292, `fmodf` 350)
+        //and 40 on Fluffy Field, counted from the two ELFs' `.plt` stubs.
+        //
+        //Operand order is the call's own - `fmod(x, y)` is `x % y`, and aapcs64 puts `x` in `v0` and `y` in
+        //`v1`, the same run of registers `pow` and `atan2` two lines below already use. Width is not spelled
+        //here for the same reason it is not spelled there: `RegisterFor` gives `s0`, `d0` and `v0` one name,
+        //and what the value *is* comes from the type that reaches the register, not from this instruction.
+        if (bare == "fmod")
+        {
+            return [(OpCode.Modulus, [RegisterFor(Arm64Register.V0), RegisterFor(Arm64Register.V0),
+                RegisterFor(Arm64Register.V0 + 1)])];
+        }
+
         string[]? names = bare switch
         {
             "sin" => ["Sin"], "cos" => ["Cos"], "tan" => ["Tan"],
@@ -219,6 +246,19 @@ public partial class NewArmV8InstructionSet
             "sqrt" => ["Sqrt"], "fabs" => ["Abs"],
             "ceil" => ["Ceil", "Ceiling"], "floor" => ["Floor"], "round" => ["Round"],
             "pow" => ["Pow"], "atan2" => ["Atan2"], "fmin" => ["Min"], "fmax" => ["Max"],
+            //The hyperbolic three are an ordinary managed method of the same shape - `Math.Sinh(double)` and
+            //its two siblings - so they need nothing but the word. 63 sites on Snacky Dash, 21 each, all of
+            //them the double form; Fluffy Field imports none of the three. Should a binary ever import
+            //`sinhf`, the suffix rule takes it to the same entry and `MathIntrinsics.Resolve` reaches
+            //`System.MathF`, which has all three - and where a runtime has neither, it resolves to nothing
+            //and the marker stays, which is the right answer.
+            "sinh" => ["Sinh"], "cosh" => ["Cosh"], "tanh" => ["Tanh"],
+            //**Not `ldexp`/`ldexpf`, and not `scalbn`.** `ldexp(x, n)` is `x * 2^n`, and its second argument
+            //is an *integer* - `w0`, not `v1` - so it is neither a method of this shape nor a call whose
+            //operands this hook could name from the float run. `Math.ScaleB` is the managed equivalent and
+            //takes `(double, int)`, which `MathIntrinsics.Resolve` cannot match: it requires every parameter
+            //to be of the instruction's own float width. 3 sites on Snacky Dash and 5 on Fluffy Field, so
+            //there is nothing here worth a second convention. A marker is better than a wrong answer.
             _ => null,
         };
 
@@ -404,7 +444,11 @@ public partial class NewArmV8InstructionSet
     /// thunk is: nothing else could sit in front of it. Bounded, so a jump that somehow points at itself
     /// cannot spin.
     /// </remarks>
-    private static ulong FollowThunks(LibCpp2IL.Il2CppBinary binary, ulong target)
+    //Internal rather than private so that Analysis.GenericVirtualCallRecovery can present the same address
+    //the lifter presents: a call the lifter followed a thunk to is recorded at the followed address, and a
+    //pass matching on the raw branch target would never see it. Fork file, fork caller - no upstream
+    //declaration changes.
+    internal static ulong FollowThunks(LibCpp2IL.Il2CppBinary binary, ulong target)
     {
         for (var step = 0; step < 4; step++)
         {

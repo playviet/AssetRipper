@@ -375,7 +375,7 @@ public static class ArithmeticProducesANumber
     /// how an address is worked out.
     /// </summary>
     private static bool IsArithmetic(OpCode opCode) => opCode is
-        OpCode.Add or OpCode.Subtract or OpCode.Multiply or OpCode.Divide
+        OpCode.Add or OpCode.Subtract or OpCode.Multiply or OpCode.Divide or OpCode.Modulus
         or OpCode.ShiftLeft or OpCode.ShiftRight or OpCode.And or OpCode.Or or OpCode.Xor
         or OpCode.Not or OpCode.Negate;
 }

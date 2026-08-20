@@ -13,11 +13,11 @@ internal static class GenericInstantiation
         {
             case GenericParameterTypeAnalysisContext genericParameterTypeAnalysisContext:
             {
-                var index = genericParameterTypeAnalysisContext.Index;
                 return genericParameterTypeAnalysisContext.Type switch
                 {
-                    Il2CppTypeEnum.IL2CPP_TYPE_VAR => genericTypeParameters[index],
-                    _ => genericMethodParameters[index],
+                    //Fork: an index past the end of the list is not an error worth a whole method body - see GenericInstantiationFork.Bind.
+                    Il2CppTypeEnum.IL2CPP_TYPE_VAR => GenericInstantiationFork.Bind(genericParameterTypeAnalysisContext, genericTypeParameters),
+                    _ => GenericInstantiationFork.Bind(genericParameterTypeAnalysisContext, genericMethodParameters),
                 };
             }
             case SzArrayTypeAnalysisContext szArrayTypeAnalysisContext:
